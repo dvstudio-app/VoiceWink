@@ -1,0 +1,11 @@
+# SHA256 pin for installer/runtime/parakeet/parakeet-server.exe.
+# parakeet-server v0.5.0 win-VULKAN-x64 (GPU acceleration, 2026-09-01 — replaced the win-cpu-x64 build:
+# same v0.5.0 tag, same GGUF, same CLI contract; ONE binary serves GPU and CPU, device chosen by
+# the child's PARAKEET_DEVICE environment; its CPU path measured byte-identical to the old build,
+# 0/56 clips on two machines). Statically imports vulkan-1.dll, so the Khronos loader ships
+# beside it (installer/runtime/vulkan-loader/). Measured from the exact gate-validated binary
+# (upstream release asset parakeet-v0.5.0-bin-win-vulkan-x64.zip,
+# sha256 717c416fab299755e8140137e3a0115121ce1acb6379d13c60f2f0613f6c13a3). Consumed by
+# scripts/check-vcredist-payload.ps1 step 4 (pre-pack, both ship paths); the same value is the
+# compile-time launch pin in ParakeetBackendCoordinator.ServerExeSha256 - update BOTH together.
+5b2da797198ee0ef9ce4438f2be71cf77fa7089efe7617d956cb6fb75ec54f73

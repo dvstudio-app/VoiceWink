@@ -1,0 +1,33 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Windows-native files: CRLF
+*.cs text eol=crlf
+*.csproj text eol=crlf
+*.sln text eol=crlf
+*.xaml text eol=crlf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
+
+# Unix scripts: LF
+*.sh text eol=lf
+
+# Legal-asset markdown is content-hashed at runtime; pin LF so hashes
+# are deterministic across platforms regardless of git's autocrlf setting.
+src/VoiceWink/Assets/Legal/*.md text eol=lf
+
+# Binary files
+*.zip binary
+*.bin binary
+*.msix binary
+*.ico binary
+*.png binary
+# Whisper tokenizer rank data — byte-exact, never line-ending-normalized
+*.tiktoken -text
+
+# Third-party licence notices we redistribute verbatim. Same rule as the
+# tokenizer data and for a related reason: THIRD-PARTY-NOTICES.md claims these ship "verbatim",
+# and a line-ending rewrite would make that claim false in a file whose whole purpose is to be
+# an exact copy. Both release gates pin its SHA-256, which only holds if the bytes do.
+licenses/*.txt -text

@@ -1,0 +1,23 @@
+# SHA256 pin for vc_redist.x64.exe - the provenance anchor for the four
+# app-local Microsoft Visual C++ runtime DLLs in this folder.
+#
+# Version: 14.44.35211.0 (matches RedistVersion in MANIFEST.psd1 in this folder).
+#
+# Source: https://aka.ms/vs/17/release/vc_redist.x64.exe
+#         (Microsoft CDN; Authenticode-signed CN=Microsoft Corporation).
+#
+# Computed: 2026-06-02 from a verified download against the URL above.
+#
+# Format: first non-empty, non-`#` line is the 64-character uppercase hex SHA256.
+# scripts/fetch-vcredist.ps1 reads this as the default -ExpectedSha256 when not
+# supplied on the CLI, so every fetch/refresh verifies the bundle identity
+# before cracking it open. The DLLs extracted from this exact bundle are pinned
+# per-file in MANIFEST.psd1 (SHA256).
+#
+# When refreshing the runtime (mirrors the WindowsAppRuntime repin procedure):
+#   1. Run scripts/fetch-vcredist.ps1 -CheckOnly to see the upstream SHA + version.
+#   2. Replace the hex below with the new bundle SHA256 + bump the comment block.
+#   3. Run scripts/fetch-vcredist.ps1 -Regenerate to re-extract the DLLs + reprint
+#      the per-file SHAs, then update MANIFEST.psd1.
+#   4. Commit the refreshed DLLs + MANIFEST.psd1 + this file together.
+CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B

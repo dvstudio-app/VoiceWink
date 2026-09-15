@@ -1,0 +1,4 @@
+<!-- Inheritance shield: stops the repo root's Directory.Build.props (app-specific
+     properties, stub redirection, the feature levers) from applying to the stub
+     projects themselves. MSBuild uses the NEAREST Directory.Build.* up the tree. -->
+<Project />

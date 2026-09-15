@@ -1,0 +1,533 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>VoiceWink</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.87.382</Version>
+    <AssemblyVersion>1.87.382.0</AssemblyVersion>
+    <FileVersion>1.87.382.0</FileVersion>
+    <Company>DV Studio</Company>
+    <Authors>Dieter Verlaeckt</Authors>
+    <Product>VoiceWink</Product>
+    <Description>Voice-to-text for Windows — press a hotkey, speak, text appears at your cursor.</Description>
+    <Copyright>Copyright © 2025-2026 Dieter Verlaeckt / DV Studio</Copyright>
+    <!-- GPLv3 §6 source-availability disclosure surfaced in DLL metadata
+         (Get-ItemProperty surfaces these as "Project URL" / "Source URL").
+         Required by the per-package attribution clauses of the MIT/Apache-2.0
+         dependencies and by GPLv3 §6 for the binary itself. Added 2026-05-23
+         as part of the indie-launch compliance pass. -->
+    <PackageProjectUrl>https://voicewink.app</PackageProjectUrl>
+    <!-- RepositoryUrl is the published home: github.com/dvstudio-app/VoiceWink — a repo
+         created FRESH and fed one allowlisted snapshot commit per release, tagged
+         v{Version} by the public-snapshot publisher (mechanism decided 2026-08-08 —
+         deliberately NOT a transfer or a mirror of development history). Until
+         go-live it is private, so this URL 404s for
+         anyone else — expected: no public-channel release exists before then, and
+         tester-ring recipients obtain source via the EULA's request route. -->
+    <RepositoryUrl>https://github.com/dvstudio-app/VoiceWink</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- GPL-3.0-only (NOT -or-later): the project and its VoiceInk upstream are "GPL v3",
+         and a derivative cannot unilaterally add an "or later" grant. -->
+    <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
+    <ApplicationIcon>Assets\appicon.ico</ApplicationIcon>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsSdkPackageVersion>10.0.22621.45</WindowsSdkPackageVersion>
+    <PublishAot>false</PublishAot>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         Velopack production entry-point invariant — these two properties
+         form a single unit. Removing either re-enables a failure path the
+         spike (`spike/velopack-day1`) caught and fixed on a clean VM.
+
+         1. DISABLE_XAML_GENERATED_MAIN: suppresses the WinUI generator's
+            static `Program.Main` so our custom `src/VoiceWink/Program.cs`
+            is the sole entry point. Lets us run our Velopack lifecycle
+            hooks (OnAfterInstall) + UpdateExeSelfHeal + Bootstrap.Try-
+            Initialize BEFORE WinUI starts.
+
+         2. WindowsAppSdkBootstrapInitialize=false: disables the WinAppSDK
+            module initializer that would otherwise auto-fire at JIT-load
+            time of `VoiceWink.dll`, BEFORE `Program.Main` runs. On a clean
+            VM without `Microsoft.WindowsAppRuntime.1.6` installed, the
+            auto-init's `MddBootstrapInitialize2` call would crash the
+            process before our Velopack hook could install the runtime.
+            We call `Bootstrap.TryInitialize` ourselves in `Program.Main`
+            stage 3 after ensuring the runtime is installed.
+
+         `WindowsAppSdkDeploymentManagerAutoInitialize` is intentionally
+         NOT set here — it gates `DeploymentManager` auto-init, which only
+         applies to packaged (`WindowsPackageType=MSIX`) apps. We are
+         unpackaged, so the property is inert. CI's test workflow sets it
+         defensively for hosted-runner stability but production does not
+         need it as an invariant.
+         See docs/plans/2026-05-05-2103-installer-signing-autoupdate-plan/
+         50-decision.md override items 6 and 9.
+         ════════════════════════════════════════════════════════════════════ -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         UPDATE_CHECK_ENABLED release gate (Plan 4G).
+
+         Default false BY DESIGN — and it stays false. The committed default
+         keeps dev/IDE/CI builds from ever checking for updates; signed release
+         builds opt in per-build via `-p:UpdateCheckEnabled=true` (see
+         installer/release-update.{ps1,sh}). Do NOT flip this committed default
+         to true: UpdateServiceTests pins it false and CI would go red. (The
+         prerequisites it once waited on are now met anyway — the privacy
+         disclosure is the bundled active asset's §4 (privacy-v*.md), and the
+         R2 CDN at updates.voicewink.app is live.)
+
+         What `-p:UpdateCheckEnabled=true` does:
+           1. Defines UPDATE_CHECK_ENABLED preprocessor symbol → IUpdate-
+              Service.CheckForUpdatesAsync stops short-circuiting to null.
+           2. Emits `update-check-enabled.marker` into the publish dir
+              (see EmitUpdateCheckMarker target below).
+
+         NOTE: the marker is emitted but DELIBERATELY not consumed. The
+         intended marker-driven privacy-disclosure gate was NOT built (decided
+         2026-06-02) — it would be redundant. What
+         actually gates a signed release is (a) the DRAFT/placeholder scan in
+         scripts/check-release-assets.ps1 and (b) the fact that the bundled
+         Assets/Legal/privacy-v*.md IS the disclosure (its §4 documents the
+         update-check egress). The marker is kept only as a cheap publish-
+         output breadcrumb; do not rely on it enforcing anything.
+
+         See docs/plans/2026-05-05-2103-installer-signing-autoupdate-plan/
+         50-decision.md (v1 scope) + 30-claude-revised-plan.md §4G.
+         ════════════════════════════════════════════════════════════════════ -->
+    <UpdateCheckEnabled>false</UpdateCheckEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(UpdateCheckEnabled)' == 'true'">
+    <DefineConstants>$(DefineConstants);UPDATE_CHECK_ENABLED</DefineConstants>
+  </PropertyGroup>
+
+  <!-- ════════════════════════════════════════════════════════════════════
+       Build-time update-feed config (channel, gated/ungated flag, and — for a gated tester
+       ring only — the Cloudflare Access service-token credentials), compiled into UpdateFeedConfig.
+
+       The non-secret CHANNEL comes from this property — the release script passes
+       `-p:UpdateFeedChannel=<channel>`. The generator decides GATED vs PUBLIC from that name
+       through scripts/lib/release-channel.ps1 (any '-stable' suffix is public; 2026-09-09): a tester
+       ring bakes the SECRET credentials, read from a gitignored file
+       (installer/.update-feed-credentials) and NEVER passed on the command line (which would leak
+       them into process args / build logs); a public channel bakes NO credentials and never opens
+       that file. Step 3b of the release script verifies the outcome against the published DLL.
+
+       Dev builds leave the channel empty → UpdateFeedConfig.IsConfigured == false → the
+       update-check path is inert, regardless of UPDATE_CHECK_ENABLED. The generated file lands in
+       obj/ (gitignored), so credentials are never committed.
+       ════════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <UpdateFeedChannel Condition="'$(UpdateFeedChannel)' == ''"></UpdateFeedChannel>
+  </PropertyGroup>
+
+  <!-- Statically include the generated file so it is in @(Compile) from evaluation time — for
+       BOTH the WinUI XAML markup pass (which compiles a temp assembly from all C# sources to
+       resolve x:Bind) AND CoreCompile. The GenerateUpdateFeedConfig target below runs early
+       enough to guarantee the file exists before any compile pass reads it. obj/ is excluded
+       from the default compile glob, so this is the only Compile entry for it (no duplicate). -->
+  <ItemGroup>
+    <Compile Include="$(IntermediateOutputPath)UpdateFeedConfig.g.cs" />
+    <Compile Include="$(IntermediateOutputPath)SentryConfig.g.cs" />
+  </ItemGroup>
+
+  <!-- Generate the file BEFORE every compile pass. BeforeBuild covers the earliest point;
+       MarkupCompilePass1 (the WinUI XAML pass) and CoreCompile are listed explicitly so the file
+       exists for each (non-existent target names in BeforeTargets are harmlessly ignored). -->
+  <Target Name="GenerateUpdateFeedConfig" BeforeTargets="BeforeBuild;BeforeCompile;MarkupCompilePass1;CoreCompile">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\generate-update-feed-config.ps1&quot; -Channel &quot;$(UpdateFeedChannel)&quot; -CredsFile &quot;$(MSBuildThisFileDirectory)..\..\installer\.update-feed-credentials&quot; -OutFile &quot;$(IntermediateOutputPath)UpdateFeedConfig.g.cs&quot;" />
+  </Target>
+
+  <!-- Build-time Sentry DSN. The SECRET DSN is read from a gitignored file
+       (installer/.sentry-dsn) by the generator and is NEVER passed on the command line.
+       EmbedSentryDsn is empty for dev/CI builds (DSN stays empty -> crash reporting inert,
+       and SentryInitializerTests stays green); the signed release scripts pass
+       -p:EmbedSentryDsn=true. Mirrors GenerateUpdateFeedConfig above. -->
+  <Target Name="GenerateSentryConfig" BeforeTargets="BeforeBuild;BeforeCompile;MarkupCompilePass1;CoreCompile">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\generate-sentry-config.ps1&quot; -Embed &quot;$(EmbedSentryDsn)&quot; -DsnFile &quot;$(MSBuildThisFileDirectory)..\..\installer\.sentry-dsn&quot; -OutFile &quot;$(IntermediateOutputPath)SentryConfig.g.cs&quot;" />
+  </Target>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <!-- WinUI XamlCompiler.exe fails in CLI Release builds when compiling the optimized intermediate assembly. -->
+    <Optimize>false</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VoiceWink.Tests" />
+    <!-- The dictation benchmark harness runs through the app's own internal pipeline pieces
+         (WavPcm, the soft-speech gain trio, the HTTP policy table) - the standing rule in root
+         CLAUDE.md that a harness must measure the SHIPPED path. tools/ only, never shipped. -->
+    <InternalsVisibleTo Include="VoiceWink.AsrBench" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WinUI 3 -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250602001" />
+
+    <!-- MVVM -->
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+
+    <!-- Dependency Injection -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+
+    <!-- HttpClient factory (retry handler + handler pool lifetime) -->
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+
+    <!-- Database -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />
+    <!-- Direct pin: EF Core 8.0.x floors SQLitePCLRaw at 2.1.6, whose bundled SQLite
+         is vulnerable (GHSA-2m69-gcr7-jv3q / CVE-2025-6965, fixed in SQLite 3.50.2).
+         2.1.12 bundles SQLite 3.53.3. Do not remove as "redundant" — without it NuGet
+         resolves the vulnerable transitive floor. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Sentry.Serilog" Version="6.4.1" />
+
+    <!-- Velopack — installer + auto-update mechanics. Pinned to 0.0.1298:
+         the spike (`spike/velopack-day1`) validated this exact version end-to-end on
+         a signed clean-VM install (UpdateManager + WaitExitThenApplyUpdates + delta
+         updates + uninstall). The spike caught a Velopack 0.0.1298 signed-install bug
+         where signed `vpk pack` (with the `azureTrustedSignFile` arg) sometimes fails
+         to extract `Squirrel.exe` → `Update.exe` at the install root; the
+         `Helpers/UpdateExeSelfHeal.cs` workaround re-extracts it on first launch.
+         Do NOT unpin without re-running the full clean-VM signed matrix.
+         See docs/plans/2026-05-05-2103-installer-signing-autoupdate-plan/50-decision.md
+         override item 10. -->
+    <PackageReference Include="Velopack" Version="0.0.1298" />
+
+    <!-- Image processing (clipboard DIB conversion for image paste) -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.11" />
+
+    <!-- Audio -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+
+    <!-- Whisper -->
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <!-- The GPU (Vulkan) whisper.cpp runtime, tried ahead of CPU when the
+         pre-flight probe in Helpers/WhisperBackendLog proves the chain loadable (applied at
+         App.ConfigureServices; a declined probe pins [Cpu] outright, because Whisper.net's
+         own vulkan-to-cpu fall-through measurably aborts on a partial payload). Ships ~58 MB at
+         runtimes\vulkan\win-x64\ — a SEPARATE directory from the CPU package's
+         runtimes\win-x64\, and that separation is load-bearing: all four same-named DLLs
+         (whisper / ggml-whisper / ggml-cpu-whisper / ggml-base-whisper) are DIFFERENT
+         builds in the two packages, hash-verified 2026-09-01. This package's linux-x64
+         ItemGroup carries NO Condition (59 MB of .so files a Windows app can never
+         execute), so the StripVulkanLinuxNatives target below removes them; the publish
+         gate (scripts/check-publish-payload.ps1) fail-closes if the strip regresses on a
+         package bump. Do NOT add the CUDA package: the GPU-stack investigation
+         (2026-09-01) measured it MOOT here — it
+         needs the CUDA Toolkit runtime on the USER's machine and silently falls back to
+         Vulkan (proven by loaded-module inspection). -->
+    <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
+
+    <!-- sherpa-onnx: the SECOND native inference runtime. Pinned to the exact
+         versions the CPU benchmark measured, so the numbers in
+         docs/model-review/2026-08-02-parakeet-vs-local-whisper-cpu.md describe what ships.
+         The runtime package is win-x64 only: the app targets that RID alone. -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.4" />
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="1.13.4" />
+
+    <!-- System Tray -->
+    <PackageReference Include="H.NotifyIcon.WinUI" Version="2.1.0" />
+
+    <!-- Global Hotkeys (Phase 5, but referenced in DI) -->
+    <PackageReference Include="SharpHook" Version="5.3.8" />
+
+    <!-- Window Extensions -->
+    <PackageReference Include="WinUIEx" Version="2.5.0" />
+
+    <!-- Logging -->
+    <PackageReference Include="Serilog" Version="4.1.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageReference Include="Serilog.Sinks.Debug" Version="3.0.0" />
+
+    <!-- DPAPI for API key encryption -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+
+    <!-- WMI for SMBIOS UUID read in hardware fingerprint -->
+    <PackageReference Include="System.Management" Version="8.0.0" />
+
+    <!-- P/Invoke Generation -->
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.106">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- GPL v3 §6: ship the LICENSE next to the binary so the EULA's source-availability
+         claim is materially true, both in-app About/License surfacing and as a sibling
+         file next to VoiceWink.dll in the bin output. The Link element forces it to land
+         at the output root rather than under "..\..\". -->
+    <Content Include="..\..\LICENSE">
+      <Link>LICENSE</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\README.md">
+      <Link>README.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- The bundled Silero VAD model (Assets\Models) is MIT third-party content — its
+         attribution must accompany the redistributed binary, so the notices file ships
+         at the output root like LICENSE. Presence is enforced by the release payload
+         and portable-ZIP gates. -->
+    <Content Include="..\..\THIRD-PARTY-NOTICES.md">
+      <Link>THIRD-PARTY-NOTICES.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- ONNX Runtime's OWN third-party notices. onnxruntime.dll statically
+         links ~67 components (protobuf, Eigen, Abseil, ...) whose licences require their
+         notices to travel with the binary, and neither the sherpa NuGet package nor our
+         own notices file carries them. Kept as a separate file rather than inlined: it is
+         325 KB and would bury everything else in THIRD-PARTY-NOTICES.md.
+
+         The version in the filename is read from the shipped DLL's ProductVersion, not
+         from a build script. Presence is enforced by the release payload gate. -->
+    <Content Include="..\..\licenses\onnxruntime-1.27.0-ThirdPartyNotices.txt">
+      <Link>licenses\onnxruntime-1.27.0-ThirdPartyNotices.txt</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- CHANGELOG.md ships next to the binary so the What's-new dialog can read it
+         from AppContext.BaseDirectory. Same ..\..\ + Link shape as LICENSE / README. -->
+    <Content Include="..\..\CHANGELOG.md">
+      <Link>CHANGELOG.md</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <!-- WindowsAppRuntimeInstall-x64.exe (~61 MB) — the bootstrap payload that
+         Helpers/PrereqInstaller.cs spawns on clean machines without
+         Microsoft.WindowsAppRuntime 1.6 pre-installed. Conditional include
+         keeps the dev-loop fast: local Debug builds don't need the binary,
+         and local Release builds emit a warning (not error) so iterative work
+         isn't blocked on a 61 MB download.
+         The fail-closed gate for the publish path is
+         scripts/check-publish-payload.ps1 — it Authenticode-verifies the
+         file is Microsoft-signed and within the expected size range, then
+         hard-fails (exit 1) if anything is missing. /vw-deploy and the CI
+         release workflow MUST run this script between `dotnet publish` and
+         `vpk pack`. scripts/fetch-winapp-runtime.ps1 populates the file
+         from Microsoft's CDN (SHA256-pinnable for CI). -->
+    <Content Include="..\..\installer\runtime\WindowsAppRuntimeInstall-x64.exe"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\WindowsAppRuntimeInstall-x64.exe')">
+      <Link>WindowsAppRuntimeInstall-x64.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <!-- App-local Microsoft Visual C++ runtime DLLs (~920 KB) — shipped next to
+         whisper.dll at runtimes\win-x64\. The four native Whisper DLLs import the
+         MSVC runtime (vcruntime140 / vcruntime140_1 / msvcp140, + vcomp140 for the
+         CPU OpenMP backend); a clean Win 11 VM with no VC++ Redistributable fails
+         the native load with PInvokeError 0. Velopack installs per-user/non-admin
+         so vc_redist.x64.exe (machine-wide, admin-only) can't run — shipping these
+         four app-local is the deterministic, Microsoft-permitted fix (they are on
+         the VC++ "Redistributable Files" list; see installer/signing/README.md and
+         docs/plans/2026-06-02-1939-vcredist-applocal-bundle/50-decision.md).
+
+         Unlike WindowsAppRuntimeInstall-x64.exe (61 MB, gitignored + fetched per
+         build), these are tiny and COMMITTED — every build/CI machine copies them
+         with no extraction toolchain. scripts/fetch-vcredist.ps1 (WiX v5 + msiexec)
+         is a maintainer-only refresh tool. The <Link> targets runtimes\win-x64\ so
+         the DLLs land beside whisper.dll in both bin and publish output; the
+         fail-closed gate scripts/check-vcredist-payload.ps1 proves it for the
+         shipped artifact (Velopack nupkg + portable ZIP). Condition="Exists(...)"
+         mirrors the WindowsAppRuntime block above. -->
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140.dll')">
+      <Link>runtimes\win-x64\vcruntime140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140_1.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140_1.dll')">
+      <Link>runtimes\win-x64\vcruntime140_1.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\msvcp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\msvcp140.dll')">
+      <Link>runtimes\win-x64\msvcp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcomp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcomp140.dll')">
+      <Link>runtimes\win-x64\vcomp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <!-- The Khronos Vulkan LOADER, beside parakeet-server.exe in runtimes\win-x64\ — and
+         DELIBERATELY nowhere else. The server statically imports vulkan-1.dll (first
+         import-table entry, delay-load directory empty), so on a machine with no GPU driver
+         (no system loader) the child would die before main, every spawn would fail, and the
+         storm fuse would mark Parakeet — the default engine — unrunnable. With this copy in
+         the CHILD's own directory the import resolves there first; a real driver's ICD still
+         enumerates through it, and no driver at all means zero devices and a clean CPU
+         fallback (both measured, two GPU vendors). The APP process never resolves this copy:
+         its own vulkan-1 probe (WhisperBackendLog) searches the app dir + System32, so
+         Whisper's GPU-less behaviour stays exactly as measured — do not "help" Whisper by
+         copying the loader to the app root; a devices-less loader would flip its probe onto
+         an unmeasured path. Pinned by installer/runtime/vulkan-loader/MANIFEST.psd1 and
+         verified by check-vcredist-payload.ps1; attribution ships via THIRD-PARTY-NOTICES.md
+         (Apache-2.0, gate-asserted). -->
+    <Content Include="..\..\installer\runtime\vulkan-loader\vulkan-1.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vulkan-loader\vulkan-1.dll')">
+      <Link>runtimes\win-x64\vulkan-1.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <!-- The SAME four VC++ DLLs again, beside the Vulkan whisper.dll at
+         runtimes\vulkan\win-x64\. Load-bearing, not belt-and-braces: the [Vulkan, Cpu]
+         pin makes the VULKAN copy the first whisper.dll the process loads, and Win32
+         resolves a loaded DLL's imports from ITS OWN directory first — so on a clean VM
+         (Velopack per-user install, no machine-wide VC++ Redistributable: exactly the
+         population the vcredist bundle exists for) a Vulkan directory without these four
+         fails the native load with PInvokeError 0, the loader falls through to CPU, and
+         GPU acceleration silently never engages for the users it shipped for.
+         scripts/check-vcredist-payload.ps1 verifies this directory with the same
+         SHA-256/PE/signer checks as the CPU one. -->
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140.dll')">
+      <Link>runtimes\vulkan\win-x64\vcruntime140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140_1.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140_1.dll')">
+      <Link>runtimes\vulkan\win-x64\vcruntime140_1.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\msvcp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\msvcp140.dll')">
+      <Link>runtimes\vulkan\win-x64\msvcp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcomp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcomp140.dll')">
+      <Link>runtimes\vulkan\win-x64\vcomp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <!-- parakeet-server.exe: the resident local-transcription helper the parakeet.cpp
+         backend spawns - LOAD-BEARING in every ordinary build since the rollout flip
+         (PcppEnabled defaults true; scripts/check-vcredist-payload.ps1 step 4 fail-closes
+         the publish if this row's copy did not fire, because this Condition is fail-SOFT
+         and a missing exe would silently ship the old engine forever). COMMITTED like the
+         vcredist set (1.7 MB, deterministic, SHA-256 pinned in ParakeetBackendCoordinator
+         and re-verified per LAUNCH before any spawn). The <Link> placement inside
+         runtimes\win-x64\ is LOAD-BEARING, not cosmetic: the exe's PE import table needs
+         msvcp140/vcruntime140/vcruntime140_1/vcomp140, those DLLs land in
+         runtimes\win-x64\ (the rows above), and a SPAWNED child resolves imports from ITS
+         OWN directory - the .NET native-probing path means nothing to the Win32 loader.
+         Beside the DLLs, the closure holds on a clean machine by construction. -->
+    <Content Include="..\..\installer\runtime\parakeet\parakeet-server.exe"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\parakeet\parakeet-server.exe')">
+      <Link>runtimes\win-x64\parakeet-server.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Local-build warning. The hard gate is scripts/check-publish-payload.ps1,
+       invoked between `dotnet publish` and `vpk pack`. Errors here would
+       block local Release builds on fresh clones without a fetch run first,
+       so we keep this as a warning and let the publish-side script fail
+       closed. -->
+  <Target Name="WarnIfRuntimeInstallerMissing"
+          BeforeTargets="Build"
+          Condition="'$(Configuration)' == 'Release' AND !Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\WindowsAppRuntimeInstall-x64.exe')">
+    <Warning Text="WindowsAppRuntimeInstall-x64.exe missing from installer/runtime/. Run scripts/fetch-winapp-runtime.ps1 before publishing — scripts/check-publish-payload.ps1 will hard-fail the publish path without it." />
+  </Target>
+
+  <!-- App-local VC++ runtime DLLs are COMMITTED (installer/runtime/vcredist/), so
+       this should never fire on a clean clone. It guards the case where someone
+       deletes/relocates them — the publish would otherwise ship without the MSVC
+       runtime and crash native Whisper load on a clean VM. The hard gate is
+       scripts/check-vcredist-payload.ps1 (run by check-publish-payload.ps1 + the
+       portable build); this is just an early local-build breadcrumb. -->
+  <Target Name="WarnIfVcRedistMissing"
+          BeforeTargets="Build"
+          Condition="'$(Configuration)' == 'Release' AND !Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140.dll')">
+    <Warning Text="App-local VC++ runtime DLLs missing from installer/runtime/vcredist/. They are normally committed; if absent, run scripts/fetch-vcredist.ps1 to regenerate them — scripts/check-vcredist-payload.ps1 will hard-fail the publish/portable path without them." />
+  </Target>
+
+  <!-- Whisper.net.Runtime.Vulkan 1.9.1's linux-x64 ItemGroup carries NO Condition
+       (its Windows one is TFM-gated), so 59 MB of Linux .so files that cannot execute on
+       Windows would ride every build AND publish. They arrive as None items with
+       CopyToOutputDirectory — not RID-specific NuGet native assets — so a RID-specific
+       publish does NOT prune them; this target does, before AssignTargetPaths hands them
+       to the copy pipeline (which both build and publish output flow through). Matched on
+       the items' own TargetPath metadata so a package relayout on a future bump fails
+       toward SHIPPING the files — which scripts/check-publish-payload.ps1's fail-closed
+       layout assertion then catches — never toward deleting someone else's payload. -->
+  <Target Name="StripVulkanLinuxNatives" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <None Remove="@(None)"
+            Condition="$([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes/vulkan/linux-')) Or $([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes\vulkan\linux-'))" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Emits `update-check-enabled.marker` into the publish output when
+       UpdateCheckEnabled=true. Content = the package Version so an auditor
+       can see which build activated the gate. NOTE: no script consumes this
+       marker — the marker-driven privacy-disclosure gate was deliberately NOT
+       built (decided 2026-06-02): it would be redundant.
+       What blocks an unreviewed signed release is the DRAFT scan in
+       scripts/check-release-assets.ps1 plus the bundled Assets/Legal/privacy-v*.md
+       being the disclosure itself (§4). The marker is kept only as a publish-
+       output breadcrumb. See the UpdateCheckEnabled PropertyGroup above. -->
+  <Target Name="EmitUpdateCheckMarker"
+          AfterTargets="Publish"
+          Condition="'$(UpdateCheckEnabled)' == 'true'">
+    <WriteLinesToFile File="$(PublishDir)update-check-enabled.marker"
+                      Lines="$(Version)"
+                      Overwrite="true" />
+  </Target>
+
+  <!-- Emits `vad-disabled.marker` into the publish output when the VAD-disable response
+       lever is pulled (-p:VadEnabled=false). Content = the package Version.
+
+       UNLIKE update-check-enabled.marker above (a breadcrumb nothing consumes), this
+       marker IS consumed: it is the runbook's static pre-ship check, letting an
+       operator confirm a signed pack really is the VAD-disabled build without
+       installing it and dictating. The runtime proof is the
+       "VAD disabled by build" log line; this is the artifact-level proof.
+
+       See the VadEnabled PropertyGroup in the root Directory.Build.props, which
+       states when the lever is legitimate to pull and how to verify the build. -->
+  <Target Name="EmitVadDisabledMarker"
+          AfterTargets="Publish"
+          Condition="'$(VadEnabled)' == 'false'">
+    <WriteLinesToFile File="$(PublishDir)vad-disabled.marker"
+                      Lines="$(Version)"
+                      Overwrite="true" />
+  </Target>
+
+  <!-- The same artifact-level proof for the Parakeet lever
+       (-p:ParakeetEnabled=false), and consumed the same way — the runbook's static
+       pre-ship check, so an operator can confirm a signed pack really is the
+       Parakeet-disabled build without installing it.
+
+       Needed even though a disabled build's payload is byte-identical apart from one
+       compiled-out branch: the sherpa natives still SHIP either way — both release gates
+       require them (check-publish-payload.ps1 and check-release-assets.ps1), exactly as the
+       bundled Silero model still ships in a VAD-lever build — so "are the DLLs present"
+       cannot answer which build this is.
+
+       See the ParakeetEnabled PropertyGroup in the root Directory.Build.props, which
+       states when the lever is legitimate to pull and how to verify the build. -->
+  <Target Name="EmitParakeetDisabledMarker"
+          AfterTargets="Publish"
+          Condition="'$(ParakeetEnabled)' == 'false'">
+    <WriteLinesToFile File="$(PublishDir)parakeet-disabled.marker"
+                      Lines="$(Version)"
+                      Overwrite="true" />
+  </Target>
+</Project>

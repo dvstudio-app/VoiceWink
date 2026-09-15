@@ -1,0 +1,152 @@
+<Project>
+  <!--
+    Workaround: The Windows App SDK's MrtCore.PriGen.targets unconditionally loads
+    Microsoft.Build.Packaging.Pri.Tasks.dll and Microsoft.Build.AppxPackage.dll from
+    AppxMSBuildToolsPath, which only exists inside a full Visual Studio installation.
+
+    For unpackaged WinUI 3 apps built from the dotnet CLI, we redirect
+    AppxMSBuildToolsPath to no-op stub assemblies in build/stubs/.
+  -->
+  <PropertyGroup>
+    <AppxPackage>false</AppxPackage>
+    <AppxMSBuildToolsPath>$(MSBuildThisFileDirectory)build\stubs\</AppxMSBuildToolsPath>
+  </PropertyGroup>
+
+  <!--
+    VAD-disable response lever. Committed default TRUE — the Silero VAD
+    no-speech gate is on in every ordinary build, and it stays that way.
+
+    An incident build opts OUT with `-p:VadEnabled=false`, which defines the
+    VAD_DISABLED symbol; VadFeature.IsEnabled then flips and BOTH VAD consumers
+    short-circuit without native contact:
+
+      - VoiceActivityDetectionService returns NoSpeechVerdict.Unavailable,
+        degrading to the legacy whole-file RMS gate.
+      - SherpaVadSegmenter returns Disabled, so VadDecodePlan falls back to
+        LongAudioChunker's fixed-window plan (2026-08-20).
+
+    That is a downgrade accepted only to stop a hard process kill: it reinstates
+    the silence-hallucination defect PR #236 fixed. (The VAD-segmented decode
+    DEFAULT was rejected by measurement before shipping — 2026-08-21 — so the
+    second consumer, SherpaVadSegmenter, currently has no app caller; the lever
+    still gates it so any future wiring inherits the contract.) A disabled build
+    always still transcribes. Pull it ONLY for a confirmed vcomp140/OpenMP access
+    violation (0xc0000005) on a mitigated build, or a soak-quota shortfall at
+    go/no-go; never for an unexplained crash, a slow VAD, or a false no-speech
+    block, which have their own diagnoses. Two proofs, and the FILE is the one to
+    trust: vad-disabled.marker at the publish root is there regardless of what the
+    user does, while the runtime pair — a "VAD disabled by build" line and no
+    "Silero VAD initialized:" line — only exists once a recording has run.
+
+    The second consumer is gated deliberately. The crash this lever answers was
+    observed in whisper.cpp's ggml/OpenMP path and not in sherpa's, but its promise
+    is "no VAD native code" — a second implementation that ignored it would make
+    the runbook a lie.
+
+    Note the polarity is the INVERSE of UpdateCheckEnabled (which ships false and
+    release builds opt in), so the symbol names the non-default state and an
+    ordinary build defines nothing.
+
+    Lives here rather than in VoiceWink.csproj because the test project needs the
+    same symbol to compile its configuration-scoped assertions
+    (VadFeatureGateTests); a property two projects consume belongs in the shared
+    props file rather than being copy-pasted into both, where it could drift.
+
+    Values other than 'true'/'false' are REJECTED by ValidateVadEnabled in
+    Directory.Build.targets — a typo must never silently produce a VAD-ENABLED
+    build that the operator believes is disabled.
+  -->
+  <PropertyGroup>
+    <VadEnabled Condition="'$(VadEnabled)' == ''">true</VadEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(VadEnabled)' == 'false'">
+    <DefineConstants>$(DefineConstants);VAD_DISABLED</DefineConstants>
+  </PropertyGroup>
+
+  <!--
+    The parakeet.cpp server-backend rollout flag. Committed default TRUE since the engine
+    rollout flip (2026-08-24) - every ordinary build compiles the
+    parakeet.cpp-backed path and PcppFeature.IsEnabled is const true. `-p:PcppEnabled=false`
+    is the KILL SWITCH's build form: it restores the sherpa-only era including the sherpa
+    catalog row (ParakeetCatalog.ActiveRow follows this flag). The OFF configuration has NO
+    automated executor - its weekly lever-check leg was owner-retired the day it shipped
+    (2026-08-24, "we are not going back to the old engine"), so an incident pull of this
+    switch should expect to fix the rebuild first. The symbol still
+    names the PCPP_ENABLED state (opposite polarity to the disable levers above, deliberately:
+    when this flag was introduced the non-default was the NEW backend, and renaming the symbol
+    at the flip would touch every gate for zero information). Values other than 'true'/'false'
+    are REJECTED by ValidatePcppEnabled in Directory.Build.targets, same as the VAD lever.
+  -->
+  <PropertyGroup>
+    <PcppEnabled Condition="'$(PcppEnabled)' == ''">true</PcppEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PcppEnabled)' == 'true'">
+    <DefineConstants>$(DefineConstants);PCPP_ENABLED</DefineConstants>
+  </PropertyGroup>
+
+  <!--
+    The capture path's anti-alias low-pass. Committed default TRUE.
+
+    `-p:AntiAliasEnabled=false` defines ANTIALIAS_DISABLED; CaptureFilterFeature.IsEnabled
+    flips and AudioRecorderService takes the legacy resample path verbatim
+    (AudioResampler.ResampleInto, per-buffer, unfiltered). Same polarity as
+    VadEnabled — the symbol names the non-default state.
+
+    SCOPE IS NARROWER THAN THE VAD LEVER ON PURPOSE, and that is not an oversight:
+    this is a build-time A/B and diagnostic lever, with no release.yml input, no
+    release-update.ps1 switch, no publish marker and no runbook. The VAD lever has
+    all of those because it guards an unroot-caused NATIVE crash where shipping
+    the disabled build IS the mitigation. This is managed DSP with unit coverage;
+    its incident response is reverting the commit. Full argument in
+    Helpers/CaptureFilterFeature.cs.
+
+    Lives here rather than in VoiceWink.csproj for the same reason as VadEnabled:
+    the test project needs the symbol to compile CaptureFilterFeatureGateTests.
+
+    Values other than 'true'/'false' are REJECTED by ValidateAntiAliasEnabled in
+    Directory.Build.targets.
+  -->
+  <PropertyGroup>
+    <AntiAliasEnabled Condition="'$(AntiAliasEnabled)' == ''">true</AntiAliasEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(AntiAliasEnabled)' == 'false'">
+    <DefineConstants>$(DefineConstants);ANTIALIAS_DISABLED</DefineConstants>
+  </PropertyGroup>
+
+  <!--
+    The same lever for the SECOND native runtime (sherpa-onnx).
+    Committed default TRUE.
+
+    An incident build opts out with `-p:ParakeetEnabled=false`, defining
+    PARAKEET_DISABLED; ParakeetFeature.IsEnabled flips, and the runtime reports
+    PrepareOutcome.Unavailable rather than loading any native code. Unlike the VAD
+    lever this is not a downgrade of a shipped guarantee — it removes an OPTIONAL
+    engine, and Whisper keeps serving every model it already served.
+
+    Exists because the VAD crash is the standing lesson that a native dependency working
+    on every dev machine can still fault on a user's, and a second one doubles that
+    surface. Same polarity as VadEnabled: the symbol names the non-default state,
+    so an ordinary build defines nothing.
+
+    Values other than 'true'/'false' are REJECTED by ValidateParakeetEnabled in
+    Directory.Build.targets — a typo must never silently produce an ENABLED build
+    the operator believes is disabled.
+
+    Pull it for crashes attributable to onnxruntime.dll / sherpa-onnx-c-api.dll, or
+    to the Parakeet recording path; never for a wrong or empty transcription, which
+    is a model-quality question and would take the engine from every user who chose
+    it. Verify a lever build by parakeet-disabled.marker at the publish root
+    (content = version) — present regardless of what the user does, where the
+    runtime log line appears only once someone tries to prepare a Parakeet model.
+  -->
+  <PropertyGroup>
+    <ParakeetEnabled Condition="'$(ParakeetEnabled)' == ''">true</ParakeetEnabled>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(ParakeetEnabled)' == 'false'">
+    <DefineConstants>$(DefineConstants);PARAKEET_DISABLED</DefineConstants>
+  </PropertyGroup>
+</Project>

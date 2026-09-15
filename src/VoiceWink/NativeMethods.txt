@@ -1,0 +1,17 @@
+SetWindowLongPtr
+GetWindowLongPtr
+SetWindowPos
+GetForegroundWindow
+SendInput
+OpenClipboard
+CloseClipboard
+EmptyClipboard
+SetClipboardData
+GetClipboardData
+GlobalAlloc
+GlobalLock
+GlobalUnlock
+GlobalFree
+IsClipboardFormatAvailable
+RegisterHotKey
+UnregisterHotKey

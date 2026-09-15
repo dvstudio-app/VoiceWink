@@ -1,0 +1,30 @@
+# SHA256 pin for WindowsAppRuntimeInstall-x64.exe.
+#
+# Version: 1.6.250602001 (matches the -Version default in
+# scripts/fetch-winapp-runtime.ps1 and Microsoft.WindowsAppSDK package
+# pinned in src/VoiceWink/VoiceWink.csproj).
+#
+# Source: https://aka.ms/windowsappsdk/1.6/1.6.250602001/windowsappruntimeinstall-x64.exe
+#         (Microsoft CDN, Authenticode-signed by Microsoft Corporation)
+#
+# Computed: 2026-07-14 from an Authenticode-gated -Repin download against the
+# URL above (the fetch script verifies Valid + Microsoft Corporation signer
+# before printing the hash, so a repin is never trust-on-first-download).
+#
+# Format: first non-empty, non-`#` line is the 64-character uppercase hex SHA256.
+# Both `scripts/fetch-winapp-runtime.ps1` and `scripts/check-publish-payload.ps1`
+# read this file as the default value when their `-ExpectedSha256` /
+# `-ExpectedRuntimeSha256` parameter is not supplied.
+#
+# When bumping the runtime version:
+#   1. Update -Version default in fetch-winapp-runtime.ps1.
+#   2. Run `pwsh scripts/fetch-winapp-runtime.ps1 -Repin` — forces a fresh
+#      download, skips this (stale) pin, Authenticode-verifies the download,
+#      and prints the new SHA256. (Plain -Force is NOT enough: the script
+#      fail-closes this file's old hash against the new version's bytes.)
+#   3. Update the comment block above with the new version + date.
+#   4. Replace the hex below with the value the script just printed.
+#   5. Rerun `pwsh scripts/fetch-winapp-runtime.ps1` normally to prove the new
+#      pin matches, then commit the csproj pins + WAR_MIN_VERSION (Program.cs)
+#      + this file together.
+C7CD988425B76EA087E2E1D7B096B585F853E20BB826B8F38D45A5175410A877

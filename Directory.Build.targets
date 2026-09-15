@@ -1,0 +1,60 @@
+<Project>
+  <!--
+    Workaround: The Windows App SDK's MrtCore.PriGen.targets unconditionally loads
+    Microsoft.Build.Packaging.Pri.Tasks.dll from AppxMSBuildToolsPath, which only
+    exists inside a full Visual Studio installation.
+
+    For unpackaged WinUI 3 apps built from the dotnet CLI, we redirect
+    AppxMSBuildToolsPath to the WindowsAppSDK NuGet package's tools folder
+    and provide a no-op targets file to prevent the UsingTask from failing.
+  -->
+  <PropertyGroup>
+    <_SkipMrtPriGen>true</_SkipMrtPriGen>
+  </PropertyGroup>
+
+  <!--
+    VAD-disable response lever — fail closed on a mistyped flag.
+
+    `-p:VadEnabled=fasle` would otherwise fall through the '== false' condition in
+    Directory.Build.props and produce a VAD-ENABLED build, during exactly the
+    incident where the operator is least able to notice. Anything that is not
+    literally true or false stops the build.
+
+    Deliberately cannot protect a no-build invocation (MSBuild evaluates nothing
+    then); the documented command paths never skip the build for this flag.
+  -->
+  <Target Name="ValidateVadEnabled" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(VadEnabled)' != 'true' AND '$(VadEnabled)' != 'false'"
+           Text="VadEnabled must be exactly 'true' or 'false' (got '$(VadEnabled)'). This is the VAD-disable incident-response lever, so a typo must never silently produce a VAD-ENABLED build." />
+  </Target>
+
+  <!-- The pcpp rollout flag: same fail-loud rule. A typo like 'True ' must never
+       silently produce a sherpa-only build the operator believes runs the new backend. -->
+  <Target Name="ValidatePcppEnabled" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(PcppEnabled)' != 'true' AND '$(PcppEnabled)' != 'false'"
+           Text="PcppEnabled must be exactly 'true' or 'false' (got '$(PcppEnabled)'). This is the parakeet.cpp backend rollout flag." />
+  </Target>
+
+  <!-- Same fail-loud rule for the sherpa-onnx engine lever. A typo like
+       'False ' or 'no' must not silently leave the second native runtime ENABLED in a
+       build the operator pulled the lever on. -->
+  <Target Name="ValidateParakeetEnabled" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(ParakeetEnabled)' != 'true' AND '$(ParakeetEnabled)' != 'false'"
+           Text="ParakeetEnabled must be exactly 'true' or 'false' (got '$(ParakeetEnabled)'). This is the sherpa-onnx engine lever." />
+  </Target>
+
+  <!-- Same fail-loud rule for the anti-alias filter lever. Deliberately points at the
+       backlog card rather than a runbook — unlike the VAD lever this scope creates none, and a
+       message referencing a file that does not exist is worse than no reference. -->
+  <Target Name="ValidateAntiAliasEnabled" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(AntiAliasEnabled)' != 'true' AND '$(AntiAliasEnabled)' != 'false'"
+           Text="AntiAliasEnabled must be exactly 'true' or 'false' (got '$(AntiAliasEnabled)'). This is the capture anti-alias filter lever — see the anti-alias lever card in backlog.md." />
+  </Target>
+
+  <!-- Override the PriGen target to no-op when the build tasks DLL is missing -->
+  <Target Name="_ExpandProjectPriFile" />
+  <Target Name="_ExpandReferencePriFiles" />
+  <Target Name="_GenerateProjectPriConfigFile" />
+  <Target Name="_GenerateProjectPriFile" />
+  <Target Name="_GenerateProjectPriFileCore" />
+</Project>
