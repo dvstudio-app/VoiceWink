@@ -117,6 +117,11 @@ public sealed class AIEnhancementService
             // dropped task is never awaited by anyone but its own continuation.
             foreach (var key in _modelListRefreshes.Keys.Where(k => k.Item1 == provider).ToList())
                 _modelListRefreshes.Remove(key);
+            // That provider's published ceilings were read under the OLD key, so drop them with the
+            // rest of its cached state. ONE slice — the other provider's evidence is still valid,
+            // and erasing it would push its models onto the conservative fallback for no reason.
+            // Already inside _imageCapabilityLock, which is the slice's guard.
+            _tokenCeilings.Remove(provider);
             _modelListEpochs[provider] = ModelListEpoch(provider) + 1;
         }
     }
@@ -497,6 +502,244 @@ public sealed class AIEnhancementService
         return Helpers.ImageModelCapabilities.AllAuto;
     }
 
+    /// <summary>
+    /// Published output-token ceilings, per provider, per model id. SESSION-SCOPED — deliberately
+    /// not persisted, unlike <see cref="_imageCapabilities"/>: that one survives restarts because
+    /// the options dialog must OPEN OFFLINE, whereas a ceiling is only ever consumed on a request
+    /// that already needs the network. Persisting it would add a settings key, a reset path and an
+    /// import/export question for no behaviour anyone can reach.
+    ///
+    /// <para><b>Per-provider slices, not one flat map</b> (Grok plan round 1, Blocker). Ceilings come
+    /// from TWO text catalogs — Groq's and OpenRouter's — so a single whole-replaced map means a Groq
+    /// fetch erases OpenRouter's 44 published ceilings, and the next dictation on
+    /// <c>google/gemma-2-27b-it</c> (published 2048) sends the unclamped default and earns HTTP 400.
+    /// Each fetch replaces only its own provider's slice.</para>
+    ///
+    /// <para>Guarded by <see cref="_imageCapabilityLock"/> rather than a lock of its own: the
+    /// documented order is image → model, and a third lock would add an ordering edge that every
+    /// future invalidation path would have to police. Contention is a short dictionary write against
+    /// a dictation-path read.</para>
+    /// </summary>
+    private readonly Dictionary<AIProvider, Dictionary<string, int>> _tokenCeilings = new();
+
+    /// <summary>
+    /// The two providers that publish a per-model output ceiling (probed 2026-09-15: Groq 13/13 rows,
+    /// OpenRouter 439/445). Everyone else publishes nothing on their catalog, so there is no slice to
+    /// wait for and no reason to hold their calls back — see
+    /// <see cref="EffectiveMaxTokens"/> for why that distinction decides the fallback.
+    /// </summary>
+    private static bool PublishesTokenCeilings(AIProvider provider)
+        => provider is AIProvider.Groq or AIProvider.OpenRouter;
+
+    /// <summary>
+    /// Commit the ceilings a TEXT fetch carried, replacing only that provider's slice. A null or
+    /// empty map is a PRESERVE, never an erase — see <see cref="Providers.ProviderModelList"/>'s
+    /// remarks for why empty cannot be read as positive evidence here.
+    /// </summary>
+    internal void CaptureTokenCeilings(
+        AIProvider provider, Providers.ProviderModelList fetched, Func<bool>? admit = null)
+    {
+        if (fetched.TokenCeilings is not { Count: > 0 } snapshot)
+            return;
+
+        lock (_imageCapabilityLock)
+        {
+            // Same epoch fence, evaluated INSIDE the lock for the same reason (IMG-10b): a
+            // check-then-publish pair is a TOCTOU race whose window is a thread suspension, so an
+            // old fetch could otherwise overwrite a slice a fresher one just published.
+            if (admit != null && !admit())
+                return;
+
+            _tokenCeilings[provider] =
+                new Dictionary<string, int>(snapshot, StringComparer.OrdinalIgnoreCase);
+        }
+
+        Logger.Information(
+            "Token ceilings cached for {Provider}: {Count} models", provider, snapshot.Count);
+    }
+
+    /// <summary>
+    /// True when this provider's slice holds at least one positive ceiling. <b>An installed-empty
+    /// slice must never read as present</b> (Grok plan final check, advisory 3): a
+    /// <c>Dictionary&lt;string,int&gt;</c> cannot express "row seen, ceiling null", so treating empty
+    /// as evidence would send the unclamped default to a model with a real low ceiling — the very
+    /// regression the fallback exists to prevent, reached without an empty cache.
+    /// </summary>
+    private bool HasTokenCeilingSnapshot(AIProvider provider)
+    {
+        lock (_imageCapabilityLock)
+            return _tokenCeilings.TryGetValue(provider, out var slice) && slice.Count > 0;
+    }
+
+    /// <summary>What <paramref name="model"/> publishes as its output ceiling, or null.</summary>
+    private int? PublishedMaxOutputTokensFor(AIProvider provider, string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model))
+            return null;
+
+        lock (_imageCapabilityLock)
+        {
+            if (!_tokenCeilings.TryGetValue(provider, out var slice))
+                return null;
+            if (slice.TryGetValue(model!, out var ceiling))
+                return ceiling;
+
+            // Strip the OpenRouter routing variant (`:nitro`, `:floor`, `:free`, `:thinking`),
+            // exactly as ImageCapabilitiesFor does eighty lines above and for the same reason:
+            // catalog keys are unsuffixed, OpenRouter keeps suffixed aliases in discovery, and the
+            // model box is editable. Without this a slice holding `google/gemma-2-27b-it` → 2048
+            // misses `google/gemma-2-27b-it:nitro`, and because the slice is PRESENT the miss takes
+            // arm 3 and sends 16000 — more than the published ceiling for the very same model.
+            // Arm 3's "missing id is evidence of absence" is right for an unknown free-text id and
+            // wrong for a routing suffix on an id the slice does hold.
+            //
+            // The VENDOR prefix is deliberately NOT stripped, again matching ImageCapabilitiesFor:
+            // catalog keys are vendor-qualified, so a bare id would match the wrong vendor's row.
+            var colon = model!.IndexOf(':');
+            if (colon > 0 && slice.TryGetValue(model[..colon], out var stripped))
+                return stripped;
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The output-token cap ONE request should carry. Three arms, and the middle one is the whole
+    /// reason this feature is not a single raised constant:
+    ///
+    /// <list type="number">
+    /// <item><b>Published ceiling known</b> — clamp DOWN to it. Never up: the global value is also
+    /// the app's own bound on a runaway response.</item>
+    /// <item><b>Publisher provider with no slice yet</b> — send <see cref="LegacyMaxTokens"/> (4096),
+    /// which is exactly what every build before this one sent. Sending the raised default here is
+    /// what would break Groq <c>allam-2-7b</c> (published ceiling 4096; probed 2026-09-15 as
+    /// accepting 4096 and returning HTTP 400 at 16000) on an install that had never opened the
+    /// Enhancement page. 4096 is "today's send", NOT a floor under every published ceiling —
+    /// <c>google/gemma-2-27b-it</c> publishes 2048 — so the protection for those models comes from
+    /// hydrating the slice BEFORE the config is built, not from this arm.</item>
+    /// <item><b>Everyone else</b> — the full default. OpenAI, Anthropic, Gemini, Mistral and Cerebras
+    /// publish no ceiling at all, so there is nothing to wait for and they get the raise on day one,
+    /// Cerebras <c>qwen-3.8-27b</c> — the starvation case this work exists for — included.</item>
+    /// </list>
+    ///
+    /// <para>A model MISSING from a present slice takes arm 3, not arm 2: the provider answered and
+    /// published nothing for that id (a free-text id, or one of OpenRouter's 6/445 rows with no
+    /// field), which is evidence of absence rather than absence of evidence.</para>
+    /// </summary>
+    private int EffectiveMaxTokens(AIProvider provider, string model)
+    {
+        if (PublishedMaxOutputTokensFor(provider, model) is { } published && published > 0)
+            return Math.Min(AIProviderConfig.DefaultMaxTokens, published);
+
+        if (PublishesTokenCeilings(provider) && !HasTokenCeilingSnapshot(provider))
+            return AIProviderConfig.LegacyMaxTokens;
+
+        return AIProviderConfig.DefaultMaxTokens;
+    }
+
+    private readonly Dictionary<AIProvider, Task> _tokenCeilingHydration = new();
+
+    /// <summary>
+    /// Fill this provider's ceiling slice if it is empty, so the very next
+    /// <see cref="BuildConfig(string, AIProvider?, string?, string?)"/> can clamp against real
+    /// evidence rather than the conservative fallback.
+    ///
+    /// <para><b>Called BEFORE <c>BuildConfig</c>, never inside it</b> (Grok plan final check,
+    /// advisory 2). Two reasons, and the second is the subtle one. <c>BuildConfig</c> is synchronous
+    /// and is itself called by the fetch path, so an <c>await</c> there would recurse. And the cap is
+    /// baked into the config INSIDE <c>BuildConfig</c> — unlike image generation, whose clamp
+    /// (<c>NormalizeForModel</c>) is a LATER call and which therefore can and does hydrate after
+    /// building its config. Copying that order here would build the cap off an empty cache, send it,
+    /// and leave the freshly-filled slice unused for the very call that fetched it.</para>
+    ///
+    /// <para>Fail-soft and single-flight: a failed hydration leaves the slice ABSENT, so
+    /// <see cref="EffectiveMaxTokens"/>' arm 2 still sends today's value rather than a cap the model
+    /// may reject. Deliberately NOT latched "attempted once per session" the way
+    /// <see cref="EnsureImageCapabilitiesAsync"/> is — that latch is right for a cache whose miss
+    /// costs only coarser option gating, and wrong here, where it would strand a provider on the
+    /// conservative fallback for the rest of the session after one transient outage.</para>
+    /// </summary>
+    private Task EnsureTokenCeilingsAsync(AIProvider provider, CancellationToken ct = default)
+    {
+        if (!PublishesTokenCeilings(provider))
+            return Task.CompletedTask;
+
+        lock (_imageCapabilityLock)
+        {
+            if (HasTokenCeilingSnapshot(provider))
+                return Task.CompletedTask;
+
+            // Join only an attempt that is still RUNNING. A hydration that fails SYNCHRONOUSLY —
+            // TryFetchAvailableModelsAsync throws before its first await on ThrowIfOffline, an
+            // empty key, or a malformed key — runs its finally-Remove BEFORE the store below, so
+            // storing that already-completed Task would leave every later call joining a dead
+            // attempt: the catalog is never re-fetched, arm 2 sends the legacy cap forever, and one
+            // transient outage strands the provider for the whole process. That is precisely the
+            // once-per-session latch this method's remarks refuse, arrived at by accident.
+            if (_tokenCeilingHydration.TryGetValue(provider, out var inFlight) && !inFlight.IsCompleted)
+                return inFlight;
+
+            var task = HydrateTokenCeilingsAsync(provider, ct);
+            if (!task.IsCompleted)
+                _tokenCeilingHydration[provider] = task;
+            return task;
+        }
+    }
+
+    /// <summary>
+    /// How long hydration may hold a dictation up before it gives up and lets the conservative
+    /// fallback answer. The fetch rides the <c>ai</c> client, whose own worst case is ~50 s
+    /// (4 × 10 s connect + the 1/3/6 backoff schedule) against a 5-minute HttpClient timeout — and
+    /// this await sits BEFORE <see cref="CallProviderWithDeadlineAsync"/> creates the 60 s
+    /// enhancement deadline, so without a bound of its own a sick network could hold the first
+    /// dictation of a session in "Enhancing…" for minutes before that budget even starts. Timing
+    /// out here is harmless by construction: the slice stays absent and arm 2 sends exactly what
+    /// every previous build sent.
+    /// </summary>
+    private static readonly TimeSpan TokenCeilingHydrationBudget = TimeSpan.FromSeconds(15);
+
+    private async Task HydrateTokenCeilingsAsync(AIProvider provider, CancellationToken ct)
+    {
+        try
+        {
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bounded.CancelAfter(TokenCeilingHydrationBudget);
+            // The ordinary text fetch: it captures the ceilings through the same path a dropdown
+            // open would, so there is no second code path to keep in step.
+            await TryFetchAvailableModelsAsync(
+                Providers.ModelCatalogQuery.Text, showAll: false, provider, bounded.Token)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ct.IsCancellationRequested)
+        {
+            // The USER cancelled (a skip tap). Information, not Warning, and not called a failure —
+            // the ENH-3 policy that a deliberate user action never takes the failure branch.
+            Logger.Information("Token ceiling hydration cancelled for {Provider}: {ErrorType}",
+                provider, ex.GetType().Name);
+        }
+        catch (Exception ex)
+        {
+            // Never fail a dictation over a diagnostic fetch. The slice stays absent, which is what
+            // keeps the conservative fallback in force.
+            Logger.Warning("Token ceiling hydration failed for {Provider}: {ErrorType}: {ErrorMessage}",
+                provider, ex.GetType().Name, ex.Message);
+        }
+        finally
+        {
+            // Unconditional Remove, deliberately — and the invariant it rests on is worth stating
+            // because the symmetric "improvement" breaks it. Unlike `_modelListRefreshes`, nothing
+            // else ever removes a hydration entry: `InvalidateModelListCacheForProviderName` leaves
+            // this dictionary alone, so a registration is only ever removed by its OWN task and no
+            // ReferenceEquals guard is needed. If a future edit makes the invalidator drop in-flight
+            // hydrations to mirror `_modelListRefreshes`, this Remove MUST gain that guard first —
+            // otherwise an old task's finally unregisters a newer task and admits a duplicate fetch.
+            // Joining a stale hydration after a key change is already benign: its admit fails, the
+            // slice stays absent, and one call sends the legacy cap.
+            lock (_imageCapabilityLock)
+                _tokenCeilingHydration.Remove(provider);
+        }
+    }
+
     private Task? _imageCapabilityHydration;
 
     /// <summary>
@@ -816,6 +1059,12 @@ public sealed class AIEnhancementService
             providerOverride ?? SelectedProvider, model,
             global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title));
 
+        // BEFORE BuildConfig, on the EFFECTIVE provider: the cap is baked into the config inside
+        // BuildConfig, so hydrating afterwards (image generation's order, where the clamp is a later
+        // call) would send this call's cap off an empty cache and leave the slice it just fetched
+        // unused. No-op for the five providers that publish no ceiling, and for a slice already held.
+        await EnsureTokenCeilingsAsync(providerOverride ?? SelectedProvider, ct).ConfigureAwait(false);
+
         try
         {
             var config = BuildConfig(model, providerOverride, prompt.ReasoningOverride);
@@ -940,7 +1189,13 @@ public sealed class AIEnhancementService
             ModelName = model,
             ApiKey = apiKey,
             BaseUrl = baseUrl,
-            Reasoning = reasoning
+            Reasoning = reasoning,
+            // Clamped DOWN against whatever this provider published for this model; see
+            // EffectiveMaxTokens for the three arms. This is the only production construction site,
+            // so one clamp covers every path that sends a token cap. The image clients and the
+            // catalog fetches receive the field and never read it — carrying it there is unused,
+            // not wrong.
+            MaxTokens = EffectiveMaxTokens(provider, model)
         };
     }
 
@@ -1685,6 +1940,9 @@ public sealed class AIEnhancementService
             // old background fetch completing after a key change now provably cannot overwrite the
             // snapshot a fresh fetch captured under the new key.
             CaptureImageCapabilities(fetched, admit: () => ModelListEpochIsCurrent(provider, epochAtStart));
+            // Same commit point, same epoch fence, for the same reasons. A TEXT fetch carries the
+            // published output ceilings; every other query carries none and preserves the slice.
+            CaptureTokenCeilings(provider, fetched, admit: () => ModelListEpochIsCurrent(provider, epochAtStart));
             var display = ModelDisplayPolicy.ApplyDisplayPolicy(fetched, query, showAll);
             // IMG-10b: cache the display list for instant dialog binds. Only HERE — after a real
             // provider round-trip — never on the no-key early return above, whose empty list is a
@@ -1771,6 +2029,9 @@ public sealed class AIEnhancementService
         Logger.Information("AI Enhancement (redo): provider={Provider}, model={Model} userTerm={Prompt}",
             provider, modelId,
             global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title));
+
+        // Same before-BuildConfig hydration as EnhanceAsync, and for the same reason.
+        await EnsureTokenCeilingsAsync(provider, ct).ConfigureAwait(false);
 
         try
         {

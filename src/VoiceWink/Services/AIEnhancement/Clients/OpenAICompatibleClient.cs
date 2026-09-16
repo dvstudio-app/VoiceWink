@@ -16,6 +16,22 @@ public sealed class OpenAICompatibleClient
     private readonly HttpClient _http;
     private readonly AIProviderConfig _config;
 
+    /// <summary>
+    /// ENH-27: the refusal reason for a cleanup the provider cut off at the token ceiling. Shared
+    /// by all THREE wire shapes that can report it — chat <c>finish_reason=length</c>, the
+    /// Responses API's <c>status=incomplete</c> / <c>max_output_tokens</c>, and Anthropic's
+    /// <c>stop_reason=max_tokens</c> — so the pill cannot say three different things about one
+    /// cause. <b>20 code units, and the budget is why.</b>
+    /// <c>MainViewModel.ComposeFallbackFailureStatus</c> renders <c>"{reason} — {outcome}"</c>
+    /// inside 55 code units and truncates the REASON, never the suffix; the worst-case suffix
+    /// (<c>" — transcription on clipboard"</c>) is 29 units, so the reason budget is <b>26</b>.
+    /// A longer sentence would lose "token limit" to the ellipsis — the only part that tells the
+    /// user what to change. Matches the sibling <c>"No answer: token limit"</c> (22 units) for the
+    /// same reason. State the BUDGET, not the suffix length: reading "appends 26" and computing
+    /// 55 − 26 makes a 29-unit reword look safe when it silently truncates.
+    /// </summary>
+    internal const string TruncatedReason = "Cut off: token limit";
+
     public OpenAICompatibleClient(HttpClient http, AIProviderConfig config)
     {
         _http = http;
@@ -185,6 +201,55 @@ public sealed class OpenAICompatibleClient
         // Error and reach Sentry, while the provider-outcome branch BELOW stays outside so its
         // deliberate throw keeps Warning semantics. A miss returns null instead of throwing:
         // the shape questions are re-asked below, where the outcome gets classified.
+        // ENH-27, closing the second half of audit finding F12. Until 2026-09-15 a truncated
+        // answer only LOGGED and then pasted: the user's document silently took a sentence that
+        // stops mid-word, with nothing on screen to say so. It is now REFUSED, which hands the
+        // caller the same outcome a FAILED cleanup already produces — the complete raw transcript
+        // pastes, History marks [Enhancement failed], redo arms, red pill. A deliberate preference
+        // for complete-but-rough over polished-but-cut: the rough text is recoverable by re-running
+        // the cleanup, the missing tail is not, and an unnoticed truncation is the worse failure
+        // precisely because it looks finished. This REMOVES a special case — the no-content shape
+        // below (ENH-22) has always thrown for this same cause.
+        //
+        // OUTSIDE the guard, and that placement is the whole correctness of it: the guard logs
+        // Error + body for any InvalidOperationException raised INSIDE it, because in there the
+        // type means contract drift and must reach Sentry. Thrown inside, every truncated cleanup
+        // would file a Sentry event for an ordinary provider outcome — caught by this change's own
+        // test, which asserts no drift Error accompanies the refusal.
+        //
+        // Requires content to be PRESENT as a STRING or JSON null: a length finish with NO content
+        // property is ENH-22's starvation shape, which keeps its own "No answer" message further
+        // down, and any OTHER kind (the content-as-parts array some OpenAI-compatible proxies
+        // emit) is a shape defect that must still reach the guard's GetString() and be reported as
+        // drift — never told to the user as a token-limit cut-off, which would name a cause they
+        // cannot act on.
+        //
+        // EVERY element is ValueKind-checked before a property is read off it, and that is the
+        // correctness of running ahead of the guard rather than a belt-and-braces habit:
+        // JsonElement.TryGetProperty THROWS InvalidOperationException on a non-object element, and
+        // out here that throw carries no Error line, so drift that used to reach Sentry from
+        // inside the guard would report nothing. This branch now makes the FIRST property access
+        // on the response, so three elements the guard used to touch first are ours to check —
+        // the root, choices[0], and message. Pinned by
+        // EnhanceAsync_WrongKindBeforeTheTruncationBranch_StillReportsDrift, which fails on all
+        // five shapes without these checks.
+        if (doc.RootElement.ValueKind == JsonValueKind.Object
+            && doc.RootElement.TryGetProperty("choices", out var truncationChoices)
+            && truncationChoices.ValueKind == JsonValueKind.Array
+            && truncationChoices.GetArrayLength() > 0
+            && truncationChoices[0].ValueKind == JsonValueKind.Object
+            && truncationChoices[0].TryGetProperty("message", out var truncationMessage)
+            && truncationMessage.ValueKind == JsonValueKind.Object
+            && truncationMessage.TryGetProperty("content", out var truncationContent)
+            && truncationContent.ValueKind is JsonValueKind.String or JsonValueKind.Null
+            && truncationChoices[0].TryGetProperty("finish_reason", out var truncationFinish)
+            && truncationFinish.ValueKind == JsonValueKind.String
+            && truncationFinish.GetString() == "length")
+        {
+            Logger.Warning("Enhancement output truncated at max_tokens (finish_reason=length, model={Model})", _config.ModelName);
+            throw new InvalidOperationException(TruncatedReason);
+        }
+
         var extracted = ProviderResponseGuard.Run<string?>(Logger, "Chat", responseJson, () =>
         {
             if (doc.RootElement.TryGetProperty("choices", out var choices) &&
@@ -192,17 +257,6 @@ public sealed class OpenAICompatibleClient
                 choices[0].TryGetProperty("message", out var message) &&
                 message.TryGetProperty("content", out var content))
             {
-                // Observability only (PRM-2, audit F12): a length-truncated answer is
-                // NOT rejected — the think-tag filter's empty-result fallback covers
-                // tagged truncation, but a non-empty partial answer still pastes.
-                // Warning (never Error): provider outcome, not a defect.
-                if (choices[0].TryGetProperty("finish_reason", out var finishReason)
-                    && finishReason.ValueKind == JsonValueKind.String
-                    && finishReason.GetString() == "length")
-                {
-                    Logger.Warning("Enhancement output truncated at max_tokens (finish_reason=length, model={Model})", _config.ModelName);
-                }
-
                 return content.GetString() ?? "";
             }
 
@@ -224,10 +278,12 @@ public sealed class OpenAICompatibleClient
             && outcomeChoices.ValueKind == JsonValueKind.Array
             && outcomeChoices.GetArrayLength() > 0
             && outcomeChoices[0].TryGetProperty("message", out var outcomeMessage)
-            // Currently always true here — a PRESENT content either returned above (string, or
-            // JSON null via ?? "") or threw inside the guard (any other kind, from GetString()).
+            // Currently always true here — a PRESENT content has already been disposed of three
+            // ways above: a string or JSON null with finish_reason=length was REFUSED by ENH-27's
+            // truncation branch, any other kind threw inside the guard (from GetString()), and
+            // anything left returned from the guard's happy path (string, or JSON null via ?? "").
             // Kept so this branch states its own precondition instead of inheriting correctness
-            // from what the guard's happy path happens to do with GetString().
+            // from what three separate pieces of code upstream happen to do.
             && !outcomeMessage.TryGetProperty("content", out _)
             && outcomeChoices[0].TryGetProperty("finish_reason", out var outcomeFinish)
             && outcomeFinish.ToString() == "length")
@@ -295,9 +351,12 @@ public sealed class OpenAICompatibleClient
         var responseJson = await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(responseJson);
 
-        // Observability only (PRM-2, audit F12): mirror the chat path's truncation
-        // warning — an incomplete response still returns whatever text arrived.
-        // Non-throwing reads, outside the guard (provider outcome, not drift).
+        // ENH-27: the Responses-API spelling of the same cause, refused the same way — see
+        // TruncatedReason and the chat branch for why a cut-off cleanup no longer pastes. Thrown
+        // from OUTSIDE ProviderResponseGuard deliberately: the guard logs Error + body for any
+        // InvalidOperationException raised INSIDE it, because in there the type means contract
+        // drift and must reach Sentry. Here it means an ordinary provider outcome, so it stays a
+        // Warning and the outer enhancement catch turns it into the raw-transcript fallback.
         if (doc.RootElement.ValueKind == JsonValueKind.Object
             && doc.RootElement.TryGetProperty("status", out var status)
             && status.ValueKind == JsonValueKind.String
@@ -309,6 +368,7 @@ public sealed class OpenAICompatibleClient
             && incompleteReason.GetString() == "max_output_tokens")
         {
             Logger.Warning("Enhancement output truncated at max_output_tokens (Responses API, model={Model})", _config.ModelName);
+            throw new InvalidOperationException(TruncatedReason);
         }
 
         // Same guard rationale as the chat path above.

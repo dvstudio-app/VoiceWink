@@ -21,7 +21,19 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 /// carry dates already PAST while answering normally and appearing in the dropdown, so that field
 /// does not track removal. It is a watch input for the weekly review, never a hiding rule.</para>
 /// </summary>
-internal readonly record struct CatalogModelRow(string Id, string? PublishedRetirement);
+/// <param name="PublishedMaxOutputTokens">
+/// The largest completion this model will produce, as the PROVIDER publishes it — null when the
+/// provider publishes nothing, which is "no evidence" and never "ceiling zero". Two providers
+/// publish it and they put it in different places: Groq at row level (<c>max_completion_tokens</c>,
+/// 13/13 rows on 2026-09-15), OpenRouter nested under <c>top_provider</c> (439/445). OpenAI,
+/// Anthropic, Gemini, Mistral and Cerebras publish no such field on their catalogs at all.
+/// Consumed by <c>AIEnhancementService</c> to clamp <c>AIProviderConfig.MaxTokens</c> down per
+/// model; see that type's remarks for why a flat global value is not safe.
+/// </param>
+internal readonly record struct CatalogModelRow(
+    string Id,
+    string? PublishedRetirement,
+    int? PublishedMaxOutputTokens = null);
 
 /// <summary>
 /// What <see cref="ProviderCatalogParser.ParseAndCurate"/> returns: the display list the app uses,
@@ -161,7 +173,10 @@ internal static class ProviderCatalogParser
                         modelId = modelId["models/".Length..];
 
                     // Before the per-provider branches below, all of which `continue`.
-                    rows.Add(new CatalogModelRow(modelId, ReadPublishedRetirement(model, provider)));
+                    rows.Add(new CatalogModelRow(
+                        modelId,
+                        ReadPublishedRetirement(model, provider),
+                        ReadPublishedMaxOutputTokens(model, provider)));
 
                     if (imageCapabilities != null)
                         imageCapabilities[modelId] = ReadImageCapabilities(model);
@@ -231,6 +246,32 @@ internal static class ProviderCatalogParser
         if (!dataIsArray || imageCapabilities is { Count: 0 })
             imageCapabilities = null;
 
+        // Output-token ceilings ride the same fetch. TEXT queries only: an image catalog's rows are
+        // image ids, and publishing them into the text-side slice would overwrite real ceilings with
+        // entries no dictation can ever name. Null for every other query, provider or shape — which
+        // the caller reads as "preserve the last-good slice", never as "this provider has none".
+        //
+        // The zero-ceiling gate mirrors the imageCapabilities line above, for a sharper reason: a
+        // Dictionary<string,int> cannot hold "row seen, ceiling null", so a parse yielding nothing
+        // (a renamed field, a provider dropping the field) is indistinguishable from a catalog that
+        // publishes none — and installing an empty map would make the caller treat the slice as
+        // PRESENT, sending the unclamped default to a model with a real low ceiling. Preserve
+        // instead; the previous slice is the better answer, and an absent one keeps the caller's
+        // conservative fallback.
+        IReadOnlyDictionary<string, int>? tokenCeilings = null;
+        if (dataIsArray && query == ModelCatalogQuery.Text)
+        {
+            var ceilings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var row in rows)
+            {
+                if (row.PublishedMaxOutputTokens is { } ceiling)
+                    ceilings[row.Id] = ceiling;
+            }
+
+            if (ceilings.Count > 0)
+                tokenCeilings = ceilings;
+        }
+
         // The four curated branches return the SAME ProviderModelList they always did. What moved
         // out is only the logging: the caller reads CuratedInputCount and emits the line, because a
         // parser that logs cannot be linked into the harness.
@@ -238,7 +279,7 @@ internal static class ProviderCatalogParser
         {
             var curated = MistralModelCatalog.Curate(mistralEntries, ModelDisplayPolicy.IsChatModel);
             return new ParsedProviderCatalog(
-                new ProviderModelList(curated, rawCount, Curated: true), // already sorted
+                new ProviderModelList(curated, rawCount, Curated: true, TokenCeilings: tokenCeilings), // already sorted
                 rows, mistralEntries.Count);
         }
 
@@ -247,7 +288,7 @@ internal static class ProviderCatalogParser
             var curated = OpenRouterModelCatalog.Curate(
                 openRouterEntries, query, ModelDisplayPolicy.IsChatModel, today);
             return new ParsedProviderCatalog(
-                new ProviderModelList(curated, rawCount, Curated: true, ImageCapabilities: imageCapabilities), // already sorted
+                new ProviderModelList(curated, rawCount, Curated: true, ImageCapabilities: imageCapabilities, TokenCeilings: tokenCeilings), // already sorted
                 rows, openRouterEntries.Count);
         }
 
@@ -255,7 +296,7 @@ internal static class ProviderCatalogParser
         {
             var curated = GeminiModelCatalog.Curate(geminiIds, ModelDisplayPolicy.IsChatModel);
             return new ParsedProviderCatalog(
-                new ProviderModelList(curated, rawCount, Curated: true), // already sorted
+                new ProviderModelList(curated, rawCount, Curated: true, TokenCeilings: tokenCeilings), // already sorted
                 rows, geminiIds.Count);
         }
 
@@ -263,7 +304,7 @@ internal static class ProviderCatalogParser
         {
             var curated = CerebrasModelCatalog.Curate(cerebrasIds, ModelDisplayPolicy.IsChatModel);
             return new ParsedProviderCatalog(
-                new ProviderModelList(curated, rawCount, Curated: true), // already sorted
+                new ProviderModelList(curated, rawCount, Curated: true, TokenCeilings: tokenCeilings), // already sorted
                 rows, cerebrasIds.Count);
         }
 
@@ -271,7 +312,7 @@ internal static class ProviderCatalogParser
         // The unfiltered (ShowAllModels) image path lands here — capabilities ride it too, since
         // widening the list must not blind the option gating.
         return new ParsedProviderCatalog(
-            new ProviderModelList(models, rawCount, ImageCapabilities: imageCapabilities),
+            new ProviderModelList(models, rawCount, ImageCapabilities: imageCapabilities, TokenCeilings: tokenCeilings),
             rows, 0);
     }
 
@@ -474,6 +515,50 @@ internal static class ProviderCatalogParser
     /// number. Enforced since IMG-6 as the dialog's raise-only ADD bound (see
     /// <see cref="ImageModelCapabilities"/>).
     /// </summary>
+    /// <summary>
+    /// The provider's own published ceiling on one model's completion length, or null for "no
+    /// evidence". Read from the ONE place each provider publishes it and nowhere else:
+    /// <list type="bullet">
+    /// <item>Groq — <c>max_completion_tokens</c> at row level.</item>
+    /// <item>OpenRouter — <c>top_provider.max_completion_tokens</c>.</item>
+    /// </list>
+    ///
+    /// <para><b>Tri-state, shaped on <see cref="ReadRangeMax"/> and deliberately NOT on
+    /// <c>ReadMappedEnumValues</c>.</b> That helper's absent arm means "the provider authoritatively
+    /// supports nothing here"; an absent ceiling means the opposite — we know nothing, so the caller
+    /// must fall back rather than clamp. Absent, wrong kind, or ≤ 0 all read as null.
+    /// <c>TryGetInt32</c> rather than <c>GetInt32</c>, which throws on a non-number and would abort
+    /// the whole catalog parse over one malformed row.</para>
+    ///
+    /// <para><b>Deliberately not read from <c>supported_parameters</c></b> — that object describes
+    /// which knobs a model accepts, not how long its answer may be, and reading a ceiling out of it
+    /// would be inventing evidence.</para>
+    /// </summary>
+    private static int? ReadPublishedMaxOutputTokens(
+        global::System.Text.Json.JsonElement model, AIProvider provider)
+    {
+        var source = provider switch
+        {
+            AIProvider.Groq => model,
+            AIProvider.OpenRouter =>
+                model.TryGetProperty("top_provider", out var top) &&
+                top.ValueKind == global::System.Text.Json.JsonValueKind.Object
+                    ? top
+                    : default,
+            _ => default,
+        };
+
+        if (source.ValueKind != global::System.Text.Json.JsonValueKind.Object)
+            return null;
+
+        return source.TryGetProperty("max_completion_tokens", out var max) &&
+               max.ValueKind == global::System.Text.Json.JsonValueKind.Number &&
+               max.TryGetInt32(out var value) &&
+               value > 0
+            ? value
+            : null;
+    }
+
     private static int? ReadRangeMax(global::System.Text.Json.JsonElement model, string name)
         => model.TryGetProperty("supported_parameters", out var parameters) &&
            parameters.ValueKind == global::System.Text.Json.JsonValueKind.Object &&

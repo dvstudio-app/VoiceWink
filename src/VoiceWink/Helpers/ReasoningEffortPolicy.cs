@@ -79,8 +79,32 @@ public sealed record ReasoningDirective(ReasoningWireKind Kind, string? Effort)
 /// DEFAULT (found by the 2026-09-12 fixloop). Dictation cleanup is instruction following; a model
 /// left at its provider default thinks
 /// at whatever effort the provider picked for it (Cerebras <c>qwen-3.8-27b</c>: <c>high</c>), and
-/// with the app's 4096-token cap counting reasoning tokens that produced a no-answer failure roughly
-/// once per 60 dictations. The default table applies in EVERY build; only the per-prompt override
+/// against the app's then-4096-token cap — which counts reasoning tokens — that produced a
+/// no-answer failure roughly once per 60 dictations. <b>That cap is 16000 since 2026-09-15</b>
+/// (<see cref="Services.AIEnhancement.AIProviderConfig.DefaultMaxTokens"/>, clamped down per model
+/// where a provider publishes a ceiling) — and do not cite the 4096 figure as current.
+///
+/// <para><b>The raise does NOT retire this row; it was measured, and the row is CONFIRMED
+/// (2026-09-15).</b> 90 of the owner's real transcripts were replayed at none / low / medium / high
+/// through this exact prompt stack against the raised cap. <c>high</c> is UNBOUNDED: one 15-word
+/// dictation came back empty with <c>finish=length</c> and 16,000 reasoning tokens — the whole new
+/// budget spent thinking, the very starvation this row exists to prevent, reproduced ON the larger
+/// cap. Worst-case totals were none 302, low 2,307, medium 3,599, high 32,000, so <c>medium</c>
+/// would also have come within 12% of the old cap.
+///
+/// <para>The 90 split three ways, and the whole chain is written out because two reviewers
+/// independently caught an earlier version whose counts did not add up: <b>58</b> were
+/// character-identical across all four arms and carry no signal, <b>1</b> is the empty-<c>high</c>
+/// item above, and <b>31</b> diverged. Thirty of those 31 were sampled (seed-fixed) onto a blind
+/// sheet showing only the points of disagreement; of the 30, the owner left 2 unanswered and marked
+/// 5 "no preference", so <b>28 judgements, 23 of them decisive</b>. Scores: low 8.25 / none 6.92 /
+/// high 5.58 / medium 2.25 — a lead well inside what 28 judgements resolve, i.e. no measured
+/// quality case for paying any reasoning at all. Effort also barely moves SHORT dictations:
+/// <c>high</c> differs from <c>none</c> on 1 of 40 inputs ≤ 8 words. <b>Decision: keep
+/// <c>none</c>.</b> If this is ever reopened, the candidate is <c>low</c> (similar divergence,
+/// bounded at ~2.3k tokens), never <c>high</c> — and it needs a fresh corpus of LONG dictations,
+/// where the arms diverge far more often than the 31-in-90 this corpus managed.</para>
+/// The default table applies in EVERY build; only the per-prompt override
 /// (ENH-8 phase A) stays Debug-only, at the <c>AIEnhancementService.BuildConfig</c> choke point.
 /// Every default row cites a provider document or VoiceInk's shipping set — a wrong row 400s the
 /// default path of a release build. A family prefix (gemini-3, gemini-2-5-pro) only selects a row

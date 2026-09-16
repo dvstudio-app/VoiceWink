@@ -15,13 +15,18 @@ public sealed class MetricsPage : Page
     private static ILogger Logger => Log.ForContext<MetricsPage>();
 
     // ── Time-saved model parameters ─────────────────────────────────
-    // T  = average typing speed (WPM) for office workers
+    // T  = average typing speed (WPM)
     // D  = careful dictation speed (WPM)
     // eₜ = typing edit overhead (minutes per 100 words)
     // eᵥ = voice edit overhead (minutes per 100 words)
     //
     // Formula: Saved = (W/T + W/100·eₜ) − (W/D + W/100·eᵥ)
-    private const double TypingWpm = 60.0;
+    //
+    // T was 60 — a confident touch typist — while voicewink.app's speed FAQ names 40 WPM as the
+    // basis for its "4× faster than typing" claim, so the app and the site described different
+    // people. Aligned on 40 by owner decision 2026-09-15. The info line below STATES this figure
+    // and derives it from the constant, so the two can never drift apart again.
+    private const double TypingWpm = 40.0;
     private const double DictationWpm = 130.0;
     private const double TypingEditPer100 = 0.1;   // typing needs minimal corrections
     private const double VoiceEditPer100 = 0.4;     // voice needs more review/fixes
@@ -121,8 +126,9 @@ public sealed class MetricsPage : Page
 
         var infoText = new TextBlock
         {
-            Text = "Time saved compares typing vs dictation end-to-end. Totals are lifetime stats " +
-                   "and do not shrink when transcription history is cleared.",
+            Text = $"Time saved compares typing at {TypingWpm:F0} words a minute with dictation, " +
+                   "end-to-end. Totals are lifetime stats and do not shrink when transcription " +
+                   "history is cleared.",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.DimText),
             TextWrapping = TextWrapping.Wrap

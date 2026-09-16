@@ -75,15 +75,19 @@ public sealed class AnthropicClient
             throw new InvalidOperationException("Anthropic declined the request (refusal)");
         }
 
-        // Observability only (PRM-2, audit F12): a max_tokens-truncated answer is not
-        // rejected — see the matching finish_reason=length log in
-        // OpenAICompatibleClient. Warning (never Error): provider outcome, not a defect.
+        // ENH-27: Anthropic's spelling of the same cause, refused the same way — the reason
+        // string and the rationale live on OpenAICompatibleClient.TruncatedReason, shared so one
+        // cause cannot reach the pill as three different sentences. Warning, never Error: a
+        // provider outcome rather than a defect, so it must not become a Sentry event. Raised
+        // here, OUTSIDE the guard below, because that guard treats an InvalidOperationException
+        // as contract drift and logs Error + body for it.
         if (doc.RootElement.ValueKind == JsonValueKind.Object
             && doc.RootElement.TryGetProperty("stop_reason", out var stopReasonTruncated)
             && stopReasonTruncated.ValueKind == JsonValueKind.String
             && stopReasonTruncated.GetString() == "max_tokens")
         {
             Logger.Warning("Enhancement output truncated at max_tokens (stop_reason=max_tokens, model={Model})", _config.ModelName);
+            throw new InvalidOperationException(OpenAICompatibleClient.TruncatedReason);
         }
 
         // The guard logs Error + body for ANY InvalidOperationException raised during

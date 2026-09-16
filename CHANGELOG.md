@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.88.383] - 2026-09-16
+
+- AI cleanups can run longer before they reach a model's output limit.
+- An AI cleanup cut off at the model's token limit now gives you the complete transcript and says so, instead of text that stops mid-sentence.
+- Metrics: time saved is now based on 40 words per minute of typing, and the page says so.
+
 ## [1.87.382] - 2026-09-15
 
 - First public release: the signed installer at voicewink.app, with the free 7-day trial on first run.

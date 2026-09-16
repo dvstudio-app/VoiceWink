@@ -49,11 +49,28 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 /// must open offline — the map is persisted by the caller and reused until the next successful
 /// fetch.
 /// </param>
+/// <param name="TokenCeilings">
+/// Per-model output-token ceilings the provider PUBLISHED, keyed by model id. Populated only by
+/// TEXT fetches from the two providers that publish the field — Groq (row-level
+/// <c>max_completion_tokens</c>) and OpenRouter (<c>top_provider.max_completion_tokens</c>) — so it
+/// costs no extra HTTP, exactly like <paramref name="ImageCapabilities"/>.
+///
+/// <para><b>Null means "this fetch produced no snapshot" and PRESERVES the last-good slice</b>, the
+/// same rule as <paramref name="ImageCapabilities"/>: a non-text query, a failure, a body whose
+/// <c>data</c> was not an array, or a provider that publishes nothing. <b>An EMPTY map is treated
+/// as the same preserve case by the caller rather than as positive evidence</b> — a
+/// <c>Dictionary&lt;string,int&gt;</c> cannot represent "row seen, ceiling null", so a parse that
+/// yields zero ceilings (a renamed field) is indistinguishable from a catalog with none, and
+/// installing it would let a model with a real low ceiling take the unclamped default. That
+/// asymmetry with <paramref name="ImageCapabilities"/> — where a missing model IS positive evidence
+/// — is deliberate: there the fallback is a static rule, here it is a larger number that 400s.</para>
+/// </param>
 public readonly record struct ProviderModelList(
     List<string> Models,
     int RawCount,
     bool Curated = false,
-    IReadOnlyDictionary<string, VoiceWink.Helpers.ImageModelCapabilities>? ImageCapabilities = null)
+    IReadOnlyDictionary<string, VoiceWink.Helpers.ImageModelCapabilities>? ImageCapabilities = null,
+    IReadOnlyDictionary<string, int>? TokenCeilings = null)
 {
     internal static ProviderModelList Empty => new(new List<string>(), 0);
 

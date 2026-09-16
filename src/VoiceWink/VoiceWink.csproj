@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.87.382</Version>
-    <AssemblyVersion>1.87.382.0</AssemblyVersion>
-    <FileVersion>1.87.382.0</FileVersion>
+    <Version>1.88.383</Version>
+    <AssemblyVersion>1.88.383.0</AssemblyVersion>
+    <FileVersion>1.88.383.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
@@ -40,6 +40,31 @@
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsSdkPackageVersion>10.0.22621.45</WindowsSdkPackageVersion>
     <PublishAot>false</PublishAot>
+
+    <!-- Build-path neutrality (2026-09-15): the shipped DLL must not name the machine that built
+         it. v1.87.382 embedded the hosted CI checkout path (the private development repository's
+         directory, down to src\VoiceWink\) three times in the public installer. Three sites, three
+         controls; BuildPathNeutralityTests pins each against the assembly the tests reference:
+         1. The compiler records the PDB path (CodeView debug-directory entry) and every source
+            document path. PathMap rewrites the project directory prefix to the conventional
+            /_/ root — the same shape ContinuousIntegrationBuild produces, chosen over that switch
+            because it needs no git metadata (the public snapshot builds from an archive) and so
+            cannot warn on a clean clone. Project-scoped on purpose: the test project keeps real
+            paths, its CallerFilePath-anchored rows depend on them.
+         2. Sentry's source generator (Sentry.Compiler.Extensions) copies EVERY compiler-visible
+            build property into a module initializer as string literals — ProjectDir, and
+            CsWin32InputMetadataPaths under the building user's NuGet cache (C:\Users\<name>\...).
+            The SDK only reads them for AOT/trimming detection, neither of which this app uses;
+            SentryDisableSourceGenerator is Sentry's own opt-out.
+         3. Sentry's WriteSentryAttributes target adds [AssemblyMetadata("Sentry.ProjectDirectory",
+            $(ProjectDir))] for in-app frame detection by FILE PATH — inert here (no PDB ships, so
+            frames carry no paths). StripSentryProjectDirectoryAttribute below removes it. -->
+    <PathMap>$(MSBuildProjectDirectory)\=/_/</PathMap>
+    <SentryDisableSourceGenerator>true</SentryDisableSourceGenerator>
+
+    <!-- Which README the installer bundles — see the Content item below. -->
+    <BundledReadmeSource>$(MSBuildThisFileDirectory)..\..\scripts\public-snapshot\README.public.md</BundledReadmeSource>
+    <BundledReadmeSource Condition="!Exists('$(BundledReadmeSource)')">$(MSBuildThisFileDirectory)..\..\README.md</BundledReadmeSource>
 
     <!-- ════════════════════════════════════════════════════════════════════
          Velopack production entry-point invariant — these two properties
@@ -154,6 +179,18 @@
        -p:EmbedSentryDsn=true. Mirrors GenerateUpdateFeedConfig above. -->
   <Target Name="GenerateSentryConfig" BeforeTargets="BeforeBuild;BeforeCompile;MarkupCompilePass1;CoreCompile">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\scripts\generate-sentry-config.ps1&quot; -Embed &quot;$(EmbedSentryDsn)&quot; -DsnFile &quot;$(MSBuildThisFileDirectory)..\..\installer\.sentry-dsn&quot; -OutFile &quot;$(IntermediateOutputPath)SentryConfig.g.cs&quot;" />
+  </Target>
+
+  <!-- Build-path neutrality site 3 (see the PathMap comment above). Sentry.targets'
+       WriteSentryAttributes writes Sentry.Attributes.cs — one [AssemblyMetadata(
+       "Sentry.ProjectDirectory", $(ProjectDir))] — and appends it to @(Compile) from the task's
+       Output, so it cannot be pre-empted by property; it is removed from the compile set here,
+       after that target has run and before CoreCompile reads the list. The file itself still
+       lands in obj (harmless; FileWrites keeps it clean-able). -->
+  <Target Name="StripSentryProjectDirectoryAttribute" AfterTargets="WriteSentryAttributes" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <Compile Remove="$(IntermediateOutputPath)$(SentryAttributesFile)" />
+    </ItemGroup>
   </Target>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -276,7 +313,14 @@
       <Link>LICENSE</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-    <Content Include="..\..\README.md">
+    <!-- The bundled README is the PUBLIC one (2026-09-15). The root README.md of the development
+         repository is the contributor guide (build, test, CI, agent conventions) and shipped in every
+         installer up to v1.87.382; the public snapshot publishes scripts/public-snapshot/
+         README.public.md as its README.md instead. Bundle that file when it exists — every
+         development and CI build — and fall back to the root README.md where it does not, which is
+         exactly the public snapshot, whose root README.md IS that file (asserted byte-equal by the
+         publisher). BundledReadmeTests pins the identity of the copy that reaches the output. -->
+    <Content Include="$(BundledReadmeSource)">
       <Link>README.md</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
