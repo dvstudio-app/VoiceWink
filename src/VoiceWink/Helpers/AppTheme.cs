@@ -679,6 +679,12 @@ public static class AppTheme
             });
         }
 
+        // The ItemsSource SWAP below must not be the LAST one to land while the combo is still
+        // DETACHED from the visual tree: the closed box then renders blank — the row is selected
+        // and every reader below returns it, but the selection-box presenter stays empty. Dialogs
+        // built in code populate before ShowAsync, so BOTH callers re-run their gating on
+        // ContentDialog.Opened (UI-18, 2026-09-17), which is what makes a populate land against a
+        // LIVE control. Owner-observed WinUI behaviour; no test in this repo can see it.
         combo.ItemTemplate = IndicatorRowTemplate();
         combo.ItemsSource = items;
 

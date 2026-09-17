@@ -10,8 +10,8 @@ namespace VoiceWink.Services.Http;
 /// <item><c>ai</c> — 5 min Timeout, retried (small JSON bodies safe to resend),
 /// connect-bounded, connect-timeouts translated below the retry handler so they are
 /// retried like any other network error.</item>
-/// <item><c>images</c> — 10 min Timeout (owner request 2026-07-13; high-quality runs
-/// were brushing the previous 5-min budget), otherwise identical policy to <c>ai</c>.</item>
+/// <item><c>images</c> — 5 min Timeout (measured, 2026-09-16 — see the registration
+/// comment), otherwise identical policy to <c>ai</c>.</item>
 /// <item><c>transcription</c> — 5 min Timeout, NO retry handler (audio uploads are
 /// consumed streams that cannot be replayed), connect-bounded + translated so a dead
 /// network fails as an honest HttpRequestException instead of an OCE the transcribe
@@ -46,10 +46,40 @@ internal static class VoiceWinkHttpClients
             .AddHttpMessageHandler<RetryingHandler>()
             .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
             .UseSocketsHttpHandler((h, _) => h.ConnectTimeout = ConnectTimeout);
-        // gpt-image-2 high-quality runs routinely take 2–4 min and were brushing the
-        // previous 5-min budget (owner request 2026-07-13: 10 min). The user-facing
-        // timeout message derives from this value (SendWithImageTimeoutTranslationAsync).
-        services.AddHttpClient("images", c => c.Timeout = TimeSpan.FromMinutes(10))
+        // 5 min, cut from 10 on 2026-09-16 and set by MEASUREMENT plus the retry arithmetic
+        // below — not by headroom guessing, and not by the observed maximum alone.
+        //
+        // MEASUREMENT. Over a 14-day local corpus (196 COMPLETED image jobs, 17 models,
+        // 4 providers) the slowest successful job was 189 s and p99 was 183 s; nothing completed
+        // past 190 s, including the case the 2026-07-13 raise to 10 min was made for (OpenAI
+        // high-quality gpt-image topped out at 155 s). What the 600 s wall actually bought was
+        // dead waiting: 25 timeouts all at exactly 600 s, plus 6 jobs the owner cancelled by hand
+        // at a median of 357 s. The models that hang (riverflow / seedream via OpenRouter) DO
+        // complete when they work, inside that same ~190 s — they hang or they finish, so no
+        // budget between 4 and 10 min rescues one.
+        //
+        // ARITHMETIC, and it is why this is 300 s and not the 240 s a first pass chose.
+        // HttpClient.Timeout is a WHOLE-OPERATION budget: RetryingHandler's attempts and its
+        // sleeps run inside it. With MaxAttempts = 4, at most THREE attempts fail before the one
+        // that generates, so the fixed-schedule worst case is 3 x 10 s ConnectTimeout + (1+3+6) s
+        // = 40 s of overhead BEFORE that attempt, plus its own connect (<= 10 s) = 50 s of connect
+        // and sleep across all four. Against the slowest observed generation that is 239 s, and
+        // slightly conservative at that: the 189 s corpus figure is measured end to end, so it
+        // already contains the final attempt's connect. At 240 s that is ONE SECOND of margin; at
+        // 300 s it is ~61 s. Redo this sum before moving this value, MaxAttempts, BackoffSchedule
+        // or ConnectTimeout — the same warning http-policy.md carries for the ai client's 60 s
+        // enhancement deadline. (Both diff reviewers independently corrected the first wording,
+        // which read as though all four attempts burn a connect ahead of the generating one.)
+        //
+        // STATED RESIDUAL: ComputeDelay PREFERS a Retry-After header, clamped at MaxDelay = 60 s,
+        // so three such sleeps could burn 180 s of this budget and leave a slow generation unable
+        // to finish. Not observed — all 39 retries in the corpus (12 of them on 429) took a
+        // fixed-schedule delay, none honoured a Retry-After — and no budget under ~6.5 min
+        // survives that chain, so it is recorded rather than designed around.
+        //
+        // The user-facing timeout message derives from this value
+        // (SendWithImageTimeoutTranslationAsync), so it follows with no copy change.
+        services.AddHttpClient("images", c => c.Timeout = TimeSpan.FromMinutes(5))
             .AddHttpMessageHandler<RetryingHandler>()
             .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
             .UseSocketsHttpHandler((h, _) => h.ConnectTimeout = ConnectTimeout);

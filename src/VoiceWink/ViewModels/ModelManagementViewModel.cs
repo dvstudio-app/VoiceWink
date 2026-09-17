@@ -347,7 +347,10 @@ public partial class ModelManagementViewModel : ObservableObject
             // forwards to Sentry) with the generic copy, undoing the deliberate stall handling
             // above (Kimi, verification round). A user cancel still propagates as a plain
             // OperationCanceledException and takes the arm above.
-            Logger.Warning(ex, "Download stalled (network timeout): {Name}", model.Name);
+            // LOG-1's shape since NET-5c: the re-typed stall carries an OperationCanceledException
+            // inside - the inner type is the fact, the stack is not.
+            Logger.Warning("Download stalled (network timeout): {Name}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
+                model.Name, ex.GetType().Name, ex.InnerException?.GetType().Name, ex.Message);
             model.IsDownloading = false;
             model.DownloadProgress = 0;
             model.ErrorMessage = "Download stalled. Check your connection and try again.";
@@ -355,11 +358,29 @@ public partial class ModelManagementViewModel : ObservableObject
         catch (HttpRequestException ex)
         {
             // Warning: download-source/network failures are environmental and fully
-            // user-surfaced below — keep them out of Sentry events (Error+ forwards).
-            Logger.Warning(ex, "Failed to download model (HTTP): {Name}", model.Name);
+            // user-surfaced below — keep them out of Sentry events (Error+ forwards). LOG-1's
+            // shape since NET-5c: type + message, never the object (its stack reached the file
+            // log and the Log Viewer on every offline download).
+            Logger.Warning("Failed to download model (HTTP): {Name}: {ErrorType}: {ErrorMessage}",
+                model.Name, ex.GetType().Name, ex.Message);
             model.IsDownloading = false;
             model.DownloadProgress = 0;
             model.ErrorMessage = "Download failed. Check your connection and try again.";
+        }
+        catch (Services.Transcription.ModelLocalIOException ex)
+        {
+            // NET-5: the disk is full. Environmental, fully handled, and the ONE download failure
+            // where "try again" is wrong advice - so Warning (Error+ forwards to Sentry, and a full
+            // disk is not a defect of ours) and copy that says what to do instead. Three raise
+            // sites reach this arm (NET-5b): the mid-write fault, whose partial is kept so the next
+            // Download resumes, and the two free-space pre-checks, which refuse before a byte is
+            // written - a bundle never resumes and a first attempt has nothing to resume - so the
+            // copy promises no resume; the pre-check's MB arithmetic rides {ErrorMessage} into the log.
+            Logger.Warning("Model download stopped, disk full: {Name}: {ErrorType}: {ErrorMessage}",
+                model.Name, ex.GetType().Name, ex.Message);
+            model.IsDownloading = false;
+            model.DownloadProgress = 0;
+            model.ErrorMessage = "Not enough disk space. Free some space and download again.";
         }
         catch (Services.Transcription.ModelInstallBlockedException ex)
         {

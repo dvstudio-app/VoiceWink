@@ -722,8 +722,19 @@ public sealed class AudioTranscribePage : Page
         catch (OperationCanceledException ex)
         {
             // HttpClient timeout throws TaskCanceledException (subclass of OperationCanceledException)
-            // when the request exceeds the configured timeout
-            Logger.Warning(ex, "Audio file transcription timed out");
+            // when the request exceeds the configured timeout.
+            //
+            // LOG-1 shape (NET-6). This catch is UNFILTERED, but what actually reaches it is one
+            // thing: the cloud transcription client's HttpClient.Timeout, a TaskCanceledException.
+            // A first draft claimed the parakeet-local deadline and the CPU-fallback chunk budget
+            // land here too; they do not — both are swallowed into typed failure results well
+            // before this frame (opus self-review, traced). So {ErrorType} is a constant today and
+            // is kept for LOG-1's house shape, and because an unfiltered arm can gain a source
+            // later without anyone revisiting this line. LogFileTranscriptionFailure 80-odd lines
+            // below already logs this exact shape for HttpRequestException and TimeoutException;
+            // the two arms of one failure surface disagreed until now.
+            Logger.Warning("Audio file transcription timed out: {ErrorType}: {ErrorMessage}",
+                ex.GetType().Name, ex.Message);
             _statusText.Text = "Transcription timed out. The file may be too large for the selected provider.";
         }
         catch (Exception ex)

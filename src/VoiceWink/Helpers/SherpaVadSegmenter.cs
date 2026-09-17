@@ -44,8 +44,10 @@ internal readonly record struct VadSegmentationResult(
 /// TRN-22: drives sherpa-onnx's own Silero VAD over a recording and returns speech segments. The
 /// native half of the fix; <see cref="VadDecodePlan"/> is the pure half that turns these into a
 /// decode plan. Since AUD-28 it has an APP caller too:
-/// <c>VoiceActivityDetectionService</c>'s block-path second opinion runs it at the shipped
-/// constants over the gate's conditioned bytes (the DECODE-plan candidacy stays harness-only).
+/// <c>VoiceActivityDetectionService</c>'s block-path second opinion runs it over the gate's
+/// conditioned bytes at the GATE's own threshold — <see cref="VadTuning.SecondOpinionThreshold"/>
+/// (0.25 since AUD-36; 0.50 under AUD-28) through the threshold-parameterized entry below — while
+/// <see cref="Threshold"/> stays the DECODE-plan candidate's (harness-only) constant.
 ///
 /// <para><b>Split from the planner because the harness links FILES, not projects.</b>
 /// <c>tools/parakeet-long-audio</c> cannot reference the service (it would drag in Serilog and the
@@ -146,8 +148,10 @@ internal static class SherpaVadSegmenter
 
     /// <summary>Threshold-parameterized entry (AUD-28): the sensitivity comparison in
     /// <c>tools/vad-gate-tune</c> sweeps this runtime against the shipped ggml gate, and the
-    /// <see cref="Threshold"/> const cannot vary at runtime. Every production-shaped caller uses
-    /// the overload above, which delegates here with the const — behavior unchanged.</summary>
+    /// <see cref="Threshold"/> const cannot vary at runtime. Since AUD-36 it is ALSO the gate's
+    /// production entry — <c>VoiceActivityDetectionService</c> passes
+    /// <see cref="VadTuning.SecondOpinionThreshold"/> (source-contract-pinned by
+    /// <c>VadTuningTests</c>); the decode-plan arms keep the const overload above.</summary>
     internal static VadSegmentationResult Segment(
         float[] samples,
         int sampleRate,

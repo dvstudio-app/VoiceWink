@@ -73,6 +73,19 @@ public static class PredefinedModels
     // Sha256Hash pins gate both sources.
     private const string UpstreamBase = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1";
 
+    /// <summary>The local runtime that serves <paramref name="modelName"/>, or null for a cloud,
+    /// unknown or blank name — the ONE name→engine lookup the pipeline's copy and gate policies
+    /// share (<c>EmptyTranscriptMessage</c>, <c>NoSpeechBlockPolicy</c>; AUD-36 folded two copies
+    /// into it). Either Parakeet bundle spelling resolves to the active row (TRN-29 flip — an
+    /// upgrader's un-rewritten selection must keep earning engine-specific behaviour), and the
+    /// match is case-insensitive because the runtime seam resolves that way.</summary>
+    public static LocalRuntimeKind? RuntimeOf(string? modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName)) return null;
+        var canonical = ParakeetCatalog.CanonicalName(modelName);
+        return Models.FirstOrDefault(m => Helpers.ModelDiskReconciliation.IsSameModel(m.Name, canonical))?.Runtime;
+    }
+
     public static readonly TranscriptionModelInfo[] Models =
     [
         // ── The default, and the first non-Whisper local model (TRN-1 step 3) ───────────────────

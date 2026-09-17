@@ -4500,7 +4500,16 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
 
-            Logger.Error(ex, "Failed to start recording");
+            // NET-5c: a full disk while EnsureModelLoadedAsync downloaded the selected model is
+            // environmental and fully handled here - Warning in LOG-1's shape (Error+ forwards to
+            // Sentry), and the one start failure whose cause the pill CAN name, because the typed
+            // exception says so; the cause-neutral rule below is about not GUESSING.
+            var diskFull = ex is Services.Transcription.ModelLocalIOException;
+            if (diskFull)
+                Logger.Warning("Failed to start recording, disk full: {ErrorType}: {ErrorMessage}",
+                    ex.GetType().Name, ex.Message);
+            else
+                Logger.Error(ex, "Failed to start recording");
             HandleStartRecordingFailureCleanup(startupRecordingPath);
 
             // Deliberately cause-NEUTRAL: this catch also covers model download/load failures
@@ -4509,7 +4518,7 @@ public partial class MainViewModel : ObservableObject
             // AudioCaptureUnavailableException catch above, which knows the cause.
             var errorMsg = ex is OperationCanceledException
                 ? "Recording cancelled"
-                : "Recording failed";
+                : diskFull ? DiskFullPillMessage : "Recording failed";
             // One string for both surfaces — a longer window-status variant would only restate
             // the pill in a second style (copy review 2026-07-25).
             StatusText = errorMsg;
@@ -5173,6 +5182,27 @@ public partial class MainViewModel : ObservableObject
             // retry must not read LIVE hotkey state — the mode rides the context.
             var wasPushToTalk = retry?.WasPushToTalk ?? _hotkeyService.WasPushToTalk;
 
+            // The model this attempt prepares AND transcribes with — one value, resolved once.
+            // A retry recomputes it (the effective model can have changed since the original
+            // attempt); a normal run uses the snapshot taken at recording start.
+            //
+            // TRN-17: the retry arm's precedence lives in RetryAttemptResolution, because the retry
+            // PICKER pre-selects with the same rule and a dialog showing one model while the
+            // pipeline runs another is a wrong-output failure no gate would catch. With no user
+            // pick the expression is identical to the pre-TRN-17 one.
+            //
+            // Resolved BEFORE the no-speech gate (AUD-36): the gate's block policy asks which
+            // engine would transcribe, and this expression has no side effects, so hoisting it
+            // changes nothing about the value the transcribe call below reads.
+            var attemptModel = retry != null
+                ? Helpers.RetryAttemptResolution.Model(
+                    userPick: retry.UserModelPick,
+                    appModeOverride: retry.ModelOverride,
+                    globalSelectedModel: _settings.GetString(
+                        AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel))
+                : _recordingModelSnapshot ?? modelOverride
+                    ?? _settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel);
+
             // No-speech gate — Silero VAD (primary) with the legacy whole-file RMS check
             // as fallback when VAD is unavailable; skipped when THIS run is the user's
             // explicit "I really spoke" retry from a previous block. Avoids Whisper
@@ -5205,10 +5235,31 @@ public partial class MainViewModel : ObservableObject
                         },
                         () => TranscriptionOutputFilter.IsSilentWav(recordingPath)),
                     ct);
+
+            // AUD-36 (2026-09-17): a BLOCK is final only for the engines the gate exists for. When
+            // the attempt's engine is Parakeet — measured silent on the whole must-block corpus,
+            // and measured transcribing every whispered recording the gate blocked that afternoon
+            // — the recording is decoded anyway through the engine's gate-blocked entry, and an
+            // EMPTY decode is what shows "No speech detected" (HandleEmptyTranscript routes it to
+            // the same choreography). The verdict is a suspicion; the decode is the fact. Policy
+            // in Helpers/NoSpeechBlockPolicy; an established all-zero capture is never deferred.
+            var noSpeechDeferredToEngine = false;
             if (prepared.Blocked)
             {
-                HandleBlockedNoSpeech(prepared.DigitallySilent);
-                return;
+                if (Helpers.NoSpeechBlockPolicy.EngineDecides(attemptModel, prepared.DigitallySilent))
+                {
+                    noSpeechDeferredToEngine = true;
+                    // The ENGINE kind (an enum), never the model id — `{Model}` is the enricher's
+                    // gate and `{ModelDisplayName}` is reserved for catalog-row DisplayName sites.
+                    Logger.Information(
+                        "No-speech gate blocked the recording — deferred to the {Engine} engine, which judges silence itself (AUD-36)",
+                        Models.PredefinedModels.RuntimeOf(attemptModel));
+                }
+                else
+                {
+                    HandleBlockedNoSpeech(prepared.DigitallySilent);
+                    return;
+                }
             }
 
             void HandleBlockedNoSpeech(bool digitallySilent)
@@ -5269,32 +5320,21 @@ public partial class MainViewModel : ObservableObject
             // Both gate-bypass flags CARRY from the consumed retry (PRM-4 round 4): if a
             // bypassing retry fails again and re-arms from THIS candidate, the next
             // Retry must still bypass — the carry rules live in BuildRetryContext.
+            // AUD-36: a DEFERRED block is a block for retry purposes — a Retry armed from any
+            // failure on this run (an engine fault, a model-prep error) skips the gate exactly as
+            // a Retry from the ordinary block does, instead of re-running a gate that already said
+            // no and, on a Whisper/cloud pick in the picker, blocking a second time.
             retryCandidate = BuildRetryContext(
                 recordingPath, modelOverride, languageOverride, linkedEnhancementId,
                 hotkeyOverride, _targetWindowHandle, wasPushToTalk,
-                consumedRetry: retry);
+                consumedRetry: retry, armFromNoSpeechBlock: noSpeechDeferredToEngine);
 
             // Retry-only model preparation [R1]: recording start ensured the model for
             // the ORIGINAL attempt; by retry time the effective model may have changed
             // (e.g. cloud failed → user switched to local) or been swapped out —
             // WhisperTranscriptionService.TranscribeAsync would throw ("no model
-            // loaded") or silently use the stale loaded model.
-            // The model this attempt prepares AND transcribes with — one value, resolved once.
-            // A retry recomputes it (the effective model can have changed since the original
-            // attempt); a normal run uses the snapshot taken at recording start.
-            //
-            // TRN-17: the retry arm's precedence lives in RetryAttemptResolution, because the retry
-            // PICKER pre-selects with the same rule and a dialog showing one model while the
-            // pipeline runs another is a wrong-output failure no gate would catch. With no user
-            // pick the expression is identical to the pre-TRN-17 one.
-            var attemptModel = retry != null
-                ? Helpers.RetryAttemptResolution.Model(
-                    userPick: retry.UserModelPick,
-                    appModeOverride: retry.ModelOverride,
-                    globalSelectedModel: _settings.GetString(
-                        AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel))
-                : _recordingModelSnapshot ?? modelOverride
-                    ?? _settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel);
+            // loaded") or silently use the stale loaded model. `attemptModel` itself is
+            // resolved ABOVE the no-speech gate since AUD-36 (the gate's block policy reads it).
 
             // The language this attempt REQUESTS — resolved ONCE here so the preload below and the
             // TranscribeAsync call further down cannot ask for different things. They read different
@@ -5337,6 +5377,20 @@ public partial class MainViewModel : ObservableObject
             // passed in — GetService would otherwise re-read Settings and could route to a
             // different model than the one just loaded.
             var transcriber = _transcriptionRegistry.GetService(attemptModel);
+
+            // AUD-36: a deferred block may only be handed to a transcriber that JUDGES no-speech
+            // itself (INoSpeechAwareTranscriber — the entry that withholds TRN-50's once-per-session
+            // CPU re-decode for it). The policy decided from the model NAME (the catalog's
+            // RuntimeOf); the registry decides the SERVICE through LocalModelPreparer's
+            // runtime-keyed CanServe, and a structural test pins the single implementor. If the two
+            // ever disagree, fail CLOSED into the ordinary block rather than let a silent recording
+            // spend the device-fault safety net — the transcribe call has not happened yet.
+            if (noSpeechDeferredToEngine && transcriber is not Services.Transcription.INoSpeechAwareTranscriber)
+            {
+                Logger.Warning("No-speech deferral refused: the resolved transcriber does not judge silence itself — blocking as before (AUD-36)");
+                HandleBlockedNoSpeech(prepared.DigitallySilent);
+                return;
+            }
             var requestedLanguage = requestedLanguageForAttempt
                 ?? _settings.GetString(AppDefaults.SelectedLanguage, "auto");
 
@@ -5409,8 +5463,12 @@ public partial class MainViewModel : ObservableObject
             // transcription failure class where nothing was uploaded, so a replay is provably safe.
             // The whole call is re-invoked (not the request), because each client opens its own
             // FileStream inside TranscribeAsync; a handler-level retry could not replay that stream.
+            // AUD-36: a deferred block takes the engine's gate-blocked entry (the guard above
+            // proved the cast); everything else is the ordinary call, byte-for-byte.
             string rawText = await Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
-                token => transcriber.TranscribeAsync(recordingPath, language, transcriptionHints, diarize: false, token),
+                token => noSpeechDeferredToEngine && transcriber is Services.Transcription.INoSpeechAwareTranscriber aware
+                    ? aware.TranscribeSuspectedNoSpeechAsync(recordingPath, language, transcriptionHints, token)
+                    : transcriber.TranscribeAsync(recordingPath, language, transcriptionHints, diarize: false, token),
                 onRetrying: () =>
                 {
                     PipelineNoticeRequested?.Invoke("Poor connection — retrying");
@@ -5452,7 +5510,14 @@ public partial class MainViewModel : ObservableObject
                 // diagnosable survives. It carries the text VERBATIM, not the literal `(empty)` —
                 // PromptTraceLog.WriteOutput reserves that for null/whitespace, and the lone comma
                 // this branch exists for is neither.
-                Logger.Warning("Transcription returned no content ({Length} chars)", rawText?.Length ?? 0);
+                // AUD-36: on a gate-blocked recording the engine was ASKED whether there was speech,
+                // and "no content" is its answer, not an anomaly — Information there, so an
+                // accidental press in a quiet room does not log a Warning (the same reason the
+                // service's TRN-10b tripwire steps down on that path).
+                if (noSpeechDeferredToEngine)
+                    Logger.Information("Transcription returned no content ({Length} chars) on a gate-blocked recording", rawText?.Length ?? 0);
+                else
+                    Logger.Warning("Transcription returned no content ({Length} chars)", rawText?.Length ?? 0);
                 // The ENGINE produced nothing — the one caller entitled to name it (TRN-18).
                 HandleEmptyTranscript(engineReturnedNothingUsable: true);
                 return;
@@ -5546,6 +5611,25 @@ public partial class MainViewModel : ObservableObject
             // transcription model first. Mirrors the catch-site retain branch.
             void HandleEmptyTranscript(bool engineReturnedNothingUsable)
             {
+                // AUD-36: the gate said no speech, the engine was asked to decide, and nothing usable
+                // came out — the verdict is confirmed, so this is the ordinary no-speech block, one
+                // decode later: same amber "No speech detected" pill, same retained WAV, same Retry
+                // (which skips the gate, exactly as it did before the deferral existed). BOTH empty
+                // shapes route here: the engine returning nothing, and the engine returning only
+                // what our own pipeline strips (a breath decoded as "uh", emptied by the filler
+                // list) — on a gate-blocked recording that is still no speech, and the block copy
+                // names no engine, so TRN-18's false-accusation rule is not in play. The red TRN-18
+                // pill with a gate-running Retry would otherwise loop this exact outcome
+                // (self-review, both lenses).
+                if (noSpeechDeferredToEngine)
+                {
+                    Logger.Information(
+                        "The engine decoded the gate-blocked recording to nothing usable ({Shape}) — no speech confirmed (AUD-36)",
+                        engineReturnedNothingUsable ? "engine returned nothing" : "pipeline emptied it");
+                    HandleBlockedNoSpeech(prepared.DigitallySilent);
+                    return;
+                }
+
                 MarkTerminalPresentation(); // IMG-BG epoch fence
                 RecordingState = RecordingState.Idle;
                 // Deliberately NOT "No speech detected" — that is the VAD gate's amber
@@ -6217,8 +6301,11 @@ public partial class MainViewModel : ObservableObject
             // TRN-64 adds GpuSelfTestRefusedException: an EXPECTED refusal (the verdict itself
             // was reported at the level REL-30 chose when it landed), so a retried Whisper pick
             // must not put an Error per attempt in front of Sentry.
+            // NET-5c adds ModelLocalIOException: the stop-side prepare's model download hit a full
+            // disk (the default instant-recording path downloads behind the live recording) -
+            // environmental, fully surfaced by DescribeTranscriptionFailure, no defect of ours.
             if (ex is HttpRequestException or TimeoutException or Helpers.InvalidApiKeyFormatException
-                or Helpers.GpuSelfTestRefusedException)
+                or Helpers.GpuSelfTestRefusedException or Services.Transcription.ModelLocalIOException)
                 Logger.Warning("Failed to transcribe: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
             else
                 Logger.Error(ex, "Failed to transcribe");
@@ -7185,7 +7272,7 @@ public partial class MainViewModel : ObservableObject
     internal const string OutOfCreditsMessageShort = "Out of credits";
 
     /// <summary>The app-copy cap — one pill line at the default text scale (house style ≤55).</summary>
-    private const int DefaultPillMaxCodeUnits = 55;
+    internal const int DefaultPillMaxCodeUnits = 55;
 
     /// <summary>
     /// PRM-6: the budget for STRUCTURED provider prose — roughly two pill lines at the default text
@@ -7361,6 +7448,15 @@ public partial class MainViewModel : ObservableObject
     internal static ProviderPillText ProviderPillReasonForEnhancementFallback(Exception ex)
         => ProviderPillSafeText(ex, "Invalid API key", OutOfCreditsMessageShort);
 
+    /// <summary>NET-5c: the pill for a model download that hit a full disk, on the cold
+    /// recording-start path (the catch in <c>StartRecordingAsync</c>, reached when the standing
+    /// capture refuses the claim) and on the stop-side prepare (<see cref="DescribeTranscriptionFailure"/>
+    /// - the DEFAULT instant-recording path downloads behind a live recording and its failure lands
+    /// on the Retry pill with the WAV kept; a retry whose model file vanished takes the same arm)
+    /// alike - one string, so the two cannot drift. Cause + remedy, app-authored; the MB arithmetic
+    /// stays in the log line.</summary>
+    internal const string DiskFullPillMessage = "Not enough disk space — free some space and try again";
+
     /// <summary>
     /// User-facing copy for a transcription-pipeline failure. Pure + internal so the routing
     /// is test-pinned: <see cref="Helpers.ProviderApiException"/> SUBCLASSES
@@ -7383,6 +7479,10 @@ public partial class MainViewModel : ObservableObject
         // the user needs: "regenerate your key" is wrong advice for a key that is merely mistyped.
         // UserMessage is app-authored, so nothing provider- or key-derived crosses the boundary.
         Helpers.InvalidApiKeyFormatException invalid => invalid.UserMessage,
+        // NET-5c: the stop-side prepare's model download hit a full disk - the default
+        // instant-recording path, where the download runs behind the live recording (typed by
+        // the download manager, so the pill can name it - the generic arm at the bottom could not).
+        Services.Transcription.ModelLocalIOException => DiskFullPillMessage,
         // REL-22: a 401 the PROVIDER labelled as credit exhaustion in a structured field is not a
         // credential failure. ElevenLabs answers an empty balance with 401, so the arm below sent a
         // user with a perfectly good key off to regenerate it. Must precede that arm; app-authored

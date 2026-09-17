@@ -1933,6 +1933,12 @@ public sealed class EnhancementPage : Page
                 }
             }
             RefreshImageOptionGating();
+            // UI-18: and again once the dialog is on screen. The populate above runs before
+            // ShowAsync, and an ItemsSource swap while the combo is detached leaves the closed box
+            // blank though the selection itself is correct — see PopulateIndicatorCombo. Safe here
+            // because Opened precedes any user interaction, so each row re-derives the same tag it
+            // derived pre-show; on a text prompt the gating's own early return makes this a no-op.
+            dialog.Opened += (_, _) => RefreshImageOptionGating();
 
             // ── Ask for Image Options toggle ────────────────────────────────
             var askSizeToggle = new ToggleSwitch

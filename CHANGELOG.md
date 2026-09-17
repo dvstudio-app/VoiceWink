@@ -17,6 +17,16 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.90.385] - 2026-09-17
+
+- Whispered dictation is no longer rejected as "No speech detected" with Parakeet, and far less often with other models.
+- A model download that fails because your disk is full now stops immediately instead of retrying, and keeps what it already downloaded.
+- A model download refused for lack of disk space now says so, instead of "Download failed. Please try again."
+- A recording that cannot download its model for lack of disk space now says so.
+- A stuck image generation now gives up after 5 minutes instead of 10.
+- An image generation that times out no longer fills the log viewer with technical detail.
+- A model download that hits a flaky connection no longer fills the log viewer with technical detail.
+
 ## [1.88.383] - 2026-09-16
 
 - AI cleanups can run longer before they reach a model's output limit.

@@ -1048,7 +1048,19 @@ public sealed class LicenseService
             // The request WAS sent and the answer never arrived (HttpClient.Timeout, not a
             // caller cancel). LemonSqueezy may have created the instance, and we hold no id
             // to release — structurally the same ambiguity as LIC-BIND-03, so no retry.
-            Logger.Warning(ex, "License activation timed out after the request was sent — outcome unknown");
+            // LOG-1 shape (NET-6): type + message, never the exception OBJECT. An
+            // HttpClient.Timeout unwinds through fixed plumbing, so the frames say nothing the
+            // message does not, and they reached the file log and the in-app Log Viewer. That is
+            // the whole benefit. It is NOT a redaction win: the attached message went to Sentry as
+            // breadcrumb exception_message under the same value-pattern scrub {ErrorMessage} gets,
+            // so what Sentry sees is unchanged either way (opus self-review, verified).
+            //
+            // The forensic value of this line is that the event happened and when — the record a
+            // customer disputing a consumed seat needs. The seat flag itself rides the returned
+            // result, not this line. The catch is typed, so {ErrorType} is always
+            // TaskCanceledException; it is kept for LOG-1's house shape, not because it varies.
+            Logger.Warning("License activation timed out after the request was sent — outcome unknown: {ErrorType}: {ErrorMessage}",
+                ex.GetType().Name, ex.Message);
             return new LicenseActivationResult(false,
                 "The license server didn't respond in time, so this activation can't be confirmed. " +
                 $"It may still count toward your device limit — contact {VoiceWinkUrls.SupportEmail} " +

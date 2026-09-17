@@ -82,7 +82,20 @@ internal static class HttpResponseExtensions
             // Warning: a provider timeout is environmental and fully handled (translated
             // to TimeoutException, surfaced to the user, redo armed) — keep it out of
             // Sentry events (the sub-logger forwards Error+).
-            logger.Warning(ex, "Image generation timed out after {Timeout:F0}s ({Detail})",
+            //
+            // The exception OBJECT is deliberately NOT attached (2026-09-16), and a reviewer
+            // should not restore it. Two reasons. (1) It carries no signal: an HttpClient
+            // whole-operation timeout always unwinds through the same fixed chain
+            // (TaskCanceledException -> TimeoutException -> TaskCanceledException -> IOException
+            // -> SocketException 995 "operation aborted"), so Serilog renders ~25 lines of
+            // plumbing into the log file and the in-app Log Viewer while naming nothing the
+            // message does not already carry — the budget is in {Timeout} and the request is in
+            // {Detail}. (2) An attached exception is the one channel LogRedactionEnricher cannot
+            // reach (it cannot rewrite LogEvent.Exception, and Sentry.Serilog copies the message
+            // into breadcrumb exception_message where only pattern scrubbing applies) — the same
+            // reasoning that made IMG-4's per-item batch failure carry {LocalException} instead
+            // of the object. Nothing here needs a local dump, so this site simply carries none.
+            logger.Warning("Image generation timed out after {Timeout:F0}s ({Detail})",
                 timeoutSeconds, requestDescription);
             throw new TimeoutException(
                 $"Image generation timed out after {timeoutSeconds:F0}s. Try a smaller size or lower quality, or rephrase the prompt.",

@@ -44,6 +44,11 @@ public sealed class ModelDownloadManager
     private static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultRetryBackoff = TimeSpan.FromSeconds(2);
     private readonly int _maxDownloadAttempts;
+    /// <summary>NET-5 test seam: replaces the FileStream the download writes its partial through.
+    /// Null in production (the public ctor never sets it). Exists because a genuine disk-full
+    /// cannot be produced in a unit test, and the dispose-replaces-the-exception hazard this fix
+    /// closes is only observable with a stream that fails like one.</summary>
+    private readonly Func<string, bool, Stream>? _partialOpener;
     private readonly TimeSpan _stallTimeout;
     private readonly TimeSpan _retryBackoff;
 
@@ -124,9 +129,11 @@ public sealed class ModelDownloadManager
     internal ModelDownloadManager(IHttpClientFactory httpFactory, int maxDownloadAttempts,
         TimeSpan stallTimeout, TimeSpan retryBackoff, string modelsDirectory,
         IReadOnlyList<TranscriptionModelInfo>? catalog = null,
-        IReadOnlyList<TranscriptionModelInfo>? auxiliaryBundles = null)
+        IReadOnlyList<TranscriptionModelInfo>? auxiliaryBundles = null,
+        Func<string, bool, Stream>? partialOpener = null)
     {
         _httpFactory = httpFactory;
+        _partialOpener = partialOpener;
         _modelsDirectory = modelsDirectory;
         _maxDownloadAttempts = maxDownloadAttempts;
         _stallTimeout = stallTimeout;
@@ -419,16 +426,20 @@ public sealed class ModelDownloadManager
                     var required = RequiredFreeBytes(model.FileSizeBytes, existing);
                     if (drive.AvailableFreeSpace < required)
                     {
-                        throw new IOException(
+                        throw new ModelLocalIOException(
                             $"Not enough disk space to download '{model.DisplayName}'. " +
                             $"Needed: {required / 1_000_000} MB (2x the remaining bytes for safety). " +
                             $"Available: {drive.AvailableFreeSpace / 1_000_000} MB.");
                     }
                 }
-                catch (Exception ex) when (ex is not IOException)
+                catch (Exception ex) when (ex is not ModelLocalIOException)
                 {
                     // DriveInfo can throw on network-path ambiguity or permission issues —
                     // don't fail the download over a pre-check that couldn't even measure.
+                    // NET-5b: the filter excludes only OUR typed refusal. It used to exclude every
+                    // IOException because the refusal WAS one, which let DriveInfo's own I/O faults
+                    // (DriveNotFoundException is an IOException) fail the download despite the line
+                    // above (Gemini plan round).
                     Logger.Warning(ex, "Could not check disk free space before download — proceeding anyway");
                 }
             }
@@ -463,7 +474,12 @@ public sealed class ModelDownloadManager
             // via a Range request. Delete it for everything else (bad args, permissions, an
             // unexpected fault, or a SHA-256 mismatch, which throws the non-transient
             // InvalidOperationException) so a poisoned partial can never survive.
-            if (!IsTransientDownloadError(ex, ct))
+            // NET-5 adds the second half of this test. The delete exists so a POISONED partial
+            // cannot survive - bytes from a host that lied, or that fail the SHA pin. A partial cut
+            // short by OUR OWN full disk is neither: those bytes are valid and merely incomplete,
+            // so deleting them would cost the user an 874 MB re-download for a fault that was never
+            // the source's. Keep it, exactly as a transient network failure keeps it.
+            if (!IsTransientDownloadError(ex, ct) && ex is not ModelLocalIOException)
             {
                 try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
             }
@@ -772,9 +788,41 @@ public sealed class ModelDownloadManager
                     }
                     catch (Exception ex) when (attempt < _maxDownloadAttempts && IsTransientDownloadError(ex, ct))
                     {
-                        Logger.Warning(ex,
-                            "Model download attempt {Attempt}/{Max} from {Url} failed transiently; retrying (resuming from partial) after {Backoff}",
-                            attempt, _maxDownloadAttempts, sources[s], _retryBackoff);
+                        // LOG-1 (owner report 2026-07-15; extended here 2026-09-16, NET-4): type +
+                        // message only, never the exception OBJECT. This is the exact shape LOG-1
+                        // was written for and the one production site it did not reach — a
+                        // classified, fully-handled transient network failure on the hot path. The
+                        // volume is what makes it matter: up to _maxDownloadAttempts - 1 = 3 stacks
+                        // per source and two sources per model, so SIX full stack chains in the file
+                        // log and the in-app Log Viewer for one flaky download of a 264 MB–940 MB
+                        // file, none of them saying anything the type and message do not.
+                        //
+                        // Type + message rather than the image path's message-only form, because
+                        // the type still discriminates here. **Three classes, not five** — an
+                        // earlier wording of this comment named the five kinds
+                        // IsTransientDownloadError accepts and was WRONG about what reaches this
+                        // catch (Kimi diff r1, confirmed against RemoteAsync): every remote
+                        // operation goes through RemoteAsync, which re-types IOException,
+                        // SocketException, TimeoutException and the stall-trip
+                        // OperationCanceledException into ModelSourceIOException before the filter
+                        // ever sees them. What actually arrives is HttpRequestException (whose
+                        // StatusCode separates a 408/429/5xx from a connection-level failure),
+                        // ModelSourceIOException (wrapped transport, stall included), and
+                        // ModelSourceEndOfStreamException (short transfer). Still enough to earn
+                        // type-over-message-only; the predicate's five kinds were never the point.
+                        //
+                        // {InnerErrorType} recovers the ONE thing dropping the object genuinely
+                        // cost (same review, challenge 3): the attached exception used to render
+                        // the whole chain, so a stall read as
+                        // "ModelSourceIOException -> OperationCanceledException". Without it only
+                        // the wrapper's name survives and a stall, a socket reset and a plain
+                        // IOException all log as ModelSourceIOException. The stack was never the
+                        // diagnostic; the inner TYPE was.
+                        var innerErrorType = ex.InnerException?.GetType().Name;
+                        Logger.Warning(
+                            "Model download attempt {Attempt}/{Max} from {Url} failed transiently; retrying (resuming from partial) after {Backoff}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
+                            attempt, _maxDownloadAttempts, sources[s], _retryBackoff,
+                            ex.GetType().Name, innerErrorType, ex.Message);
                         await Task.Delay(_retryBackoff, ct).ConfigureAwait(false);
                     }
                 }
@@ -811,9 +859,14 @@ public sealed class ModelDownloadManager
                                               or IModelSourceFailure
                                               or InvalidDataException)) // sealed; see ModelDownloadFailures
             {
-                Logger.Warning(ex,
-                    "TRN-33 fallback: model download from the mirror ({Primary}) failed; retrying from the pinned upstream source {Fallback}",
-                    sources[s], sources[s + 1]);
+                // LOG-1's shape (NET-5c): the switch itself is deliberate observability, the
+                // mirror's final exception is a classified, fully-handled failure - type (and the
+                // re-typed inner) + message, never the object; its stack reached the file log and
+                // the Log Viewer on every offline download after the retry warnings had already
+                // stopped attaching theirs (NET-4).
+                Logger.Warning(
+                    "TRN-33 fallback: model download from the mirror ({Primary}) failed; retrying from the pinned upstream source {Fallback}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
+                    sources[s], sources[s + 1], ex.GetType().Name, ex.InnerException?.GetType().Name, ex.Message);
                 // Keep the partial across the switch when the failure was TRANSIENT, so a flaky
                 // link still converges: pre-fallback, the kept partial grew monotonically across
                 // user retries, and an unconditional delete here reset the mirror's progress on
@@ -906,14 +959,15 @@ public sealed class ModelDownloadManager
             var required = RequiredFreeBytes(totalBytes, existingPartialBytes: 0);
             if (drive.AvailableFreeSpace < required)
             {
-                throw new IOException(
+                throw new ModelLocalIOException(
                     $"Not enough disk space to download '{model.DisplayName}'. " +
                     $"Needed: {required / 1_000_000} MB (2x the remaining bytes for safety). " +
                     $"Available: {drive.AvailableFreeSpace / 1_000_000} MB.");
             }
         }
-        catch (Exception ex) when (ex is not IOException)
+        catch (Exception ex) when (ex is not ModelLocalIOException)
         {
+            // Same filter as the single-file pre-check: only the typed refusal propagates.
             Logger.Warning(ex, "Could not check disk free space before download — proceeding anyway");
         }
     }
@@ -1082,8 +1136,20 @@ public sealed class ModelDownloadManager
         long written = startOffset;
         await using (var contentStream = await RemoteAsync(
             () => response.Content.ReadAsStreamAsync(ct), ct).ConfigureAwait(false))
-        await using (var fileStream = new FileStream(tempPath, resuming ? FileMode.Append : FileMode.Create,
-            FileAccess.Write, FileShare.None, bufferSize: 81920, useAsync: true))
+        {
+        // NET-5: the partial's lifetime is EXPLICIT, not `await using`, and the reason is the
+        // headline scenario itself. On a full disk the FileStream's internal buffer still holds
+        // the bytes the failed write left behind; an `await using` dispose would flush them to
+        // the same full disk from its generated `finally`, throw a RAW IOException there, and -
+        // because an exception thrown while another is in flight REPLACES it - hand the retry
+        // filter a bare IOException instead of the ModelLocalIOException the write produced.
+        // The filter would then classify it transient and retry, which is the defect this type
+        // exists to end, and whether that happened depended on how many bytes were buffered at
+        // the moment the disk filled (opus self-review, B1). So the failure path disposes
+        // inside its own catch, swallowing ONLY the dispose's IOException, and rethrows the
+        // exception that matters.
+        var fileStream = OpenPartialForWrite(tempPath, resuming);
+        try
         {
             // Stall timeout: cancel if no bytes arrive within the window (a silent network drop).
             // CancelAfter resets on each read, so an actively-progressing download never times out.
@@ -1099,7 +1165,8 @@ public sealed class ModelDownloadManager
             while ((bytesRead = await RemoteAsync(
                 () => contentStream.ReadAsync(buffer, stallCts.Token).AsTask(), ct).ConfigureAwait(false)) > 0)
             {
-                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), stallCts.Token).ConfigureAwait(false);
+                await LocalAsync(
+                    () => fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), stallCts.Token).AsTask()).ConfigureAwait(false);
                 written += bytesRead;
                 stallCts.CancelAfter(_stallTimeout); // reset stall timer on progress
 
@@ -1115,7 +1182,14 @@ public sealed class ModelDownloadManager
                 }
             }
 
-            await fileStream.FlushAsync(ct).ConfigureAwait(false);
+            await LocalAsync(() => fileStream.FlushAsync(ct)).ConfigureAwait(false);
+        }
+        catch
+        {
+            try { await fileStream.DisposeAsync().ConfigureAwait(false); } catch (IOException) { }
+            throw;
+        }
+        await fileStream.DisposeAsync().ConfigureAwait(false);
         }
 
         // If the server declared a total and the stream ended short, the connection closed early —
@@ -1133,6 +1207,94 @@ public sealed class ModelDownloadManager
         // site that throws it, and a remote empty body IS a source failure.
         if (written <= 0)
             throw new InvalidDataException($"Downloaded model '{model.DisplayName}' is empty.");
+    }
+
+    /// <summary>
+    /// The two Win32 codes that mean "the disk is full": <c>ERROR_HANDLE_DISK_FULL</c> (0x27) and
+    /// <c>ERROR_DISK_FULL</c> (0x70), read from the low 16 bits of the <see cref="IOException"/>'s
+    /// HResult. NET-5 re-types ONLY these; every other IOException a local site raises keeps its
+    /// pre-NET-5 classification.
+    ///
+    /// <para>The distinction is not fussiness, it is the difference between a fix and a regression
+    /// (opus self-review, B2). A first draft re-typed EVERY local IOException as non-transient, and
+    /// that would have turned <c>ERROR_SHARING_VIOLATION</c> - Defender's on-access scanner holding
+    /// the freshly-grown partial for a few hundred milliseconds between one attempt's close and
+    /// the next attempt's open - from a fault the 2 s backoff cleared every time into a failed
+    /// 874 MB download. A lock is the one local fault a retry genuinely resolves; a full disk is
+    /// the one it never can. Two different classes, and only the second earns the type.</para>
+    /// </summary>
+    internal static bool IsDiskFull(IOException ex)
+    {
+        // FACILITY_WIN32 in the high word AND one of the two codes in the low word - a low-word
+        // match alone would accept an HResult from another facility that happens to end in 0x27
+        // or 0x70 (Gemini diff r1). Every Win32 error the runtime wraps lands as 0x8007xxxx.
+        const int FacilityWin32 = unchecked((int)0x80070000);
+        if ((ex.HResult & unchecked((int)0xFFFF0000)) != FacilityWin32) return false;
+        var code = ex.HResult & 0xFFFF;
+        return code is 0x27 or 0x70;
+    }
+
+    /// <summary>
+    /// Re-types a disk-full <see cref="IOException"/> from a LOCAL site as
+    /// <see cref="ModelLocalIOException"/> (NET-5) and lets everything else through untouched:
+    /// the source-typed exceptions (never raised at a local site, guarded anyway), every other
+    /// IOException (a lock, a transient device hiccup - still transient, still retried, exactly as
+    /// before NET-5), and cancellation (the user, or the stall timer - see <see cref="LocalAsync"/>).
+    /// Internal so the case table in <c>ModelDownloadManagerTests</c> can drive it directly.
+    /// </summary>
+    internal static Exception ClassifyLocalFault(IOException ex, string what)
+        => ex is not IModelSourceFailure && IsDiskFull(ex)
+            ? new ModelLocalIOException($"{what}: the disk is full ({ex.Message})", ex)
+            : ex;
+
+    /// <summary>
+    /// Opens the .download partial for writing. A disk-full failure at the OPEN (the directory
+    /// entry itself cannot be extended) is re-typed like a failed write; any other IOException -
+    /// a sharing violation from a scanner holding the file, most commonly - is rethrown as-is and
+    /// stays transient, so the retry loop's backoff still clears it the way it did before NET-5.
+    /// The seam exists so a test can hand this method a stream that fails like a full disk on
+    /// demand; production always opens the real file.
+    /// </summary>
+    private Stream OpenPartialForWrite(string tempPath, bool resuming)
+    {
+        try
+        {
+            // The seam sits INSIDE the try so an opener that throws IOException is classified
+            // exactly as a real open would be (Gemini diff r1) - otherwise a seam-driven
+            // open-time disk-full would bypass ClassifyLocalFault and prove nothing.
+            if (_partialOpener is { } opener)
+                return opener(tempPath, resuming);
+            return new FileStream(tempPath, resuming ? FileMode.Append : FileMode.Create,
+                FileAccess.Write, FileShare.None, bufferSize: 81920, useAsync: true);
+        }
+        catch (IOException ex)
+        {
+            throw ClassifyLocalFault(ex, "Could not open the partial for writing");
+        }
+    }
+
+    /// <summary>
+    /// Runs one LOCAL disk write and re-types a disk-full <see cref="IOException"/> as
+    /// <see cref="ModelLocalIOException"/> (NET-5; see that type for why). The mirror image of
+    /// <see cref="RemoteAsync{T}"/>: that one says "the source failed", this one says "our disk
+    /// did", and the two must not be confused — a full disk is neither transient nor a reason to
+    /// contact the fallback host.
+    ///
+    /// <para>Cancellation passes through untouched. Note what that means honestly: the write runs
+    /// under the STALL token, so a write that itself hangs (a sleeping USB volume, a failing drive)
+    /// is cancelled by the stall timer and reported as a network stall. That is pre-existing, out
+    /// of NET-5's scope, and recorded on its card rather than claimed as covered here.</para>
+    /// </summary>
+    private static async Task LocalAsync(Func<Task> write)
+    {
+        try
+        {
+            await write().ConfigureAwait(false);
+        }
+        catch (IOException ex)
+        {
+            throw ClassifyLocalFault(ex, "Local disk write failed");
+        }
     }
 
     /// <summary>
@@ -1164,7 +1326,7 @@ public sealed class ModelDownloadManager
     /// either: retrying a Range request against it is pointless, and the caller must delete the
     /// partial rather than keep resuming a URL that will never succeed.
     /// </summary>
-    private static bool IsTransientDownloadError(Exception ex, CancellationToken ct)
+    internal static bool IsTransientDownloadError(Exception ex, CancellationToken ct)
     {
         if (ct.IsCancellationRequested) return false; // the user cancelled — don't retry
 
@@ -1178,6 +1340,11 @@ public sealed class ModelDownloadManager
                           or global::System.Net.HttpStatusCode.TooManyRequests      // 429
                 || code >= 500;                                                     // 5xx
         }
+
+        // NET-5: a LOCAL disk fault is never transient - retrying a write to a full disk cannot
+        // succeed, and this arm used to swallow it because ModelLocalIOException's base IS an
+        // IOException. It must be tested BEFORE that arm, not after.
+        if (ex is ModelLocalIOException) return false;
 
         return ex is IOException          // includes EndOfStreamException + socket-abort-wrapped body reads
             or global::System.Net.Sockets.SocketException

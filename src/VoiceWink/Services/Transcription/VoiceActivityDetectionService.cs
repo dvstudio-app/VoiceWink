@@ -25,15 +25,26 @@ internal readonly record struct SherpaSecondOpinion(
 ///
 /// <para><b>AUD-28 (2026-08-28): a BLOCK gets a second opinion from the other Silero runtime.</b>
 /// The two runtimes have measured complementary blind spots on the owner's corpus: sherpa-onnx
-/// (<see cref="SherpaVadSegmenter"/>, at its shipped 0.50 threshold, over the SAME conditioned
-/// bytes) sees the deep-in-noise far-field speech the ggml build scores at zero, and the ggml
-/// build sees a take sherpa is blind to. So the gate is their UNION: only when BOTH runtimes
-/// score below <see cref="Helpers.VadTuning.MinTotalSpeech"/> does the recording block. The
-/// second opinion runs on the block path only — a ggml pass never pays for it — and can only
-/// RESCUE, never block more, so the REL-15 must-block posture is preserved as far as the
-/// measured proxies attest (all of train-noise/silence/white-noise stays at zero segments
-/// through sherpa at every threshold ≥ 0.15). Evidence:
+/// (<see cref="SherpaVadSegmenter"/>, at <see cref="Helpers.VadTuning.SecondOpinionThreshold"/>,
+/// over the SAME conditioned bytes) sees the deep-in-noise far-field speech the ggml build
+/// scores at zero, and the ggml build sees a take sherpa is blind to. So the gate is their
+/// UNION: only when BOTH runtimes score below <see cref="Helpers.VadTuning.MinTotalSpeech"/>
+/// does the recording block. The second opinion runs on the block path only — a ggml pass never
+/// pays for it — and can only RESCUE, never block more, so the REL-15 must-block posture is
+/// preserved as far as the measured proxies attest (all of train-noise/silence/white-noise stays
+/// at zero segments through sherpa at every threshold ≥ 0.15). Evidence:
 /// docs/plans/2026-08-28-aud28-sherpa-vad-compare/50-decision.md.</para>
+///
+/// <para><b>AUD-36 (2026-09-17): whispered dictation re-calibrated BOTH levers, and the block is
+/// no longer final for Parakeet.</b> Open-office whispering at −54…−58 dBFS scored zero ggml
+/// segments on 7 of 14 takes and blocked 4 outright through both runtimes, while Parakeet
+/// transcribed every one of them (three on Retry, the fourth through the harness). The
+/// conditioning cap moved +20 → +30 and the second opinion 0.50 → 0.25 (14/14 pass, A/B
+/// unchanged, must-block still zero — the decision record carries the table). And because the gate's verdict is a SUSPICION while the engine's decode
+/// is the FACT, <c>MainViewModel</c> defers a block to the engine when the attempt's engine is
+/// Parakeet (<see cref="Helpers.NoSpeechBlockPolicy"/>): the recording is decoded anyway, text
+/// pastes, and only an EMPTY decode shows "No speech detected". Whisper and the cloud providers
+/// keep the block — they are the engines the gate exists for.</para>
 /// </summary>
 public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposable
 {
@@ -294,23 +305,25 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
 
     /// <summary>
     /// AUD-28: the production second opinion — parse the conditioned bytes, run
-    /// <see cref="SherpaVadSegmenter"/> at its SHIPPED constants (threshold 0.50 — the measured
-    /// configuration; the harness sweep is where other thresholds live). The parsed rate feeds
-    /// Segment rather than a literal 16000 (its UnsupportedSampleRate guard exists because
-    /// mis-sized frames score garbage timings, not an error), and <see cref="_featureEnabled"/>
-    /// rides along per Segment's own parameter doc — unreachable difference today (the lever
-    /// returns before the lock), honest by construction. Runs under <see cref="_lock"/> on the
-    /// block path only; cost is bounded by the model parse (643 KB) + ~31 windows/audio-second
-    /// at one thread — the same order as the ggml detect that just ran — and it delays only the
-    /// no-speech pill on an already-terminal path. CPU safety is INHERITED, not probed twice:
-    /// this runs only after a successful ggml init, whose <see cref="HostSupportsNativeVad"/>
-    /// AVX/AVX2/FMA/F16C probe is strictly stronger than sherpa-onnx's SSE2 floor
-    /// (<see cref="ParakeetNativeProbe"/>).
+    /// <see cref="SherpaVadSegmenter"/> at the GATE's threshold (<see cref="VadTuning.SecondOpinionThreshold"/>,
+    /// 0.25 since AUD-36 — AUD-28 shipped the segmenter's own 0.50, which blocked whispered
+    /// dictation through both runtimes; the harness sweep is where other thresholds live). The
+    /// parsed rate feeds Segment rather than a literal 16000 (its UnsupportedSampleRate guard
+    /// exists because mis-sized frames score garbage timings, not an error), and
+    /// <see cref="_featureEnabled"/> rides along per Segment's own parameter doc — unreachable
+    /// difference today (the lever returns before the lock), honest by construction. Runs under
+    /// <see cref="_lock"/> on the block path only; cost is bounded by the model parse (643 KB) +
+    /// ~31 windows/audio-second at one thread — the same order as the ggml detect that just ran —
+    /// and it delays only the no-speech pill on an already-terminal path. CPU safety is INHERITED,
+    /// not probed twice: this runs only after a successful ggml init, whose
+    /// <see cref="HostSupportsNativeVad"/> AVX/AVX2/FMA/F16C probe is strictly stronger than
+    /// sherpa-onnx's SSE2 floor (<see cref="ParakeetNativeProbe"/>).
     /// </summary>
     private SherpaSecondOpinion RunSherpaSecondOpinion(byte[] conditionedWav, CancellationToken ct)
     {
         var (samples, sampleRate) = WavPcm.ReadMono16(conditionedWav);
-        var result = SherpaVadSegmenter.Segment(samples, sampleRate, _sileroVadModelPath, _featureEnabled, ct);
+        var result = SherpaVadSegmenter.Segment(
+            samples, sampleRate, _sileroVadModelPath, _featureEnabled, VadTuning.SecondOpinionThreshold, ct);
         return new SherpaSecondOpinion(result.Outcome, result.Segments, sampleRate);
     }
 

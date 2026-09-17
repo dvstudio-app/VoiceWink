@@ -1656,7 +1656,9 @@ public sealed class OnboardingPage : Page
                     // Same stall restoration as ModelManagementViewModel's arm (Kimi,
                     // verification round): TRN-33's RemoteAsync re-types a stall OCE as a typed
                     // source failure, which would otherwise fall to the generic handler.
-                    Logger.Warning(ex, "Onboarding model download stalled (network timeout)");
+                    // LOG-1's shape since NET-5c (the same as the Models page's stall arm).
+                    Logger.Warning("Onboarding model download stalled (network timeout): {ErrorType}({InnerErrorType}): {ErrorMessage}",
+                        ex.GetType().Name, ex.InnerException?.GetType().Name, ex.Message);
                     errorText.Text = "Download stalled. Check your internet connection and try again.";
                     errorText.Visibility = Visibility.Visible;
                     progressBar.Value = 0;
@@ -1664,8 +1666,25 @@ public sealed class OnboardingPage : Page
                 }
                 catch (HttpRequestException ex)
                 {
-                    Logger.Error(ex, "Onboarding model download failed (HTTP)");
+                    // LOG-1 shape (NET-5c): a network failure is environmental and fully surfaced on
+                    // the line below - Warning (Error+ forwards to Sentry, and this arm sent an event
+                    // per offline download), type + message, never the object (Kimi, PR #975).
+                    Logger.Warning("Onboarding model download failed (HTTP): {ErrorType}: {ErrorMessage}",
+                        ex.GetType().Name, ex.Message);
                     errorText.Text = "Download failed. Check your internet connection and try again.";
+                    errorText.Visibility = Visibility.Visible;
+                    progressBar.Value = 0;
+                    progressText.Text = "0%";
+                }
+                catch (Services.Transcription.ModelLocalIOException ex)
+                {
+                    // NET-5b: the disk is full (mid-write, or the free-space pre-check refused). The
+                    // same arm as ModelManagementViewModel's - environmental, Warning (Error+
+                    // forwards to Sentry), and copy that says what to do instead of "try again".
+                    // The self-review found this page had no arm for either raise class.
+                    Logger.Warning("Onboarding model download stopped, disk full: {ErrorType}: {ErrorMessage}",
+                        ex.GetType().Name, ex.Message);
+                    errorText.Text = "Not enough disk space. Free some space and download again.";
                     errorText.Visibility = Visibility.Visible;
                     progressBar.Value = 0;
                     progressText.Text = "0%";

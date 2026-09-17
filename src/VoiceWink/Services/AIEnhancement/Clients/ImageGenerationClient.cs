@@ -168,7 +168,11 @@ public sealed class ImageGenerationClient
         catch (OperationCanceledException ex) when (!ct.IsCancellationRequested && downloadCts.IsCancellationRequested)
         {
             var timeoutSeconds = _http.Timeout.TotalSeconds;
-            Logger.Warning(ex, "Image URL download timed out after {Timeout:F0}s (model={Model})",
+            // No exception object attached, for the reasons recorded at the send-side twin in
+            // HttpResponseExtensions.RunWithImageTimeoutTranslationAsync: the chain is fixed
+            // plumbing, and an attached exception is the one channel the redaction enricher
+            // cannot rewrite. `ex` still rides the thrown TimeoutException as InnerException.
+            Logger.Warning("Image URL download timed out after {Timeout:F0}s (model={Model})",
                 timeoutSeconds, model);
             throw new TimeoutException(
                 $"Image generation timed out after {timeoutSeconds:F0}s. Try a smaller size or lower quality, or rephrase the prompt.",

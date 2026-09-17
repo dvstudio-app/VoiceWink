@@ -14,11 +14,20 @@ namespace VoiceWink.Helpers;
 ///
 /// <para><b>Constants are VAD-OWN, not DecodeInputGain's</b> (its doc: "universal mechanism,
 /// per-model application with its own constants"). Target −26 dBFS active-RMS matches TRN-10b;
-/// the cap is <b>+20 dB, not +30</b> — flat +26 dB measurably DEGRADED Silero (clipping distortion
-/// dropped two takes back to zero segments), and nothing in the corpus needed more than +18; and
-/// there is <b>deliberately NO silence floor</b> — AUD-23's lesson (a −65 floor excluded real
-/// speech measured at −67), and boosting genuine silence or noise is measured harmless here
-/// because the must-block corpus blocks at full gain. Skip under +3 dB, the family convention.</para>
+/// the cap is <b>+30 dB since AUD-36 (2026-09-17)</b> — AUD-24 shipped +20 because a FLAT +26 dB
+/// measurably degraded Silero (clipping distortion dropped two takes that only wanted +12/+13 back
+/// to zero), but the target rule hands a take what it wants and no more: a take wanting +28 gets
+/// +28 and one wanting +12 still gets +12 — and the claim rests on the MEASUREMENT, not the rule,
+/// because <see cref="ConditionCopy"/> has no peak guard and a whispered take's crest factor
+/// exceeds 26 dB (17:03:49: peak −18.6 vs −54.3 active → +28.3 clips its peaks). Whispered
+/// open-office dictation (2026-09-17, −54…−58 dBFS active-RMS) wants +28…+32, and at the +20 cap
+/// the ggml build scored ZERO segments on 7 of 14 takes; at +30 it passes 13 of 14 and the whole
+/// registered A/B corpus is unchanged (the five +20-capped B takes gained +10…+920 ms of detected
+/// speech, no take lost any) while the must-block corpus stays at zero — measured through
+/// <c>tools/vad-gate-tune --cap=30</c>. And there is <b>deliberately NO silence floor</b> —
+/// AUD-23's lesson (a −65 floor excluded real speech measured at −67), and boosting genuine
+/// silence or noise is measured harmless here because the must-block corpus blocks at full gain.
+/// Skip under +3 dB, the family convention.</para>
 ///
 /// <para><b>What this cannot fix, on the record:</b> gain preserves the speech-to-noise ratio, so
 /// speech buried DEEP in noise (the 2026-08-25 "D" take — real dictation the owner confirmed by
@@ -30,21 +39,27 @@ internal static class VadInputConditioning
     /// <summary>Where the conditioned copy's active-RMS should land — TRN-10b's decode target.</summary>
     internal const double TargetActiveRmsDbfs = -26.0;
 
-    /// <summary>Hard gain ceiling. +26 dB flat measurably degraded Silero via clipping; the
-    /// 2026-08-25 corpus needed at most +18. NOT DecodeInputGain's +30.</summary>
-    internal const double MaxGainDb = 20.0;
+    /// <summary>Hard gain ceiling — DecodeInputGain's +30 since AUD-36 (was +20: the AUD-24
+    /// "+26 flat degraded Silero" measurement was an OVER-boost, which the target rule cannot
+    /// produce; whispered dictation wants +28…+32 and blocked at +20).</summary>
+    internal const double MaxGainDb = 30.0;
 
     /// <summary>Below this the boost is not worth a rewrite of the copy — family convention.</summary>
     internal const double MinWorthwhileGainDb = 3.0;
 
     /// <summary>Gain (dB) to apply to the gate's input copy; 0 = feed the raw bytes. Null levels
     /// (unmeasurable) condition nothing — the gate then behaves exactly as before AUD-24.</summary>
-    internal static double DecideGainDb(WavLevels? levels)
+    internal static double DecideGainDb(WavLevels? levels) => DecideGainDb(levels, MaxGainDb);
+
+    /// <summary>The same rule with the cap as a parameter — the harness's sensitivity lever
+    /// (<c>tools/vad-gate-tune --cap=N</c>), so a candidate cap is measured through the SHIPPED
+    /// decision rather than a re-implementation. Production takes the const overload only.</summary>
+    internal static double DecideGainDb(WavLevels? levels, double maxGainDb)
     {
         if (levels is not { } l) return 0.0;
         var wanted = TargetActiveRmsDbfs - l.ActiveRmsDbfs;
         if (wanted < MinWorthwhileGainDb) return 0.0;
-        return global::System.Math.Min(wanted, MaxGainDb);
+        return global::System.Math.Min(wanted, maxGainDb);
     }
 
     /// <summary>

@@ -101,9 +101,8 @@ internal static class EmptyTranscriptMessage
         // upgrader's un-rewritten selection must keep earning the engine-named copy rather than
         // silently degrading to the generic line this type exists to improve on.
         modelName = ParakeetCatalog.CanonicalName(modelName);
-        var row = PredefinedModels.Models
-            .FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, modelName));
-        if (row?.Runtime != LocalRuntimeKind.Parakeet) return Generic;
+        // The catalog's ONE name→engine lookup (shared with NoSpeechBlockPolicy since AUD-36).
+        if (PredefinedModels.RuntimeOf(modelName) != LocalRuntimeKind.Parakeet) return Generic;
 
         // Through ModelDisplayName even though row.DisplayName is in hand: that type is the ONE
         // answer to what a model is called in front of a user (owner decision 2026-08-06, which

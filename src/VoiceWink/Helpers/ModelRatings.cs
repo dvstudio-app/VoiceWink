@@ -816,13 +816,7 @@ internal static class ModelRatings
     /// could disagree with the catalog. Null for a cloud row and for an unknown name. Canonicalizes
     /// like <see cref="Find"/>, so either Parakeet spelling resolves to the ACTIVE row's engine.</summary>
     internal static Models.LocalRuntimeKind? RuntimeOf(string? model)
-    {
-        model = Models.ParakeetCatalog.CanonicalName(model);
-        if (string.IsNullOrEmpty(model)) return null;
-        return Models.PredefinedModels.Models
-            .FirstOrDefault(m => string.Equals(m.Name, model, StringComparison.OrdinalIgnoreCase))
-            ?.Runtime;
-    }
+        => Models.PredefinedModels.RuntimeOf(model); // the catalog's ONE lookup (AUD-36 folded three copies)
 
     /// <summary>TRN-52: the speed star a row shows under a compute snapshot. The GPU set is used
     /// only when the row HAS one and its own engine resolved <see cref="LocalCompute.Gpu"/>; every

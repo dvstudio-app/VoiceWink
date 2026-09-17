@@ -27,7 +27,7 @@ public static class ReferenceImagePolicy
     /// read whole into memory and, on the inline transports (Gemini inline_data,
     /// OpenRouter data-URL), copied through base64 (+33%), the JSON string, and its
     /// UTF-8 bytes (transiently several times the file size; those builds run off the
-    /// calling thread), the upload must fit the images client's 10-min budget, and
+    /// calling thread), the upload must fit the images client's 5-min budget, and
     /// ENH-6b persists a copy under %LOCALAPPDATA% (content-addressed and shared
     /// between rows since ENH-6g). Checked against the opened stream's length BEFORE
     /// any allocation or read.

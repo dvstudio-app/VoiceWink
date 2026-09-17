@@ -30,6 +30,22 @@ internal static class VadTuning
     internal static readonly TimeSpan MinTotalSpeech = TimeSpan.FromMilliseconds(250);
 
     /// <summary>
+    /// AUD-36 (2026-09-17): the per-frame threshold the sherpa-onnx Silero SECOND OPINION runs at
+    /// on the block path (AUD-28's union). AUD-28 shipped it at the segmenter's own 0.50 — the
+    /// least permissive grid value that passed its corpus — and whispered dictation then blocked
+    /// through BOTH runtimes: 4 of 14 open-office whisper takes on 2026-09-17 — three retried, every
+    /// Retry pasted, the fourth decodes to text through the harness. 0.25 is the least permissive
+    /// measured grid value (0.50/0.35/0.25/0.15)
+    /// at which every whispered take passes the union with the conditioning cap at +30, while the
+    /// whole must-block corpus (real train noise, digital silence, flatline, synthetic silence,
+    /// white noise) stays at ZERO segments — it stays zero down to 0.15; only the diagnostic 0.05
+    /// leaks (AUD-28's own finding). Measured through <c>tools/vad-gate-tune --sherpa-vad</c>; the
+    /// decode-plan candidate (<see cref="SherpaVadSegmenter.Threshold"/>) is untouched — this is
+    /// the GATE's ask, not the segmenter's default.
+    /// </summary>
+    internal const float SecondOpinionThreshold = 0.25f;
+
+    /// <summary>
     /// Native detect thread count. 1 is LOAD-BEARING (REL-15, 2026-07-24): the Silero
     /// detect dispatches one tiny ggml graph compute per 512-sample window
     /// (~31/audio-second), and with more than one thread every compute forks, joins,

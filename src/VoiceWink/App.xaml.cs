@@ -4300,6 +4300,24 @@ public partial class App : Application, Services.IAppLifetime
             dialog.Resources["ContentDialogMaxHeight"] = global::System.Math.Max(756.0, rootHeight - 48.0);
         dialogRef = dialog; // enable RefreshModelsAsync to manage button state
         dialog.Closed += (_, _) => dialogClosed = true; // lifecycle fence for in-flight fetches
+        // UI-18: re-gate once the dialog is actually on screen. Every populate above runs while
+        // this dialog is still detached from the visual tree, and an ItemsSource SWAP in that state
+        // leaves the CLOSED combo blank — the row is selected and every reader returns it, only the
+        // selection box renders nothing. WinUI rendering behaviour, owner-observed 2026-09-17;
+        // nothing in this repo can see it from a test, which is how it shipped.
+        //
+        // What kept it hidden: the LAST populate usually lands post-show. On an IMG-10b cache MISS
+        // the model fetch awaits the network, so BindModels' re-gate runs after the dialog is up.
+        // On a cache HIT — every open after the first — that bind is synchronous and the last
+        // populate is pre-show too. NOT a clean first-open/later-open split, though: a provider
+        // with no key, and an offline throw, both return synchronously on the miss path as well.
+        //
+        // Safe HERE specifically — not idempotent in general. Opened fires before any user
+        // interaction, so every row re-derives the same tag from the same expression it used
+        // pre-show, and the quality row reads the untouched ask. SelectedIndicatorTag answers null
+        // for BOTH "Auto" and "nothing selected" (see its doc comment), so a re-gate placed AFTER
+        // a user pick is a different question — see IMG-17.
+        dialog.Opened += (_, _) => RefreshImageOptionGating();
         // Composed confirm rule: models loaded AND non-empty input text (IMG-1 — the
         // text-first entry starts empty; a redo's pre-filled text satisfies it as before).
         bool HasUsableModelSelection() =>

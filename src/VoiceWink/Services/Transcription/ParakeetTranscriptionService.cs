@@ -54,7 +54,7 @@ namespace VoiceWink.Services.Transcription;
 /// conditions live on the TRN-26 card. <see cref="HintTransport"/> stays
 /// <see cref="HintTransportKind.None"/> — literal, as before.</para>
 /// </summary>
-public sealed class ParakeetTranscriptionService : ITranscriptionService, IDisposable
+public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, IDisposable
 {
     private static ILogger Logger => Log.ForContext<ParakeetTranscriptionService>();
 
@@ -229,8 +229,21 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService, IDispo
         }
     }
 
-    public async Task<string> TranscribeAsync(string audioFilePath, string? language = null,
+    public Task<string> TranscribeAsync(string audioFilePath, string? language = null,
         Models.TranscriptionHints? hints = null, bool diarize = false, CancellationToken ct = default)
+        => TranscribeCoreAsync(audioFilePath, noSpeechSuspected: false, ct);
+
+    /// <summary>AUD-36: the gate-blocked entry (<see cref="INoSpeechAwareTranscriber"/>) — the same
+    /// decode, with emptiness read as the audio's answer: the TRN-50 CPU re-decode is withheld
+    /// (its once-per-session attempt must stay for a real device fault) and the TRN-10b collapse
+    /// tripwire logs at Information rather than Warning. Text, when there is any, is returned
+    /// exactly as the ordinary entry returns it — this is how a whispered dictation the gate
+    /// mis-judged reaches the paste.</summary>
+    public Task<string> TranscribeSuspectedNoSpeechAsync(
+        string audioFilePath, string? language, Models.TranscriptionHints? hints, CancellationToken ct)
+        => TranscribeCoreAsync(audioFilePath, noSpeechSuspected: true, ct);
+
+    private async Task<string> TranscribeCoreAsync(string audioFilePath, bool noSpeechSuspected, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -292,6 +305,18 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService, IDispo
                         "Local transcription hit an engine restart. Press Retry to transcribe this recording.");
                 }
                 // PcppServe.Sherpa with a built recognizer falls through to the unchanged path.
+            }
+
+            // AUD-36: the deferral's "Parakeet is silent on non-speech" evidence was measured through
+            // the pcpp path ONLY (the must-block corpus decoded to 0 chars there). The sherpa era — a
+            // kill-switch rebuild, or a mid-session latch-back — carries its own recoveries (TRN-10c,
+            // TRN-15, TRN-19) that were never run on gate-blocked audio automatically, so there the
+            // block stands exactly as before AUD-36: an empty result routes the caller to the
+            // ordinary "No speech detected" choreography, and the user's Retry decodes as it always did.
+            if (noSpeechSuspected && !usePcpp)
+            {
+                Logger.Information("Gate-blocked recording reached the sherpa-era Parakeet path — not decoded, the no-speech verdict stands (AUD-36 measured the pcpp path only)");
+                return string.Empty;
             }
 
             var recognizer = usePcpp
@@ -400,6 +425,19 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService, IDispo
             {
                 gain = Helpers.DecodeInputGain.Decide(samples, sampleRate);
                 var joined = Helpers.ChunkedDecode.Run(plan, samples, DecodeOne, ct);
+
+                // AUD-36: the per-chunk tripwire is Information on a gate-blocked recording (see
+                // LogEmptyDecode), which would silence the TRN-10b/35 collapse class on exactly the
+                // quiet dictations the deferral serves. So the Warning is re-raised ONCE, after the
+                // join, in the one shape where "the gate's verdict confirmed" is provably not the
+                // story: other chunks of the SAME recording carried text.
+                var emptyDecodedChunks = chunkChars.Count(c => c == 0);
+                if (noSpeechSuspected && joined.Length > 0 && emptyDecodedChunks > 0)
+                {
+                    Logger.Warning(
+                        "Parakeet: {EmptyChunks} of {ChunkCount} chunks of a gate-blocked recording decoded empty while the others carried text — quiet-audio collapse (TRN-10b) is possible, " + EmptyDecodeCauseTail,
+                        emptyDecodedChunks, chunkChars.Count);
+                }
 
                 // TRN-15: one bounded extra decode of the tail, only when the final chunk's token
                 // timing proves the main decode stopped before the speech did. Inside the same
@@ -523,13 +561,28 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService, IDispo
             // client deadline, honours ct, and never fires on a typed failure (thrown above) or
             // on silence (empty is the correct answer there). The sherpa branch keeps its own
             // recoveries; this one is pcpp-only by construction.
+            //
+            // AUD-36: a recording the no-speech gate BLOCKED and the pipeline handed over anyway
+            // (the Parakeet deferral) is excluded: its emptiness is the audio's answer, and this
+            // net's single per-session attempt must stay armed for a real device fault. Logged,
+            // because a withheld safety net that leaves no trace is the invisibility TRN-50 exists
+            // to end.
             if (usePcpp && text.Length == 0 && gain.ActiveRmsDbfs > Helpers.DecodeInputGain.SilenceFloorDbfs)
             {
-                var cpuText = await _pcppBackend!.TryDecodeOnCpuFallbackAsync(
-                    pcppLease.Generation, plan, samples, sampleRate, gain.GainDb, ct).ConfigureAwait(false);
-                if (!string.IsNullOrEmpty(cpuText))
+                if (noSpeechSuspected)
                 {
-                    text = cpuText;
+                    Logger.Information(
+                        "Parakeet decoded a gate-blocked recording ({Seconds:F1}s, activeRms={ActiveRms:F1}dBFS) to nothing — the no-speech verdict stands; TRN-50 CPU re-decode withheld (AUD-36)",
+                        samples.Length / (double)sampleRate, gain.ActiveRmsDbfs);
+                }
+                else
+                {
+                    var cpuText = await _pcppBackend!.TryDecodeOnCpuFallbackAsync(
+                        pcppLease.Generation, plan, samples, sampleRate, gain.GainDb, ct).ConfigureAwait(false);
+                    if (!string.IsNullOrEmpty(cpuText))
+                    {
+                        text = cpuText;
+                    }
                 }
             }
 
@@ -652,6 +705,21 @@ public sealed class ParakeetTranscriptionService : ITranscriptionService, IDispo
                 {
                     Logger.Information(
                         "Parakeet chunk {ChunkIndex} ({ChunkSeconds:F1}s, activeRms={ActiveRms:F1}dBFS) decoded empty at +{GainDb:F1}dB and RECOVERED on a zero-gain re-decode (TRN-10c) — the gain, not the audio, was what failed",
+                        chunkChars.Count, seconds, outcome.ActiveRmsDbfs, outcome.FirstGainDb);
+                    return;
+                }
+
+                // AUD-36: on a recording the no-speech gate BLOCKED, an empty chunk is most likely
+                // the gate's verdict confirmed, not a collapse — the two Warnings below would fire on
+                // every accidental press in a quiet room and train a support reader to skip the real
+                // ones. Information keeps the fact in the log without the alarm. The per-chunk line
+                // deliberately does NOT say "no speech confirmed": on a multi-chunk plan whose OTHER
+                // chunks carry text, an empty chunk may still be a collapse — the post-join Warning
+                // below the decode is what says so (self-review, engine lens).
+                if (noSpeechSuspected)
+                {
+                    Logger.Information(
+                        "Parakeet chunk {ChunkIndex} ({ChunkSeconds:F1}s, activeRms={ActiveRms:F1}dBFS, gain=+{GainDb:F1}dB) decoded empty on a gate-blocked recording (AUD-36)",
                         chunkChars.Count, seconds, outcome.ActiveRmsDbfs, outcome.FirstGainDb);
                     return;
                 }
