@@ -180,7 +180,7 @@ public sealed class LegalBundleCorruptedDialog : ContentDialog
     {
         try
         {
-            Process.Start(new ProcessStartInfo("https://voicewink.app/install")
+            Process.Start(new ProcessStartInfo(VoiceWinkUrls.Reinstall)
             { UseShellExecute = true });
         }
         catch (Exception ex)

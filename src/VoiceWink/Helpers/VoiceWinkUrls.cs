@@ -15,11 +15,24 @@ namespace VoiceWink.Helpers;
 /// selection happens on the pricing page, and the per-variant LS checkout URLs live
 /// only in the site repo. Shipping a direct LS variant URL from the app would
 /// hard-code the current variant id into every old installer forever.</para>
+///
+/// <para><b>The <c>?src=app-…</c> query string is the link's source tag</b> (2026-09-18). A click from
+/// inside a desktop app reaches the browser with no referrer, so on the site's own analytics every
+/// visit from these links read as "Direct" — indistinguishable from a typed address. The site's
+/// first-party beacon reads the <c>src</c> parameter on the page it lands on and files the visit
+/// under it; the tag must be one of the beacon's closed list (dvstudio-metrics
+/// <c>beacon/src/lib.js</c>, <c>SOURCE_TAGS</c> — <c>app</c>, <c>app-buy</c>, <c>app-byok</c>,
+/// <c>app-reinstall</c>), anything else is discarded by the site, so a new tag here is a Worker
+/// deploy there first. The tag names where the link was published, never the user; the website's
+/// Cookie Notice (v5) and Privacy Policy §5 say so. The site's <c>/buy</c> redirect keeps the query
+/// string (measured 2026-09-18: <c>/buy?src=probe</c> answers <c>302 /?src=probe#pricing</c>, and the
+/// website's deploy smoke pins it). The PATHS stay the frozen contract above; the query string is not
+/// part of it.</para>
 /// </summary>
 internal static class VoiceWinkUrls
 {
     /// <summary>Marketing landing page.</summary>
-    public const string Marketing = "https://voicewink.app";
+    public const string Marketing = "https://voicewink.app/?src=app";
 
     /// <summary>
     /// Buy-a-license CTA. Once <c>voicewink.app/buy</c> is wired up it 302s at the web
@@ -27,14 +40,20 @@ internal static class VoiceWinkUrls
     /// avoiding a hard-coded variant URL baked into old installers. The mapping is owned
     /// by the <c>voicewink-site</c> repo (see the class remarks).
     /// </summary>
-    public const string Buy = "https://voicewink.app/buy";
+    public const string Buy = "https://voicewink.app/buy?src=app-buy";
 
     // No trial-key URL: the free trial is local and needs no key (LIC-21, owner decision
     // 2026-09-06 — the Lemon Squeezy $0 trial variant and its /trial route were retired; free keys
     // for testers are 100 %-off discount codes on the paid variants, handed out by the owner).
 
     /// <summary>User-facing BYOK / self-serve setup guide.</summary>
-    public const string ByokSetup = "https://voicewink.app/byok-setup";
+    public const string ByokSetup = "https://voicewink.app/byok-setup?src=app-byok";
+
+    /// <summary>
+    /// The install page, opened by the legal-bundle dialog's "exit and reinstall" button. Tagged
+    /// <c>app-reinstall</c> so those arrivals can be told from the ordinary install traffic.
+    /// </summary>
+    public const string Reinstall = "https://voicewink.app/install?src=app-reinstall";
 
     /// <summary>Support contact (REL-3 "Report a problem"). Routed via the DV Studio domain.</summary>
     public const string SupportEmail = "support@dvstudio.app";

@@ -17,6 +17,10 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.92.387] - 2026-09-18
+
+- The Privacy Policy's website section now names the source tag a link from the app or the Store listing carries; the app asked you to accept that update once.
+
 ## [1.91.386] - 2026-09-18
 
 - The Privacy Policy's website section now describes the page beacon on voicewink.app and how to opt out of it; the app asked you to accept that update once.
