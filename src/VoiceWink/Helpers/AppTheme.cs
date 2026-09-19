@@ -685,7 +685,11 @@ public static class AppTheme
         // built in code populate before ShowAsync, so BOTH callers re-run their gating on
         // ContentDialog.Opened (UI-18, 2026-09-17), which is what makes a populate land against a
         // LIVE control. Owner-observed WinUI behaviour; no test in this repo can see it.
+        // UI-19 (2026-09-18): not the whole story — the box also went blank after a USER pick, on
+        // a row that is never swapped, so every option row now carries ComboSelectionBoxGuard,
+        // which re-asserts the closed box after each dropdown close and logs what it held.
         combo.ItemTemplate = IndicatorRowTemplate();
+        UsePlainListPanel(combo);
         combo.ItemsSource = items;
 
         var selectedIndex = IndicatorComboRows.IndexForTag(options, selectedTag);
@@ -726,6 +730,53 @@ public static class AppTheme
 
     private static DataTemplate? _indicatorTemplate;
     private static string? _indicatorTemplateColor;
+
+    /// <summary>
+    /// Give a ComboBox a plain, non-wrapping dropdown (UI-20, 2026-09-19).
+    /// <para>WinUI's default <c>ItemsPanel</c> for a ComboBox is <c>CarouselPanel</c>, whose purpose is
+    /// to WRAP: when the popup opens in place — the selected row over the closed box — and there is room
+    /// beyond an end of the list, it fills that room with rows from the other end, and scrolling never
+    /// stops. The owner saw the Aspect ratio list open as <c>3:4 / 2:3 / 9:16 / 1:2</c>, a gap, then
+    /// <c>Auto / 1:1 / …</c>. A <c>StackPanel</c> panel has no wrap; the popup template's own
+    /// <c>ScrollViewer</c> still scrolls a list taller than the popup.</para>
+    /// <para>Applied to the four image-option rows (aspect / size / quality through
+    /// <see cref="PopulateIndicatorCombo"/>, Versions at construction); every other ComboBox keeps the
+    /// default. Idempotent — a repopulate must not re-template the panel, so the same cached template
+    /// is assigned once and compared by reference after that. Parsed with <see cref="XamlReader"/>
+    /// like <see cref="IndicatorRowTemplate"/> (WinUI 3 has no code-first template API) — but that
+    /// proof covers a <c>DataTemplate</c> root; an <c>ItemsPanelTemplate</c> root is NEW here, and the
+    /// call sits on the dialog-open path, so the parse is fail-soft: a throw is logged once and the
+    /// row keeps WinUI's default panel (the wrap) rather than taking the dialog down.</para>
+    /// <para>Not for long lists: a plain <c>StackPanel</c> does not virtualise and gives up the
+    /// carousel's popup-height clamping. These rows hold at most eleven items.</para>
+    /// </summary>
+    public static void UsePlainListPanel(ComboBox combo)
+    {
+        var template = PlainListPanelTemplate();
+        if (template == null) return;
+        if (!ReferenceEquals(combo.ItemsPanel, template)) combo.ItemsPanel = template;
+    }
+
+    private static ItemsPanelTemplate? PlainListPanelTemplate()
+    {
+        if (_plainListPanel != null || _plainListPanelFailed) return _plainListPanel;
+        const string xaml =
+            "<ItemsPanelTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\">" +
+            "<StackPanel /></ItemsPanelTemplate>";
+        try
+        {
+            _plainListPanel = (ItemsPanelTemplate)XamlReader.Load(xaml);
+        }
+        catch (global::System.Exception ex)
+        {
+            _plainListPanelFailed = true;
+            Logger.Warning(ex, "Plain list panel template failed to parse; dropdowns keep the default panel");
+        }
+        return _plainListPanel;
+    }
+
+    private static ItemsPanelTemplate? _plainListPanel;
+    private static bool _plainListPanelFailed;
 
     /// <summary>
     /// The tag of an indicator combo's current selection, or null for Auto / no selection.

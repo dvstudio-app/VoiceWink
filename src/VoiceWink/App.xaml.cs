@@ -936,7 +936,23 @@ public partial class App : Application, Services.IAppLifetime
             legacyTempDir: Path.GetTempPath(),
             quiesceMediaCleanup: () => sp.GetRequiredService<ReferencePersistence>()
                 .QuiesceAsync(TimeSpan.FromSeconds(5)),
-            resumeMediaCleanup: () => sp.GetRequiredService<ReferencePersistence>().ResumeCleanup()));
+            resumeMediaCleanup: () => sp.GetRequiredService<ReferencePersistence>().ResumeCleanup(),
+            // REL-39: the Parakeet children hold the GGUF under Models; the coordinator runs the
+            // same quiesce its model delete runs (and cancels the GPU warm-up for BOTH legs first).
+            // Without a pcpp backend (the kill-switch build) only the warm-up cancel applies — one
+            // cancel per build, issued here directly because no coordinator exists to issue it.
+            quiesceLocalEngines: async () =>
+            {
+                var pcpp = sp.GetService<IParakeetPcppBackend>();
+                if (pcpp is not null) return await pcpp.TryQuiesceForErasureAsync().ConfigureAwait(false);
+                GpuWarmup.Instance.Cancel(GpuWarmupCancelReason.DataErasure);
+                if (!await GpuWarmup.Instance.WaitForWhisperQuiesceAsync(GpuWarmup.QuiesceConfirmBudget).ConfigureAwait(false))
+                {
+                    Log.Warning("erasure: the Whisper GPU self-test did not end within {Seconds:F0}s of cancellation - its marker write may land after the delete pass",
+                        GpuWarmup.QuiesceConfirmBudget.TotalSeconds);
+                }
+                return true; // nothing in this build holds a file under Models — the hook's verdict is about held files
+            }));
 
         // Changelog / What's-new dialog (REL-4)
         services.AddSingleton<Services.Support.ChangelogParser>();
@@ -3565,6 +3581,9 @@ public partial class App : Application, Services.IAppLifetime
             sizeCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
             qualityCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
             versionsCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+            // UI-20: a plain list like the three indicator rows (which get it inside
+            // PopulateIndicatorCombo) — Versions is filled with Items.Add and never goes through it.
+            AppTheme.UsePlainListPanel(versionsCombo);
 
             // The ONLY signal that sees an intermediate pick. An end-state comparison cannot: choose
             // Standard, change your mind back to the displayed Enhanced, and the combo ends where it
@@ -3575,6 +3594,13 @@ public partial class App : Application, Services.IAppLifetime
                 if (qualityAsk.IsPopulating) return;
                 qualityAsk.NoteUserPick(AppTheme.SelectedIndicatorTag(qualityCombo));
             };
+
+            // UI-19: every option row re-asserts its closed box after each dropdown close, and
+            // logs what the box held before it did — the guard's doc comment has the defect.
+            ComboSelectionBoxGuard.Attach(aspectCombo, "aspect");
+            ComboSelectionBoxGuard.Attach(sizeCombo, "size");
+            ComboSelectionBoxGuard.Attach(qualityCombo, "quality", () => qualityAsk.BeginPopulate());
+            ComboSelectionBoxGuard.Attach(versionsCombo, "versions");
         }
 
         // Dialog layout
@@ -4171,6 +4197,12 @@ public partial class App : Application, Services.IAppLifetime
                 : null);
         }
 
+        // UI-19: a re-gate that arrives while one of these rows has its dropdown OPEN is replayed
+        // at that dropdown's close instead of swapping the rows under the popup — the cache-MISS
+        // BindModels lands whenever the network answers, which on the first dialog of a session
+        // can be mid-pick. See ComboRegateDeferral.
+        var regateDeferral = new ComboRegateDeferral(aspectCombo, sizeCombo, qualityCombo);
+
         // Refresh aspect / size / quality dropdowns + visibility for the current selection.
         // Called on initial show and on every provider/model change so the user only sees
         // options the resolved model actually accepts.
@@ -4178,6 +4210,9 @@ public partial class App : Application, Services.IAppLifetime
         {
             if (!isImageGeneration || aspectCombo == null || sizeCombo == null || qualityCombo == null
                 || aspectLabel == null || sizeLabel == null || qualityLabel == null) return;
+            // Fenced like every other post-await path in this builder: a Hide() with a dropdown
+            // open raises its DropDownClosed, and the replay must not touch detached controls.
+            if (regateDeferral.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); })) return;
 
             // IMG-5: gate against the model the run will ACTUALLY use, and against what THAT model
             // publishes. `enhancement` is already resolved at the top of this method — no second
@@ -4196,13 +4231,20 @@ public partial class App : Application, Services.IAppLifetime
             var aspectVis = gating.ShowAspect ? Visibility.Visible : Visibility.Collapsed;
             aspectLabel.Visibility = aspectVis;
             aspectCombo.Visibility = aspectVis;
+            // IMG-17 (closed by UI-19): carry the CURRENT selection, an explicit Auto included —
+            // TryGetSelectedIndicatorTag tells "the user chose Auto" from "not populated yet",
+            // which SelectedIndicatorTag cannot (both null); the rule itself is
+            // IndicatorComboRows.TagToCarry. UI-19's deferred replay re-gates right after a pick,
+            // so the old `?? previous ?? saved` chain would have re-seeded a just-cleared aspect
+            // from the saved tag and confirmed it.
             if (gating.ShowAspect)
             {
                 AppTheme.PopulateImageAspectComboWithIndicators(
                     aspectCombo,
-                    AppTheme.SelectedIndicatorTag(aspectCombo)
-                        ?? capturedContext.PreviousImageAspect
-                        ?? capturedContext.Prompt?.ImageAspect,
+                    IndicatorComboRows.TagToCarry(
+                        AppTheme.TryGetSelectedIndicatorTag(aspectCombo, out var aspectTag),
+                        aspectTag,
+                        capturedContext.PreviousImageAspect ?? capturedContext.Prompt?.ImageAspect),
                     gating.Aspects);
             }
 
@@ -4213,9 +4255,10 @@ public partial class App : Application, Services.IAppLifetime
             {
                 AppTheme.PopulateImageSizeTierComboWithIndicators(
                     sizeCombo,
-                    AppTheme.SelectedIndicatorTag(sizeCombo)
-                        ?? capturedContext.PreviousImageSizeTier
-                        ?? capturedContext.Prompt?.ImageSizeTier,
+                    IndicatorComboRows.TagToCarry(
+                        AppTheme.TryGetSelectedIndicatorTag(sizeCombo, out var sizeTag),
+                        sizeTag,
+                        capturedContext.PreviousImageSizeTier ?? capturedContext.Prompt?.ImageSizeTier),
                     supportedTiers);
             }
 
@@ -4312,11 +4355,15 @@ public partial class App : Application, Services.IAppLifetime
         // populate is pre-show too. NOT a clean first-open/later-open split, though: a provider
         // with no key, and an offline throw, both return synchronously on the miss path as well.
         //
-        // Safe HERE specifically — not idempotent in general. Opened fires before any user
-        // interaction, so every row re-derives the same tag from the same expression it used
-        // pre-show, and the quality row reads the untouched ask. SelectedIndicatorTag answers null
-        // for BOTH "Auto" and "nothing selected" (see its doc comment), so a re-gate placed AFTER
-        // a user pick is a different question — see IMG-17.
+        // Opened fires before any user interaction, so every row re-derives the same tag from the
+        // same expression it used pre-show, and the quality row reads the untouched ask. (A
+        // re-gate AFTER a user pick used to be a different question — SelectedIndicatorTag
+        // answers null for BOTH "Auto" and "nothing selected" — until UI-19 moved the aspect and
+        // size rows to TryGetSelectedIndicatorTag, closing IMG-17.)
+        //
+        // UI-19 (2026-09-18): this pre-show account proved incomplete — the box went blank again
+        // after a USER pick, on the Versions row that no populate ever swaps. The re-gate here
+        // stays; ComboSelectionBoxGuard (attached above) is what covers the pick.
         dialog.Opened += (_, _) => RefreshImageOptionGating();
         // Composed confirm rule: models loaded AND non-empty input text (IMG-1 — the
         // text-first entry starts empty; a redo's pre-filled text satisfies it as before).

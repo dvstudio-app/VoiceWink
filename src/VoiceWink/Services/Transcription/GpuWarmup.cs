@@ -249,9 +249,16 @@ internal sealed class GpuWarmup
         // admission or Audio Transcribe: the decode those admit is the one the self-test exists to
         // protect, and cancelling it there is what produced the 13-minute incident (Kimi r1 K6's
         // suggested split was rejected on exactly this point).
+        // REL-39: DataErasure is a Shutdown in every respect that matters here — the process exits on
+        // a clean erasure and is told to close on a partial one — so it cancels the Whisper leg and
+        // latches _shutdown below. Erasure's entry calls this UNCONDITIONALLY (never through
+        // WaitForParakeetQuiesceAsync's reasonIfCancelled, which fires only while a Parakeet run is in
+        // flight — the plan-round Blocker both seats found): a Whisper leg surviving the erasure would
+        // otherwise write gpu-warmup.json back AFTER the delete pass removed it.
         var cancelsWhisper = reason is GpuWarmupCancelReason.ModelSelection
             or GpuWarmupCancelReason.LanguageReload
-            or GpuWarmupCancelReason.Shutdown;
+            or GpuWarmupCancelReason.Shutdown
+            or GpuWarmupCancelReason.DataErasure;
         if (!_cts.IsCancellationRequested && _parakeetQueued != 0)
         {
             Logger.Information("GPU warm-up cancelled: {Reason}", reason);
@@ -262,7 +269,7 @@ internal sealed class GpuWarmup
             CancellationTokenSource? whisper;
             lock (_whisperLock)
             {
-                if (reason == GpuWarmupCancelReason.Shutdown)
+                if (reason is GpuWarmupCancelReason.Shutdown or GpuWarmupCancelReason.DataErasure)
                 {
                     // Under the lock: QueueWhisperWarmup re-reads it there, so a load racing this
                     // cancel cannot publish a run nothing will ever cancel (self-review, concurrency lens).
@@ -331,6 +338,9 @@ internal sealed class GpuWarmup
             }
         }
     }
+
+    /// <summary>Test seam (REL-39): the Whisper queue's shutdown latch, set by Cancel(Shutdown | DataErasure).</summary>
+    internal bool IsShutdownForTests => _shutdown;
 
     /// <summary>UI-12: is that engine's warm-up/self-test in flight right now? Whisper: the queued
     /// run's task; Parakeet: the queued task under its lock. False unconfigured.</summary>
@@ -481,6 +491,27 @@ internal sealed class GpuWarmup
         // Cancelled by ANYONE — this quiesce's grace expiry, or admission/shutdown arriving during
         // the grace — reads Cancelled; only an untouched run that ended on its own reads Completed.
         return _cts.IsCancellationRequested ? ParakeetQuiesceOutcome.Cancelled : ParakeetQuiesceOutcome.Completed;
+    }
+
+    /// <summary>
+    /// REL-39: wait (bounded) for an in-flight Whisper self-test run to END, and say whether it did.
+    /// The erasure entry calls this right after <see cref="Cancel"/>(DataErasure): the cancelled decode
+    /// ends through whisper.cpp's abort path with nothing decoded ("no mark, no verdict"), but a run
+    /// already past its decode is milliseconds from a marker write, and erasure's delete pass must not
+    /// race it — a late write would put <c>gpu-warmup.json</c> back after the pass removed it. True when
+    /// no run is in flight or it ended within <paramref name="budget"/>; false means a write may still
+    /// land, which the caller logs (Whisper holds no file, so nothing else follows from it). Never
+    /// cancels anything itself and never touches the Parakeet leg.
+    /// </summary>
+    public async Task<bool> WaitForWhisperQuiesceAsync(TimeSpan budget)
+    {
+        Task task;
+        lock (_whisperLock)
+        {
+            task = _whisperTask;
+        }
+        if (task.IsCompleted) return true;
+        return await Task.WhenAny(task, Task.Delay(budget)).ConfigureAwait(false) == task;
     }
 
     /// <summary>Observe a retained (unconfirmed) warm child, bounded by
@@ -1393,6 +1424,9 @@ internal enum GpuWarmupCancelReason
     /// <summary>The live transcription acquire's zero-grace quiesce (admission normally cancelled first).</summary>
     TranscriptionAcquire,
     ModelDelete,
+    /// <summary>REL-39: "Delete all data" — a Shutdown for both legs (the process exits, or is told to
+    /// close); issued unconditionally by the erasure entry, never through a quiesce's reasonIfCancelled.</summary>
+    DataErasure,
 }
 
 /// <summary>What <see cref="GpuWarmup.WaitForParakeetQuiesceAsync"/> found. Callers branch on

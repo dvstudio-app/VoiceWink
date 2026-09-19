@@ -1127,53 +1127,13 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                 return false;
             }
 
-            // 2. Stop background work that would race the deletes: the migration download and
-            //    the verification hash both hold the file open. The joins ABORT the delete on
-            //    timeout rather than proceeding (self-review, concurrency F3): a migration that
-            //    has not unwound still HOLDS the per-model lock, and proceeding parked the UI
-            //    thread on that lock with no bound at all. Aborting is safe by construction —
-            //    the tombstone is already durable, so the retry resumes.
-            _migrationCts?.Cancel();
-            _verifyCts?.Cancel();
-            var joined = true;
-            try { joined = _migration?.Wait(TimeSpan.FromSeconds(10)) ?? true; }
-            catch { /* a faulted task is a completed task; its failure logged itself */ }
-            if (joined)
+            // 2 / 3a / 3. Stop everything that holds a file under the bundle — the shared core
+            //    (REL-39 extracted it so erasure runs the same quiesce). Every timeout ABORTS the
+            //    delete rather than proceeding: the tombstone is already durable, so the retry
+            //    resumes. Blocking here is the pre-extraction shape — this method runs on the pool
+            //    (the Models page's Task.Run) and already blocked on the two async steps.
+            if (!QuiesceChildrenAsync(GpuWarmupCancelReason.ModelDelete, "parakeet delete").GetAwaiter().GetResult())
             {
-                // Short-circuited when the migration join already failed (Kimi diff r1): a
-                // second 10 s wait on an already-doomed delete only lengthens the UI freeze.
-                try { joined = _verification?.Wait(TimeSpan.FromSeconds(10)) ?? true; }
-                catch { /* ditto */ }
-            }
-            if (!joined)
-            {
-                Logger.Warning("parakeet delete: background work did not stop in time - aborting; retry later");
-                return false;
-            }
-
-            // 3a. TRN-49: the warm-up child ALSO holds the GGUF open during its window; a delete
-            //     that only retires the resident child fails on the lock and confuses the user
-            //     (self-review, three lenses independently). TRN-57: the quiesce is bounded, with
-            //     zero grace and an explicit reason (never inferred from the zero); an Unconfirmed
-            //     child still holds the file — abort like the other "retry later" branches, and
-            //     the tombstone keeps the retry honest.
-            var quiesce = _warmup.WaitForParakeetQuiesceAsync(TimeSpan.Zero, GpuWarmupCancelReason.ModelDelete)
-                .GetAwaiter().GetResult();
-            if (quiesce == ParakeetQuiesceOutcome.Unconfirmed)
-            {
-                Logger.Warning("parakeet delete: the GPU warm-up child's exit is unconfirmed - aborting; retry later");
-                return false;
-            }
-
-            // 3. Retire the resident server — it holds the GGUF open. CONFIRM-OR-PARK through
-            //    the bounded mid-session API, never ShutdownAsync (self-review, state F4: its
-            //    unconditional dispose assumes app exit, where no successor can spawn; here one
-            //    can, and an unconfirmed kill must park in _retiring so the next acquire
-            //    refuses). False = gate busy (an acquire's health wait) or kill unconfirmed —
-            //    abort; the file may still be open and the tombstone makes the retry honest.
-            if (!_server.TryRetireResidentAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult())
-            {
-                Logger.Warning("parakeet delete: could not retire the resident server - aborting; retry later");
                 return false;
             }
 
@@ -1231,6 +1191,132 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                 _lastLeaseIdentity = null;
             }
             return allGone;
+        }
+        finally
+        {
+            _state.Release();
+        }
+    }
+
+    /// <summary>
+    /// Steps 2 / 3a / 3 of the delete, shared with erasure (REL-39): cancel + bounded joins of the
+    /// migration download and the verification hash (both hold a file under the bundle), the
+    /// TRN-49 warm-up child's quiesce (zero grace; <paramref name="reason"/> is what a cancel logs —
+    /// and it fires only while a Parakeet run is in flight, which is why erasure issues its own
+    /// unconditional cancel BEFORE calling this), the resident server's confirm-or-park retire.
+    /// True only when every step confirmed. <b>Caller holds <see cref="_state"/>.</b>
+    ///
+    /// <para>Join semantics are the sync <c>Wait</c>'s (Kimi, plan round): a faulted or cancelled
+    /// task counts as JOINED — it is complete — and its exception is observed here so the async
+    /// rewrite raises no <c>UnobservedTaskException</c> the old <c>Wait</c> used to swallow.</para>
+    /// </summary>
+    private async Task<bool> QuiesceChildrenAsync(GpuWarmupCancelReason reason, string site)
+    {
+        // 2. Stop background work that would race the deletes: the migration download and
+        //    the verification hash both hold the file open. The joins ABORT on timeout rather
+        //    than proceeding (self-review, concurrency F3): a migration that has not unwound
+        //    still HOLDS the per-model lock, and proceeding parked the UI thread on that lock with
+        //    no bound at all.
+        _migrationCts?.Cancel();
+        _verifyCts?.Cancel();
+        var joined = await JoinAsync(_migration, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        if (joined)
+        {
+            // Short-circuited when the migration join already failed (Kimi diff r1): a
+            // second 10 s wait on an already-doomed delete only lengthens the UI freeze.
+            joined = await JoinAsync(_verification, TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        }
+        if (!joined)
+        {
+            Logger.Warning("{Site}: background work did not stop in time - aborting; retry later", site);
+            return false;
+        }
+
+        // 3a. TRN-49: the warm-up child ALSO holds the GGUF open during its window; a delete
+        //     that only retires the resident child fails on the lock and confuses the user
+        //     (self-review, three lenses independently). TRN-57: the quiesce is bounded, with
+        //     zero grace and an explicit reason (never inferred from the zero); an Unconfirmed
+        //     child still holds the file — abort like the other "retry later" branches.
+        var quiesce = await _warmup.WaitForParakeetQuiesceAsync(TimeSpan.Zero, reason).ConfigureAwait(false);
+        if (quiesce == ParakeetQuiesceOutcome.Unconfirmed)
+        {
+            Logger.Warning("{Site}: the GPU warm-up child's exit is unconfirmed - aborting; retry later", site);
+            return false;
+        }
+
+        // 3. Retire the resident server — it holds the GGUF open. CONFIRM-OR-PARK through
+        //    the bounded mid-session API, never ShutdownAsync (self-review, state F4: its
+        //    unconditional dispose assumes app exit, where no successor can spawn; here one
+        //    can, and an unconfirmed kill must park in _retiring so the next acquire
+        //    refuses). False = gate busy (an acquire's health wait) or kill unconfirmed —
+        //    abort; the file may still be open.
+        if (!await _server.TryRetireResidentAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false))
+        {
+            Logger.Warning("{Site}: could not retire the resident server - aborting; retry later", site);
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>Bounded join with the sync <c>Wait(timeout)</c>'s semantics: a null task is joined,
+    /// a faulted or cancelled one is joined (and observed), only a still-running one is not.</summary>
+    private static async Task<bool> JoinAsync(Task? task, TimeSpan timeout)
+    {
+        if (task is null || task.IsCompleted)
+        {
+            _ = task?.Exception; // observe a fault the sync Wait used to throw-and-catch
+            return true;
+        }
+        if (await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false) != task) return false;
+        _ = task.Exception;
+        return true;
+    }
+
+    /// <summary>
+    /// REL-39: how long a GDPR erasure may wait for <see cref="_state"/> before proceeding without
+    /// the quiesce. Bounded like <see cref="ShutdownStateWait"/>, longer because the caller is an
+    /// async continuation inside the erasure dialog rather than the exiting UI thread; the long
+    /// holders are the same (a Models-page delete's ~40 s worst case — the joins, the quiesce and
+    /// the retire's own 5 s confirm — and the auto-cleanup's 670 MB sweep), and neither can start
+    /// once the dialog is up — the page sits behind the modal and
+    /// every start path reads <c>IsErasing</c> — so the bound covers a holder that began seconds
+    /// before the click. <b>What it gives up:</b> a miss returns false, the erasure's delete pass
+    /// then finds the GGUF still held and names <c>Models</c> although the holder was in the middle
+    /// of freeing those very bytes; the REL-38 re-run converges (the holder is gone by the second
+    /// click). Internal so a contention row can shorten it.
+    /// </summary>
+    internal TimeSpan ErasureStateWait = TimeSpan.FromSeconds(15);
+
+    public async Task<bool> TryQuiesceForErasureAsync()
+    {
+        // Unconditional, and FIRST (the plan-round Blocker both seats found): the quiesce below
+        // cancels only while a Parakeet run is in flight, so on a machine past its warm-up window
+        // the DataErasure reason — cancel the Whisper self-test leg, latch _shutdown — would never
+        // be issued, and a Whisper leg surviving the erasure could write gpu-warmup.json back after
+        // the delete pass removed it. Then observe that leg, bounded: a false here only logs —
+        // Whisper holds no file, and a late marker write is the only thing a straggler can do.
+        //
+        // Known, converging edge (self-review): inside the once-per-version warm-up window this
+        // cancel is also what RELEASES a startup preload parked in its spawn grace, and that preload
+        // then spawns the resident child (a prepare, not an IsErasing-gated start); its health wait
+        // holds the gate past the retire's 2 s bound → false → Models named on the first click; the
+        // REL-38 re-run retires it once the acquire has ended (≤ 30 s).
+        _warmup.Cancel(GpuWarmupCancelReason.DataErasure);
+        if (!await _warmup.WaitForWhisperQuiesceAsync(GpuWarmup.QuiesceConfirmBudget).ConfigureAwait(false))
+        {
+            Logger.Warning("erasure: the Whisper GPU self-test did not end within {Seconds:F0}s of cancellation - its marker write may land after the delete pass",
+                GpuWarmup.QuiesceConfirmBudget.TotalSeconds);
+        }
+
+        if (!await _state.WaitAsync(ErasureStateWait).ConfigureAwait(false))
+        {
+            Logger.Warning("erasure: parakeet coordinator state busy after {TimeoutMs} ms - proceeding without the child quiesce",
+                (int)ErasureStateWait.TotalMilliseconds);
+            return false;
+        }
+        try
+        {
+            return await QuiesceChildrenAsync(GpuWarmupCancelReason.DataErasure, "erasure").ConfigureAwait(false);
         }
         finally
         {

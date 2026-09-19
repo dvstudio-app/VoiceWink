@@ -158,6 +158,17 @@ public interface IParakeetPcppBackend
     /// would let the migration download re-fetch bytes the user just asked to remove.</summary>
     bool TryDeleteBoth();
 
+    /// <summary>REL-39: stop everything of ours that holds a file under <c>Models</c> so a GDPR
+    /// erasure's delete pass can remove the folder — the same quiesce <see cref="TryDeleteBoth"/> runs
+    /// before it deletes a bundle (cancel + bounded joins of the migration download and the
+    /// verification hash, the TRN-49 warm-up child, the resident server), preceded by an
+    /// UNCONDITIONAL warm-up cancel with the <c>DataErasure</c> reason (both legs) and a bounded wait
+    /// for an in-flight Whisper self-test to end. No tombstone, no delete, no ledger change — the caller
+    /// owns the bytes. Idempotent, every wait bounded. False means a child MAY still hold the file: the
+    /// erasure continues regardless and names <c>Models</c> if the delete then fails (past its commit
+    /// the user's personal data is already going; aborting would keep it to protect a model payload).</summary>
+    Task<bool> TryQuiesceForErasureAsync();
+
     /// <summary>The installed legacy sherpa bundle's directory, or null when none is installed.
     /// The G6 flip made the catalog row the GGUF bundle, so the runtime's ServeSherpa
     /// fall-through can no longer resolve the sherpa directory from the row name — this is where

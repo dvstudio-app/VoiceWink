@@ -57,10 +57,13 @@ public sealed class AboutPage : Page
             TextWrapping = TextWrapping.Wrap,
         };
 
+        // The visible text stays the bare domain; the target carries the `?src=app` source tag like
+        // every other voicewink.app link the app publishes (UI-19b — this was the one untagged
+        // literal left after PR #992, so About-page clicks read as "Direct" on the site's beacon).
         var siteLink = new HyperlinkButton
         {
             Content = "voicewink.app",
-            NavigateUri = new Uri("https://voicewink.app"),
+            NavigateUri = new Uri(VoiceWinkUrls.Marketing),
         };
         var repoLink = new HyperlinkButton
         {

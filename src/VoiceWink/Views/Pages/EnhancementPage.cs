@@ -1838,6 +1838,12 @@ public sealed class EnhancementPage : Page
             };
             qualityCombo.Visibility = aspectLabel.Visibility;
 
+            // UI-19: same guard as the options dialog — the closed box is re-asserted after every
+            // dropdown close, and what it held before is logged.
+            ComboSelectionBoxGuard.Attach(aspectCombo, "aspect");
+            ComboSelectionBoxGuard.Attach(sizeCombo, "size");
+            ComboSelectionBoxGuard.Attach(qualityCombo, "quality", () => qualityAsk.BeginPopulate());
+
             var qualityHint = new TextBlock
             {
                 Text = "Higher quality = more tokens / longer rendering. Auto picks per the model's default.",
@@ -1865,12 +1871,17 @@ public sealed class EnhancementPage : Page
                 return raw;
             }
 
+            // UI-19: RefreshModelOptions re-gates after its fetch, which can land while one of
+            // these rows has its dropdown open; the replay waits for that close. See ComboRegateDeferral.
+            var regateDeferral = new ComboRegateDeferral(aspectCombo, sizeCombo, qualityCombo);
+
             // Re-filter the aspect / size / quality dropdowns based on the resolved provider+model.
             // Also toggles visibility of the Size + Quality sub-sections when the model doesn't
             // accept those parameters at all (e.g. gpt-image-1.x has no tier; Gemini has no quality).
             void RefreshImageOptionGating()
             {
                 if (typeCombo.SelectedIndex != 1) return; // only meaningful on the image branch
+                if (regateDeferral.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); })) return;
                 var provider = EffectiveProvider();
                 // IMG-5: "(Default)" must gate against the model the RUNTIME would pick, not the
                 // provider's hardcoded default. Resolved with a NULL prompt deliberately — that is
@@ -1895,9 +1906,14 @@ public sealed class EnhancementPage : Page
                 aspectCombo.Visibility = aspectVis;
                 if (gating.ShowAspect)
                 {
+                    // IMG-17 (closed by UI-19): an explicit Auto is carried as Auto — the
+                    // Try-reader tells it from "not populated yet"; see the options dialog.
                     AppTheme.PopulateImageAspectComboWithIndicators(
                         aspectCombo,
-                        AppTheme.SelectedIndicatorTag(aspectCombo) ?? prompt.ImageAspect,
+                        IndicatorComboRows.TagToCarry(
+                            AppTheme.TryGetSelectedIndicatorTag(aspectCombo, out var aspectTag),
+                            aspectTag,
+                            prompt.ImageAspect),
                         gating.Aspects);
                 }
 
@@ -1909,7 +1925,10 @@ public sealed class EnhancementPage : Page
                 {
                     AppTheme.PopulateImageSizeTierComboWithIndicators(
                         sizeCombo,
-                        AppTheme.SelectedIndicatorTag(sizeCombo) ?? prompt.ImageSizeTier,
+                        IndicatorComboRows.TagToCarry(
+                            AppTheme.TryGetSelectedIndicatorTag(sizeCombo, out var sizeTag),
+                            sizeTag,
+                            prompt.ImageSizeTier),
                         tiers);
                 }
 
@@ -1938,6 +1957,7 @@ public sealed class EnhancementPage : Page
             // blank though the selection itself is correct — see PopulateIndicatorCombo. Safe here
             // because Opened precedes any user interaction, so each row re-derives the same tag it
             // derived pre-show; on a text prompt the gating's own early return makes this a no-op.
+            // UI-19: the box can also go blank after a USER pick — ComboSelectionBoxGuard, above.
             dialog.Opened += (_, _) => RefreshImageOptionGating();
 
             // ── Ask for Image Options toggle ────────────────────────────────

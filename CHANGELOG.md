@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.93.388] - 2026-09-19
+
+- Image generation: the Aspect ratio, Size, Quality and Versions boxes keep showing the value you picked, and an Auto you chose survives a model switch.
+- Delete all my data: a partial failure now names what remains, and Delete everything can be tried again.
+- Delete all my data now removes the Parakeet model files too.
+
 ## [1.92.387] - 2026-09-18
 
 - The Privacy Policy's website section now names the source tag a link from the app or the Store listing carries; the app asked you to accept that update once.

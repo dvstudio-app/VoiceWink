@@ -32,8 +32,9 @@ public sealed class IndicatorRow
 }
 
 /// <summary>
-/// The two pure decisions behind the image-option indicator combos (aspect / size tier / quality):
-/// which rows a model's capabilities allow, and which row starts selected.
+/// The pure decisions behind the image-option indicator combos (aspect / size tier / quality):
+/// which rows a model's capabilities allow, which row starts selected, and — since UI-19 — which
+/// tag a repopulate carries forward.
 /// <para>They live here rather than in <see cref="AppTheme"/> because that type's static
 /// initializer needs the WinUI runtime, so nothing inside it can be reached from a unit test.
 /// The row shape is the same named tuple <see cref="ImageOptions.AspectComboRows"/> already
@@ -83,4 +84,19 @@ internal static class IndicatorComboRows
         }
         return 0;
     }
+
+    /// <summary>
+    /// The tag a repopulate of the aspect or size row carries forward (IMG-17, closed by UI-19):
+    /// the row's CURRENT selection whenever one exists — an explicit Auto (null tag) included —
+    /// and <paramref name="fallback"/> (the previous run's or the prompt's saved tag) only when
+    /// the row has never been populated.
+    /// <para>The old expression was <c>SelectedIndicatorTag(combo) ?? previous ?? saved</c>, and
+    /// that reader answers null for BOTH "the user chose Auto" and "nothing selected", so an
+    /// explicit Auto fell through to the saved tag on every re-gate. UI-19's deferred replay
+    /// re-gates right after a pick, which made that fall-through the very next thing to happen to
+    /// a just-cleared row. Callers feed <paramref name="rowSelected"/> from
+    /// <c>AppTheme.TryGetSelectedIndicatorTag</c>, which does tell the two apart.</para>
+    /// </summary>
+    internal static string? TagToCarry(bool rowSelected, string? selectedTag, string? fallback)
+        => rowSelected ? selectedTag : fallback;
 }

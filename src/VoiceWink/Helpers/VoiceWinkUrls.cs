@@ -21,13 +21,18 @@ namespace VoiceWink.Helpers;
 /// visit from these links read as "Direct" — indistinguishable from a typed address. The site's
 /// first-party beacon reads the <c>src</c> parameter on the page it lands on and files the visit
 /// under it; the tag must be one of the beacon's closed list (dvstudio-metrics
-/// <c>beacon/src/lib.js</c>, <c>SOURCE_TAGS</c> — <c>app</c>, <c>app-buy</c>, <c>app-byok</c>,
-/// <c>app-reinstall</c>), anything else is discarded by the site, so a new tag here is a Worker
-/// deploy there first. The tag names where the link was published, never the user; the website's
-/// Cookie Notice (v5) and Privacy Policy §5 say so. The site's <c>/buy</c> redirect keeps the query
-/// string (measured 2026-09-18: <c>/buy?src=probe</c> answers <c>302 /?src=probe#pricing</c>, and the
-/// website's deploy smoke pins it). The PATHS stay the frozen contract above; the query string is not
-/// part of it.</para>
+/// <c>beacon/src/lib.js</c>, <c>SOURCE_TAGS</c> — the app-published tags are <c>app</c>,
+/// <c>app-buy</c>, <c>app-byok</c> and <c>app-reinstall</c>; the list also carries the site's other
+/// channels, <c>msstore</c>, <c>hn</c>, the directories…), anything else is discarded by the site, so
+/// a new tag here is a Worker deploy there first. The tag names where the link was published, never
+/// the user; the website's Cookie Notice (v5) and Privacy Policy §5 say so. The site's <c>/buy</c>
+/// redirect keeps the query string (measured 2026-09-18: <c>/buy?src=probe</c> answers
+/// <c>302 /?src=probe#pricing</c>, and the website's deploy smoke pins it). The PATHS stay the frozen
+/// contract above; the query string is not part of it. <b>Every voicewink.app link the app opens goes
+/// through this class</b> (pinned by <c>VoiceWinkUrlsTests</c>), with ONE deliberate exception: the
+/// Legal page's "View in browser" link to <c>/legal/&lt;slug&gt;-v&lt;n&gt;</c> stays untagged because
+/// the beacon is not loaded on <c>/legal/*</c> (the versioned copies the app opens carry no tracker —
+/// verified live 2026-09-18), so a tag there would be recorded by nothing.</para>
 /// </summary>
 internal static class VoiceWinkUrls
 {
