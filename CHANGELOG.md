@@ -17,6 +17,10 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.94.389] - 2026-09-19
+
+- Image generation: choosing Auto no longer leaves its box blank.
+
 ## [1.93.388] - 2026-09-19
 
 - Image generation: the Aspect ratio, Size, Quality and Versions boxes keep showing the value you picked, and an Auto you chose survives a model switch.

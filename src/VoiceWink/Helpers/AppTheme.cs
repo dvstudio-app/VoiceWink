@@ -748,7 +748,8 @@ public static class AppTheme
     /// call sits on the dialog-open path, so the parse is fail-soft: a throw is logged once and the
     /// row keeps WinUI's default panel (the wrap) rather than taking the dialog down.</para>
     /// <para>Not for long lists: a plain <c>StackPanel</c> does not virtualise and gives up the
-    /// carousel's popup-height clamping. These rows hold at most eleven items.</para>
+    /// carousel's popup-height clamping. These rows hold at most 18 items — the prompt editor's
+    /// ungated aspect list (Auto plus the 17 tags); the options dialog gates per model.</para>
     /// </summary>
     public static void UsePlainListPanel(ComboBox combo)
     {

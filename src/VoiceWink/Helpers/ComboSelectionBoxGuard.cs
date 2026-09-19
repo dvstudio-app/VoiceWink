@@ -38,6 +38,15 @@ namespace VoiceWink.Helpers;
 /// the evidence the next report needs: whether the selection ever reached the control
 /// (<c>SelectionBoxItem</c>), whether its visual was laid out, and whether re-asserting cured it.</para>
 ///
+/// <para><b>When the nudge is not enough (2026-09-19).</b> WinUI's <c>ComboBox::SetContentPresenter</c>
+/// builds the closed box from the selected row's container (<c>ComboBoxItem.Content</c>), and under
+/// UI-20's plain <c>StackPanel</c> the container at index 0 handed back null for a data row — the
+/// owner's log read <c>LogicallyBlank</c> on every Auto pick and <c>Rendered</c> on every other index.
+/// A box still blank after the nudge therefore gets, in order: the container repaired (its item and
+/// template restored) and the selection re-asserted so WinUI re-derives the box; then, if that did not
+/// do it, the presenter part set directly — the same two properties WinUI's own code sets. Each step
+/// logs what it found.</para>
+///
 /// <para><b>Ordering with a deferred re-gate.</b> <see cref="ComboRegateDeferral"/> replays a
 /// re-gate that arrived under an open dropdown at Normal priority from the same close, so the
 /// swap lands first and this Low-priority re-assert stays the last word on the box.</para>
@@ -132,34 +141,116 @@ internal static class ComboSelectionBoxGuard
         }
 
         if (!ComboSelectionBoxHealth.IsBlank(before)) return;
-        // Only a blank box earns the second read: it says whether the nudge is a cure or merely
-        // a report, which is what decides the next fix.
-        combo.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+
+        // A box still blank after the nudge gets the two-step cure (2026-09-19). WinUI's own
+        // ComboBox::SetContentPresenter builds the closed box from the selected row's CONTAINER —
+        // ComboBoxItem.get_Content, then put_Content / put_ContentTemplate on the presenter part
+        // and put_SelectionBoxItem — and under UI-20's plain StackPanel the container at index 0
+        // handed back NULL for a data row: every Auto pick in the owner's log read LogicallyBlank
+        // (row selected, SelectionBoxItem null) while every other index read Rendered. Step 1
+        // repairs the STATE — the container gets its item back and WinUI re-derives the box from
+        // it. Step 2 is the fallback on the OUTCOME — the item goes into the presenter directly,
+        // the same two properties WinUI's code sets on that part, so nothing is bypassed that
+        // WinUI would later fight. Each step logs what it found; a wrong theory shows up here.
+        combo.UpdateLayout();
+        var afterNudge = Inspect(combo);
+        if (!ComboSelectionBoxHealth.IsBlank(afterNudge))
         {
-            try
+            Logger.Information("Closed box {Combo} recovered by the re-assert: {State} (index {Index})",
+                name, afterNudge, index);
+            return;
+        }
+
+        var lastState = afterNudge;
+        if (RepairContainer(combo, index, name))
+        {
+            using (populateScope?.Invoke())
             {
-                if (IsCollapsed(combo))
-                {
-                    Logger.Debug("Closed box {Combo}: row collapsed before the after-read ran; skipped", name);
-                    return;
-                }
-                var afterRaw = Inspect(combo);
-                combo.UpdateLayout();
-                var after = Inspect(combo);
-                if (ComboSelectionBoxHealth.IsBlank(after))
-                    Logger.Information(
-                        "Closed box {Combo} is still {State} after re-asserting index {Index} (raw {Raw})",
-                        name, after, combo.SelectedIndex, afterRaw);
-                else
-                    Logger.Information(
-                        "Closed box {Combo} recovered: {State} after re-asserting index {Index} (raw {Raw})",
-                        name, after, combo.SelectedIndex, afterRaw);
+                try { combo.SelectedIndex = -1; }
+                finally { combo.SelectedIndex = index; }
             }
-            catch (global::System.Exception ex)
+            combo.UpdateLayout();
+            lastState = Inspect(combo);
+            if (!ComboSelectionBoxHealth.IsBlank(lastState))
             {
-                Logger.Warning(ex, "Closed box {Combo}: after-read failed", name);
+                Logger.Information("Closed box {Combo} recovered by the container repair: {State} (index {Index})",
+                    name, lastState, index);
+                return;
             }
-        });
+            Logger.Information("Closed box {Combo}: still {State} after the container repair (index {Index})",
+                name, lastState, index);
+        }
+
+        var faceplateSet = SetFaceplate(combo, out var presenter);
+        combo.UpdateLayout();
+        // "Laid out" cannot judge this step: the indicator template roots a fixed-width Border, so a
+        // presenter holding NULL content with the template applied already measures > 0 — that is
+        // the owner's 3 px dot. Log what is content-sensitive instead: the presenter's Content type
+        // and whether its first child has a DataContext (the row the bindings resolve against) —
+        // read from the SAME presenter the write went to.
+        var contentType = presenter?.Content?.GetType().Name ?? "null";
+        var childBound = presenter != null
+            && VisualTreeHelper.GetChildrenCount(presenter) > 0
+            && VisualTreeHelper.GetChild(presenter, 0) is Microsoft.UI.Xaml.FrameworkElement child
+            && child.DataContext != null;
+        Logger.Information(
+            "Closed box {Combo}: faceplate set directly = {Set}; presenter content = {ContentType}, child bound = {Bound} (index {Index}; {State} before this step; WinUI's own box stays as it was, so this row takes the cure on every close)",
+            name, faceplateSet, contentType, childBound, index, lastState);
+    }
+
+    /// <summary>
+    /// Step 1 of the cure: a realised container whose <c>Content</c> is null gets its item back (and
+    /// the combo's <c>ItemTemplate</c> when it lost that too) — what WinUI's own container
+    /// preparation would have done. Own-container rows (the Versions <c>ComboBoxItem</c>s) carry
+    /// their content themselves and are never touched. Logs what it found, because the finding is
+    /// the evidence for or against the container theory.
+    /// </summary>
+    private static bool RepairContainer(ComboBox combo, int index, string name)
+    {
+        var item = combo.SelectedItem;
+        if (item == null || item is ComboBoxItem) return false;
+        if (combo.ContainerFromIndex(index) is not ComboBoxItem container)
+        {
+            Logger.Information("Closed box {Combo}: no container realised for index {Index}", name, index);
+            return false;
+        }
+        if (container.Content != null)
+        {
+            // Reached on a VisuallyBlank box too, where SelectionBoxItem is set — so say what is
+            // known, not what the LogicallyBlank theory predicts (Kimi, round 1).
+            Logger.Information(
+                "Closed box {Combo}: container {Index} holds {ContentType}, yet the box is still blank",
+                name, index, container.Content.GetType().Name);
+            return false;
+        }
+        container.Content = item;
+        if (container.ContentTemplate == null) container.ContentTemplate = combo.ItemTemplate;
+        Logger.Information("Closed box {Combo}: container {Index} had no content; repaired", name, index);
+        return true;
+    }
+
+    /// <summary>
+    /// Step 2: the closed box's presenter part gets the selected item and the template WinUI would
+    /// have given it — a data row with the combo's <c>ItemTemplate</c>, an own-container row's
+    /// <c>Content</c> with its own <c>ContentTemplate</c>. False when the part or the item is
+    /// missing; never throws past the caller's fail-soft shell.
+    /// </summary>
+    private static bool SetFaceplate(ComboBox combo, out ContentPresenter? presenter)
+    {
+        presenter = FindPresenter(combo, depth: 0);
+        var item = combo.SelectedItem;
+        if (presenter == null || item == null) return false;
+        if (item is ComboBoxItem own)
+        {
+            presenter.Content = own.Content;
+            presenter.ContentTemplate = own.ContentTemplate;
+        }
+        else
+        {
+            presenter.Content = item;
+            presenter.ContentTemplate = combo.ItemTemplate;
+        }
+        return true;
     }
 
     private static bool IsCollapsed(ComboBox combo)
@@ -194,8 +285,10 @@ internal static class ComboSelectionBoxGuard
         {
             var child = VisualTreeHelper.GetChild(node, i);
             if (child is ContentPresenter { Name: "ContentPresenter" } presenter) return presenter;
-            // The dropdown's own popup content is not in this subtree, so nothing below a
-            // ComboBoxItem is ever visited; the walk stays inside the closed control's template.
+            // Never descend into an item container or a popup: a ComboBoxItem's own template carries
+            // a part of the same name, and since SetFaceplate WRITES to what this walk returns, the
+            // closed box must be the only candidate — not a dropdown row (Opus self-review).
+            if (child is ComboBoxItem || child is Microsoft.UI.Xaml.Controls.Primitives.Popup) continue;
             var found = FindPresenter(child, depth + 1);
             if (found != null) return found;
         }
