@@ -3597,6 +3597,10 @@ public partial class App : Application, Services.IAppLifetime
 
             // UI-19: every option row re-asserts its closed box after each dropdown close, and
             // logs what the box held before it did — the guard's doc comment has the defect.
+            // UI-21 removed the repeated ItemsSource swaps these rows used to take; the guard
+            // STAYS, because two of its cases never involved a swap at all — a pick of Auto
+            // (owner's log, 2026-09-20: LogicallyBlank at index 0, cured by the container repair)
+            // and the Versions row below, which no populate ever touches.
             ComboSelectionBoxGuard.Attach(aspectCombo, "aspect");
             ComboSelectionBoxGuard.Attach(sizeCombo, "size");
             ComboSelectionBoxGuard.Attach(qualityCombo, "quality", () => qualityAsk.BeginPopulate());
@@ -4364,6 +4368,12 @@ public partial class App : Application, Services.IAppLifetime
         // UI-19 (2026-09-18): this pre-show account proved incomplete — the box went blank again
         // after a USER pick, on the Versions row that no populate ever swaps. The re-gate here
         // stays; ComboSelectionBoxGuard (attached above) is what covers the pick.
+        //
+        // UI-21 (2026-09-20): this re-gate stays UI-18's cure. PopulateIndicatorCombo no longer
+        // SWAPS ItemsSource when the rows are unchanged — the repeated swaps are what left a stale
+        // container rendering as selected beside the real selection on a redo — but it re-asserts
+        // the selection instead, so the closed box is still re-derived against a live control.
+        // The guard above could not substitute for this: it hooks DropDownClosed only.
         dialog.Opened += (_, _) => RefreshImageOptionGating();
         // Composed confirm rule: models loaded AND non-empty input text (IMG-1 — the
         // text-first entry starts empty; a redo's pre-filled text satisfies it as before).

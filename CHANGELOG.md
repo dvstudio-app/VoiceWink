@@ -17,6 +17,10 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.95.390] - 2026-09-20
+
+- Image generation: redoing an image from History no longer leaves two aspect ratios looking selected, and Auto stays selectable.
+
 ## [1.94.389] - 2026-09-19
 
 - Image generation: choosing Auto no longer leaves its box blank.

@@ -1958,6 +1958,9 @@ public sealed class EnhancementPage : Page
             // because Opened precedes any user interaction, so each row re-derives the same tag it
             // derived pre-show; on a text prompt the gating's own early return makes this a no-op.
             // UI-19: the box can also go blank after a USER pick — ComboSelectionBoxGuard, above.
+            // UI-21: still the cure it was — on an unchanged row set PopulateIndicatorCombo
+            // re-asserts the selection instead of swapping, so the box is still re-derived live;
+            // only the repeated container-invalidating swaps are gone.
             dialog.Opened += (_, _) => RefreshImageOptionGating();
 
             // ── Ask for Image Options toggle ────────────────────────────────

@@ -655,6 +655,79 @@ public static class AppTheme
     /// </summary>
     private static void PopulateIndicatorCombo(ComboBox combo, (string Label, string? Tag, double Width, double Height)[] options, string? selectedTag)
     {
+        var selectedIndex = IndicatorComboRows.IndexForTag(options, selectedTag);
+        var template = IndicatorRowTemplate();
+
+        // UI-21 (2026-09-20): a re-gate that produces the SAME rows, against a combo whose closed
+        // box is already built, must not swap ItemsSource.
+        //
+        // WinUI builds the CLOSED box from the item container at SelectedIndex, and every swap
+        // invalidates the containers — so the dialog's three-to-four identical re-gates per open
+        // (builder, ContentDialog.Opened, the model combo's SelectionChanged once BindModels lands,
+        // any provider change) were tearing down and rebuilding the rows for no change at all. On a
+        // redo from History that left a stale container still rendering as selected beside the real
+        // selection, and the stale one could not be clicked because the Selector had already
+        // deselected it (owner, 2026-09-20). Aspect looked singled out only because a redo is the
+        // one case that pre-selects a NON-ZERO index.
+        //
+        // The template is part of the identity check, not an afterthought: its brush is baked into
+        // the parsed markup and cached per colour, so a theme change yields a NEW instance and must
+        // still re-render.
+        if (ReferenceEquals(combo.ItemTemplate, template)
+            && IndicatorComboRows.SameRows(
+                combo.ItemsSource as global::System.Collections.Generic.IReadOnlyList<IndicatorRow>, options))
+        {
+            if (selectedIndex >= 0)
+            {
+                if (combo.SelectedIndex != selectedIndex)
+                {
+                    combo.SelectedIndex = selectedIndex;
+                }
+                else
+                {
+                    // UI-18's cure, minus the swap (Kimi + Gemini, UI-21 round 1 — both found this
+                    // independently, as did the writer's own self-review). The ContentDialog.Opened
+                    // re-gate exists BECAUSE the builder's pre-show populate swaps on a DETACHED
+                    // control and can leave the closed box blank with the selection itself correct;
+                    // its cure was landing a LIVE swap afterwards. Skip the swap and a same-value
+                    // SelectedIndex assignment is a WinUI no-op, so the box would stay blank until
+                    // the user's first dropdown close — and ComboSelectionBoxGuard cannot cover
+                    // that, because it hooks DropDownClosed and never runs on a dialog whose
+                    // dropdowns the user has not touched.
+                    //
+                    // So re-assert the selection the way the guard does — −1 and back — which makes
+                    // WinUI re-derive the box from the container without invalidating it. That
+                    // leaves UI-18's remedy intact while removing the REPEATED swaps, which is what
+                    // left a stale container rendering as selected beside the real selection.
+                    //
+                    // Unconditional rather than gated on a blankness probe: SelectionBoxItem alone
+                    // reports only ComboSelectionBoxHealth's LogicallyBlank, and a box that is
+                    // VisuallyBlank (item set, presenter not laid out) would pass such a gate and
+                    // stay blank — while a layout-based probe at Opened cannot tell "not laid out
+                    // yet" from "never will be" and would swap on every re-gate, which is the churn
+                    // being removed. Cost of always nudging: two SelectionChanged events. The
+                    // quality row's tracker is scoped by every caller's BeginPopulate, and it is the
+                    // only one of the three rows with a subscriber at all (verified in both files).
+                    // ComboRegateDeferral keeps both re-gate paths off an open dropdown.
+                    // try/finally, the same shape ComboSelectionBoxGuard.ReassertCore carries for
+                    // this identical operation: a SelectionChanged subscriber throwing on the −1
+                    // phase must not leave the row AT −1, because the confirm path reads it and the
+                    // user's pick would be lost. No subscriber throws today; the shape is what
+                    // keeps that true of the next one, and the asymmetry would otherwise invite a
+                    // future subscriber author to assume a protection that was not here.
+                    try
+                    {
+                        combo.SelectedIndex = -1;
+                    }
+                    finally
+                    {
+                        combo.SelectedIndex = selectedIndex;
+                    }
+                }
+            }
+            return;
+        }
+
         // DATA rows + an ItemTemplate — never pre-built visuals as ComboBoxItem.Content.
         //
         // A closed ComboBox renders the SELECTED item's content in its own selection-box presenter,
@@ -679,20 +752,14 @@ public static class AppTheme
             });
         }
 
-        // The ItemsSource SWAP below must not be the LAST one to land while the combo is still
-        // DETACHED from the visual tree: the closed box then renders blank — the row is selected
-        // and every reader below returns it, but the selection-box presenter stays empty. Dialogs
-        // built in code populate before ShowAsync, so BOTH callers re-run their gating on
-        // ContentDialog.Opened (UI-18, 2026-09-17), which is what makes a populate land against a
-        // LIVE control. Owner-observed WinUI behaviour; no test in this repo can see it.
-        // UI-19 (2026-09-18): not the whole story — the box also went blank after a USER pick, on
-        // a row that is never swapped, so every option row now carries ComboSelectionBoxGuard,
-        // which re-asserts the closed box after each dropdown close and logs what it held.
-        combo.ItemTemplate = IndicatorRowTemplate();
+        // Reached only when the rows (or the theme's template) actually CHANGED — a model switch
+        // that regates the row set, or the first populate of a fresh combo. Both callers still
+        // re-gate on ContentDialog.Opened (UI-18, 2026-09-17), which under UI-21 is a selection
+        // re-assert on an unchanged row set rather than another swap.
+        combo.ItemTemplate = template;
         UsePlainListPanel(combo);
         combo.ItemsSource = items;
 
-        var selectedIndex = IndicatorComboRows.IndexForTag(options, selectedTag);
         if (selectedIndex >= 0) combo.SelectedIndex = selectedIndex;
     }
 

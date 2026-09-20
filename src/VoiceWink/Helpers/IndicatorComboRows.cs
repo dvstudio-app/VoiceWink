@@ -99,4 +99,36 @@ internal static class IndicatorComboRows
     /// </summary>
     internal static string? TagToCarry(bool rowSelected, string? selectedTag, string? fallback)
         => rowSelected ? selectedTag : fallback;
+
+    /// <summary>
+    /// Whether a combo ALREADY holds exactly <paramref name="options"/>, in order — the test that
+    /// decides whether a re-gate has to touch <c>ItemsSource</c> at all (UI-21, 2026-09-20).
+    ///
+    /// <para><b>Why it exists.</b> A WinUI ComboBox derives its CLOSED box from the item CONTAINER at
+    /// <c>SelectedIndex</c> (<c>ComboBox::SetContentPresenter</c> reads <c>ComboBoxItem.Content</c>,
+    /// generating and recycling a container when the popup has none realised), and every
+    /// <c>ItemsSource</c> swap invalidates those containers. The option dialog re-gates three to four
+    /// times per open — the builder, <c>ContentDialog.Opened</c>, the model combo's
+    /// <c>SelectionChanged</c> when <c>BindModels</c> lands, any provider change — and on all but the
+    /// first the resolved model, and therefore the row set, is IDENTICAL. Swapping anyway tore the
+    /// containers down and rebuilt them for no change, which is the churn every reported symptom of
+    /// this family sits on: a blank closed box, and a stale container left rendering as selected
+    /// beside the real selection (owner, 2026-09-20 — two rows looked selected on a redo, and the
+    /// stale one could not be clicked because the Selector already considered it deselected).</para>
+    ///
+    /// <para>Tags alone decide it: within one combo the tag determines the label and the indicator
+    /// dimensions (both come from the same static table in <see cref="ImageOptions"/>), so an equal
+    /// tag sequence IS an equal row set. Null is the Auto row and compares like any other tag.</para>
+    /// </summary>
+    internal static bool SameRows(
+        global::System.Collections.Generic.IReadOnlyList<IndicatorRow>? current,
+        (string Label, string? Tag, double Width, double Height)[] options)
+    {
+        if (current == null || current.Count != options.Length) return false;
+        for (int i = 0; i < options.Length; i++)
+        {
+            if (current[i].Tag != options[i].Tag) return false;
+        }
+        return true;
+    }
 }
