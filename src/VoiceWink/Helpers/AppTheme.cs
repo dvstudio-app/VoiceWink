@@ -674,8 +674,10 @@ public static class AppTheme
         // the parsed markup and cached per colour, so a theme change yields a NEW instance and must
         // still re-render.
         if (ReferenceEquals(combo.ItemTemplate, template)
+            && combo.ItemsSource is global::System.Collections.Generic.IReadOnlyList<ComboBoxItem> current
+            && current.Count == options.Length
             && IndicatorComboRows.SameRows(
-                combo.ItemsSource as global::System.Collections.Generic.IReadOnlyList<IndicatorRow>, options))
+                current.Select(item => item.Content).OfType<IndicatorRow>().ToArray(), options))
         {
             if (selectedIndex >= 0)
             {
@@ -740,15 +742,23 @@ public static class AppTheme
         // repopulates on every provider switch and has never crashed — its items are plain strings.
         // An earlier fix that only made repopulation atomic (one ItemsSource swap instead of
         // Items.Clear()+Add) did NOT stop the crash. Do not reintroduce UIElement item content here.
-        var items = new global::System.Collections.Generic.List<IndicatorRow>(options.Length);
+        // Supply stable containers whose Content is DATA, never a UIElement. WinUI's generated
+        // containers can lose their initial content when recycled for the closed selection box
+        // under a nonvirtualizing items panel. Own containers avoid that lifecycle mismatch;
+        // the ItemTemplate still creates separate visuals for the popup and closed presenter.
+        var items = new global::System.Collections.Generic.List<ComboBoxItem>(options.Length);
         foreach (var (label, tag, w, h) in options)
         {
-            items.Add(new IndicatorRow
+            items.Add(new ComboBoxItem
             {
-                Label = label,
-                Tag = tag,
-                IndicatorWidth = w,
-                IndicatorHeight = h
+                Content = new IndicatorRow
+                {
+                    Label = label,
+                    Tag = tag,
+                    IndicatorWidth = w,
+                    IndicatorHeight = h
+                },
+                ContentTemplate = template
             });
         }
 
@@ -805,7 +815,9 @@ public static class AppTheme
     /// beyond an end of the list, it fills that room with rows from the other end, and scrolling never
     /// stops. The owner saw the Aspect ratio list open as <c>3:4 / 2:3 / 9:16 / 1:2</c>, a gap, then
     /// <c>Auto / 1:1 / …</c>. A <c>StackPanel</c> panel has no wrap; the popup template's own
-    /// <c>ScrollViewer</c> still scrolls a list taller than the popup.</para>
+    /// <c>ScrollViewer</c> still scrolls a list taller than the popup. The indicator rows supply
+    /// their own data-bearing containers so they do not enter WinUI's generated-container
+    /// recycling path, which can clear the closed selection under this panel.</para>
     /// <para>Applied to the four image-option rows (aspect / size / quality through
     /// <see cref="PopulateIndicatorCombo"/>, Versions at construction); every other ComboBox keeps the
     /// default. Idempotent — a repopulate must not re-template the panel, so the same cached template
@@ -854,7 +866,15 @@ public static class AppTheme
     /// reset the user's aspect to Auto rather than failing loudly.</para>
     /// </summary>
     public static string? SelectedIndicatorTag(ComboBox? combo)
-        => (combo?.SelectedItem as IndicatorRow)?.Tag;
+        => SelectedIndicatorRow(combo)?.Tag;
+
+    private static IndicatorRow? SelectedIndicatorRow(ComboBox? combo)
+        => combo?.SelectedItem switch
+        {
+            ComboBoxItem { Content: IndicatorRow row } => row,
+            IndicatorRow row => row,
+            _ => null
+        };
 
     /// <summary>
     /// The same tag, but distinguishing <b>"the user selected Auto"</b> from <b>"nothing is selected
@@ -872,7 +892,7 @@ public static class AppTheme
     /// </summary>
     public static bool TryGetSelectedIndicatorTag(ComboBox? combo, out string? tag)
     {
-        if (combo?.SelectedItem is IndicatorRow row)
+        if (SelectedIndicatorRow(combo) is { } row)
         {
             tag = row.Tag;
             return true;
