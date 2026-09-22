@@ -18,6 +18,15 @@ public sealed class AboutPage : Page
 {
     private static ILogger Logger => Log.ForContext<AboutPage>();
 
+    /// <summary>
+    /// One notices dialog at a time, across PAGE INSTANCES: <c>MainWindow</c>'s page factory builds a
+    /// fresh <see cref="AboutPage"/> on every navigation, so a per-instance flag holds for a
+    /// double-click and not for "click, navigate away and back while the file read is in flight,
+    /// click again" — the second <c>ShowAsync</c> throws, and its catch would launch Notepad
+    /// (Codex diff review r1). Only ever touched on the UI thread.
+    /// </summary>
+    private static bool s_thirdPartyDialogOpen;
+
     public AboutPage()
     {
         RequestedTheme = AppTheme.ElementTheme;
@@ -94,9 +103,47 @@ public sealed class AboutPage : Page
             }
         };
 
-        // Third-party licenses (LGL-6 item 2) — the shipped notices manifest, opened in Notepad.
+        // Shown only when the dialog could not be built AND the shell would not open the file
+        // either — the one case where the click would otherwise do nothing visible. Selectable
+        // because on this path the path IS the remedy. Mirrors the Support card's mailto fallback.
+        var thirdPartyStatus = new TextBlock
+        {
+            Text = $"Couldn't open the licenses. The file is at {AboutInfo.ThirdPartyNoticesPath}.",
+            Foreground = AppTheme.Brush(AppTheme.WarningText),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+            Visibility = Visibility.Collapsed,
+        };
+
+        // Third-party licenses (LGL-6 item 2) — the shipped notices manifest, rendered in-app since
+        // UI-22 (it opened in Notepad until then, which the owner asked to replace with a dialog in
+        // the What's-new shape). Notepad survives as the fallback: the manifest discharges attribution
+        // obligations, so a render failure must still leave it reachable.
         var thirdParty = new HyperlinkButton { Content = "Third-party licenses" };
-        thirdParty.Click += (_, _) => ShellFolder.OpenTextFile(AboutInfo.ThirdPartyNoticesPath);
+        thirdParty.Click += async (_, _) =>
+        {
+            if (s_thirdPartyDialogOpen) return; // a second ShowAsync while one is open THROWS
+            s_thirdPartyDialogOpen = true;
+            try
+            {
+                var markdown = await File.ReadAllTextAsync(AboutInfo.ThirdPartyNoticesPath);
+                var dialog = new ThirdPartyNoticesDialog(markdown, this.XamlRoot);
+                thirdPartyStatus.Visibility = Visibility.Collapsed;
+                await dialog.ShowAsync();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning(ex, "Failed to show the third-party licenses dialog; falling back to the file");
+                thirdPartyStatus.Visibility = ShellFolder.OpenTextFile(AboutInfo.ThirdPartyNoticesPath)
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
+            }
+            finally
+            {
+                s_thirdPartyDialogOpen = false;
+            }
+        };
 
         // The four links share one row that wraps on a narrow window instead of clipping.
         var links = new FlowPanel
@@ -110,7 +157,7 @@ public sealed class AboutPage : Page
         var content = new StackPanel
         {
             Spacing = 4,
-            Children = { header, text, links }
+            Children = { header, text, links, thirdPartyStatus }
         };
         return AppTheme.CreateCard(content);
     }

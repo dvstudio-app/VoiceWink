@@ -11,14 +11,18 @@ namespace VoiceWink.Helpers;
 public static class MainWindowIdentity
 {
     public const string BaseTitle = "VoiceWink";
-    public const string DebugTitle = "VoiceWink (Debug)";
 
-    /// <summary>The title THIS build's main window carries.</summary>
-#if DEBUG
-    public const string Title = DebugTitle;
-#else
+    /// <summary>
+    /// The "VoiceWink (Debug)" title Debug builds carried until 2026-09-22 (owner: the
+    /// marker is noise on the development machine, where every build is a Debug build).
+    /// Kept as a MATCHER input only — never set on a window any more — so a new build's
+    /// second instance still restores an OLD Debug build's running window, exactly as the
+    /// legacy "VoiceWink v…" prefix below does.
+    /// </summary>
+    public const string LegacyDebugTitle = "VoiceWink (Debug)";
+
+    /// <summary>The title THIS build's main window carries — the same in every configuration.</summary>
     public const string Title = BaseTitle;
-#endif
 
     /// <summary>
     /// Win32 class name the Windows App SDK registers for WinUI 3 desktop windows.
@@ -29,11 +33,12 @@ public static class MainWindowIdentity
     public const string WinUIWindowClassName = "WinUIDesktopWin32WindowClass";
 
     /// <summary>
-    /// True when <paramref name="title"/> is a VoiceWink main-window title: either of the
-    /// current plain titles, or the pre-2026-07-10 versioned "VoiceWink v…" form — so a
-    /// new build's second instance still restores an OLD build's running window.
+    /// True when <paramref name="title"/> is a VoiceWink main-window title: the current
+    /// plain title, the pre-2026-09-22 <see cref="LegacyDebugTitle"/>, or the
+    /// pre-2026-07-10 versioned "VoiceWink v…" form — so a new build's second instance
+    /// still restores an OLD build's running window.
     /// </summary>
     public static bool MatchesTitle(string? title) =>
-        title is BaseTitle or DebugTitle
+        title is BaseTitle or LegacyDebugTitle
         || (title?.StartsWith("VoiceWink v", StringComparison.Ordinal) == true);
 }

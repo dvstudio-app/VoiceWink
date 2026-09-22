@@ -21,6 +21,7 @@ public sealed class WhatsNewDialog : ContentDialog
         DefaultButton = ContentDialogButton.Primary;
         RequestedTheme = AppTheme.ElementTheme;
         Content = BuildBody(entries, intro);
+        AppTheme.CentreCommandButton(this); // the lone button sits in the right half otherwise
     }
 
     private static UIElement BuildBody(IReadOnlyList<ChangelogEntry> entries, string? intro)

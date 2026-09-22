@@ -991,6 +991,46 @@ public static class AppTheme
     };
 
     /// <summary>
+    /// Centres the lone command button of a one-button dialog across the whole footer, for
+    /// <c>WhatsNewDialog</c> and <c>ThirdPartyNoticesDialog</c> (owner, 2026-09-22).
+    ///
+    /// <para>Why it takes code at all: ContentDialog's <c>CommandSpace</c> is a five-column Grid, and
+    /// the <c>PrimaryVisible</c> visual state — the state a dialog with only <c>PrimaryButtonText</c>
+    /// enters — moves the button to <b>column 4</b>, the close column. Both outer columns are <c>*</c>,
+    /// so the button stretches across the RIGHT HALF of the dialog. A <c>PrimaryButtonStyle</c> cannot
+    /// fix that: it would centre the button inside that half. The button has to span the columns.</para>
+    ///
+    /// <para>Applied on <see cref="ContentDialog.Opened"/>, when the template has been applied, and
+    /// FAIL-SOFT by construction: a template without a <c>PrimaryButton</c> child leaves the dialog
+    /// exactly as it renders today rather than throwing. Nothing here needs a template RESOURCE — the
+    /// constraint that rules out unfamiliar templated controls (root CLAUDE.md #2) is untouched.</para>
+    /// </summary>
+    public static void CentreCommandButton(ContentDialog dialog)
+    {
+        dialog.Opened += (d, _) =>
+        {
+            if (FindDescendantByName(d, "PrimaryButton") is not Button button) return;
+            Grid.SetColumn(button, 0);
+            Grid.SetColumnSpan(button, 5);
+            button.HorizontalAlignment = HorizontalAlignment.Center;
+            button.MinWidth = 160;
+        };
+    }
+
+    /// <summary>Depth-first search of the applied template for a named element.</summary>
+    private static FrameworkElement? FindDescendantByName(DependencyObject root, string name)
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is FrameworkElement fe && fe.Name == name) return fe;
+            if (FindDescendantByName(child, name) is { } found) return found;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// The hover tints for the two filled-button palettes, named once.
     ///
     /// <para>They were literals in FIVE places before UI-3 (<see cref="CreateAccentButton"/>,

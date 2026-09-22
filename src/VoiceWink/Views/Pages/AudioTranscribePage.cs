@@ -44,6 +44,10 @@ public sealed class AudioTranscribePage : Page
     private AppTheme.ActionToggleButton? _actionButton;
 
     private Border? _copyButton;
+    private const string CopyButtonLabel = "Copy to Clipboard";
+    // A rapid re-tap must not let an older flip's revert land under a newer one (the History
+    // copy glyph's generation guard, same reason).
+    private int _copyFeedbackGeneration;
 
     // Static so transcription survives page recreation when navigating away.
     // Only the Cancel button should cancel — not page navigation.
@@ -333,7 +337,7 @@ public sealed class AudioTranscribePage : Page
 
         // "Copy to Clipboard" button — copies transcription result text.
         // Hidden until a successful transcription populates _resultText.
-        _copyButton = AppTheme.CreateSecondaryButton("Copy to Clipboard", async (_, _) =>
+        _copyButton = AppTheme.CreateSecondaryButton(CopyButtonLabel, async (_, _) =>
         {
             await CopyResultToClipboardAsync();
         });
@@ -428,16 +432,42 @@ public sealed class AudioTranscribePage : Page
         var text = _resultText?.Text;
         if (string.IsNullOrEmpty(text)) return;
 
-        if (await _clipboard.SetClipboardAsync(text))
-        {
+        // Claimed BEFORE the first await: SetClipboardAsync can wait on the clipboard write lease
+        // (a background image paste holds it), and a transcription started meanwhile owns the
+        // status line and the button — a copy that resumes after that must not stamp its verdict
+        // on a result it was never clicked for (Codex diff r2).
+        var generation = ++_copyFeedbackGeneration;
+        var copied = await _clipboard.SetClipboardAsync(text);
+        if (copied)
             Logger.Information("Transcription result copied to clipboard ({Length} chars)", text.Length);
-            _statusText!.Text = "Copied to clipboard.";
-        }
         else
-        {
             Logger.Warning("Failed to copy transcription result to clipboard");
-            _statusText!.Text = "Could not copy to clipboard. Try selecting the text above and copying manually.";
-        }
+        if (_isUnloaded || generation != _copyFeedbackGeneration) return;
+        _statusText!.Text = copied
+            ? "Copied to clipboard."
+            : "Could not copy to clipboard. Try selecting the text above and copying manually.";
+
+        // The status line sits ABOVE the result card and the button BELOW it — after a two-hour
+        // meeting's transcript the two are screens apart, so the line alone reads as nothing
+        // having happened (owner, 2026-09-21). The button's own face carries the verdict, and it
+        // branches on the RESULT for the reason History's copy glyph does: "Copied" on a failed
+        // copy is a silent lie. The width is held across the swap so the button does not shift.
+        if (_copyButton?.Child is not TextBlock label) return;
+        _copyButton.MinWidth = _copyButton.ActualWidth;
+        label.Text = copied ? "✓ Copied" : "Couldn't copy";
+        label.Foreground = AppTheme.Brush(copied ? AppTheme.AccentGreen : AppTheme.FailureText);
+        await Task.Delay(1200);
+        if (_isUnloaded || generation != _copyFeedbackGeneration) return;
+        RestoreCopyButtonFace();
+    }
+
+    /// <summary>The Copy button's resting face — label, colour, and no held width.</summary>
+    private void RestoreCopyButtonFace()
+    {
+        if (_copyButton?.Child is not TextBlock label) return;
+        label.Text = CopyButtonLabel;
+        label.Foreground = AppTheme.Brush(AppTheme.TextSecondary);
+        _copyButton.MinWidth = 0;
     }
 
     private async Task SelectAndTranscribeAsync()
@@ -504,6 +534,12 @@ public sealed class AudioTranscribePage : Page
         _resultText!.Text = "";
         _resultCard!.Visibility = Visibility.Collapsed;
         _copyButton!.Visibility = Visibility.Collapsed;
+        // The copy verdict belongs to the result it was clicked for: a transcription started
+        // inside the 1.2 s flip must not re-show the button still reading "✓ Copied" for a
+        // result nobody copied (Codex diff r1). Bumping the generation retires the pending
+        // revert; restoring here puts the resting face back before the button can reappear.
+        ++_copyFeedbackGeneration;
+        RestoreCopyButtonFace();
 
         // Phase 1: Transcription — errors here are file/model problems.
         string? transcribedText = null;

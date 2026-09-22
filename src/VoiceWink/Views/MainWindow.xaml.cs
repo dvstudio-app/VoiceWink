@@ -69,7 +69,8 @@ public sealed partial class MainWindow : Window
     public MainWindow(bool deferLicenseRoute)
     {
         // Version deliberately NOT in the title (owner 2026-07-10) — it lives on the
-        // About and Updates pages; the "(Debug)" marker stays to distinguish dev builds.
+        // About and Updates pages; the "(Debug)" marker went the same way (owner
+        // 2026-09-22), so every configuration carries the plain title.
         // MainWindowIdentity keeps this title and the second-instance window matcher
         // (App.ActivateExistingInstance) in lockstep.
         Title = MainWindowIdentity.Title;

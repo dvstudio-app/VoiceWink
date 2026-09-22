@@ -4,7 +4,7 @@ Voice-to-text for Windows 11 — press a hotkey, speak, and the transcribed text
 at your cursor. Built with .NET 8 + WinUI 3 by DV Studio, inspired by
 [VoiceInk](https://github.com/Beingpax/VoiceInk) (macOS).
 
-Product information and downloads: <https://voicewink.app>
+Product information and downloads: <https://voicewink.app/?src=gh>
 
 ## What this repository is
 
