@@ -6,6 +6,12 @@ at your cursor. Built with .NET 8 + WinUI 3 by DV Studio, inspired by
 
 Product information and downloads: <https://voicewink.app/?src=gh>
 
+![The App Mode page, which picks the AI rewrite by the app you are in](https://voicewink.app/assets/vw-appmode.webp)
+
+Download the signed installer from the site and try it free for 7 days, with no account or
+e-mail. A license covers the signed build, updates when released, and support. Or build it
+yourself from this repository, as described below.
+
 ## What this repository is
 
 This is the **corresponding source** (GPL v3 §6) for released versions of VoiceWink.

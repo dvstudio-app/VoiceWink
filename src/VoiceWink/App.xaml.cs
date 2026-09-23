@@ -2334,7 +2334,7 @@ public partial class App : Application, Services.IAppLifetime
             // guaranteed. Use synchronous close (deferClose:false) — the
             // close-during-active-work race only manifests when the SAME window
             // had a recent Content swap + composition work in flight from a
-            // still-active Show()/ShowError. By the time ShutdownMiniRecorder
+            // still-active Show(). By the time ShutdownMiniRecorder
             // runs, the recording loop has already been torn down and no
             // concurrent in-flight Show is possible.
             _miniRecorderWindow.CloseForReplacement(deferClose: false);

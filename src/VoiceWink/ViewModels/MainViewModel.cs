@@ -2113,11 +2113,10 @@ public partial class MainViewModel : ObservableObject
     /// state change re-renders a visible idle pill as the bare "Ready" state, never Hidden,
     /// so without a presentation the user got no cancel feedback and (pre
     /// MiniRecorderStopRouting) the still-visible stop button turned a follow-up tap into a
-    /// phantom recording (live incident 2026-07-18 17:04). The amber confirmation rides
-    /// ShowError, which collapses the stop button. Accepted: a latent redo/retry dismiss
-    /// timer resumed at job end can hide the confirmation early (rare, cosmetic —
-    /// cross-timer coordination deliberately avoided); a commit-won quit still presents its
-    /// pending success normally (out of scope, see the 2026-07-18 decision record).
+    /// phantom recording (live incident 2026-07-18 17:04). The amber confirmation is a
+    /// message pill, whose render collapses the stop button. Accepted: a commit-won quit
+    /// still presents its pending success normally (out of scope, see the 2026-07-18
+    /// decision record).
     /// </summary>
     private void PresentImageJobCancelled()
     {
@@ -4481,7 +4480,7 @@ public partial class MainViewModel : ObservableObject
             Logger.Warning("Recording start failed: audio device contention. {Message}", ex.Message);
             HandleStartRecordingFailureCleanup(startupRecordingPath);
             StatusText = "Microphone unavailable";
-            // ShowMiniRecorderError invokes MiniRecorderWindow.ShowError which calls Show(); an
+            // EmitMiniRecorderError publishes a message pill, whose render shows the pill; an
             // Error-tone pill PERSISTS (no auto-hide) until the corner × or a newer presentation
             // (ERR-PERSIST). Do NOT manually set IsMiniRecorderVisible = false here — doing so would
             // immediately hide the actionable error before the user can read it.
@@ -4523,9 +4522,9 @@ public partial class MainViewModel : ObservableObject
             // the pill in a second style (copy review 2026-07-25).
             StatusText = errorMsg;
 
-            // Show error in MiniRecorder. ShowError() calls Show() internally, so it works
+            // Show error in MiniRecorder. The message render shows the pill itself, so it works
             // even if CancelRecording() did not hide the window (Starting state path). Mark terminal so
-            // this error's epoch supersedes any prior affordance timer (ERR-PERSIST).
+            // a pending older image completion cannot overwrite this error.
             // A user CANCEL is a normal transient outcome, not a failure — amber Warning (auto-hides),
             // never a persistent red pill (Codex review 2026-07-20); a genuine start failure stays Error.
             MarkTerminalPresentation();

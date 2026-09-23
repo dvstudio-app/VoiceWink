@@ -129,7 +129,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
     // the only thing that ever distinguished them to a user.
     private const string RedoTooltip = "Run again with a different AI model";
     private const string RetryTooltip = "Retry with a different transcription model";
-    private bool _isOffScreen = true; // suppresses UpdateState while hidden so visual reset sticks
+    private bool _isOffScreen = true; // Parked (hidden) — see MiniRecorderShowTransition's three states
     private bool _closingForReplacement;
 
     // Cross-monitor DPI reconciliation state — see EnsureXamlRootMatchesTargetDpi.
@@ -1450,9 +1450,13 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
     /// <summary>
     /// IMiniRecorderRenderer: the single render entry point (controller refactor 2026-07-21). Records
     /// the rendered handle (for the buttons' pointer-down capture) and dispatches to the per-content
-    /// render helper; null hides. Owns the Show-before-update ordering (each helper calls Show()); the
-    /// controller owns all timing/dismissal, so no semantic timers are armed here. Inline FIFO
-    /// discipline is preserved (each helper marshals via RunOnUiThread, inline when on-thread).
+    /// render helper; null hides. Owns the set-content-then-reveal ordering: each helper sets its
+    /// content and calls Show() last, and Show() reveals a pill parked under the cloak only once that
+    /// content is drawn — except a recording-phase render, which the parked frame already depicts and
+    /// which therefore reveals at once (<see cref="MiniRecorderShowTransition.AwaitsFreshFrame"/>;
+    /// the legacy off-screen park always reveals at once). The controller
+    /// owns all timing/dismissal, so no semantic timers are armed here. Inline FIFO discipline is
+    /// preserved (each helper marshals via RunOnUiThread, inline when on-thread).
     /// </summary>
     public void Render(PillPresentation? presentation)
     {
@@ -1523,10 +1527,8 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
                     // text must be applied AFTER it.
                     _pulseTimer.Stop();
                     _elapsedTimer.Stop();
-                    // The recording phase is the ONE accent-matching exception (owner
-                    // 2026-07-31): its chrome stays neutral, so un-tint a stop icon a
-                    // prior accent-matched state may have colored.
-                    SetStopAccent(AppTheme.TextPrimary);
+                    // Also un-tints the stop icon: the recording phase is the ONE accent-matching
+                    // exception (owner 2026-07-31), so its chrome stays neutral.
                     ResetToStartingVisuals();
                     // Waveform and timer deliberately stay collapsed — both would imply audio
                     // that is not flowing yet. ResetToStartingVisuals collapses them and the
@@ -1670,8 +1672,9 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             // Show()-before-UpdateState ordering that the removed `if (_isOffScreen) return` relied on —
             // without this, a pipeline render on a parked/hidden window never became visible (Codex
             // diff review finding 1). The controller only sends a Pipeline render when the pill should
-            // show, and Show() is idempotent on an already-visible window.
-            Show();
+            // show, and Show() is idempotent on an already-visible window. The state goes with it:
+            // only a recording-phase render may be revealed on the parked frame (AwaitsFreshFrame).
+            Show(pipelineState: state);
         });
     }
 
@@ -1770,6 +1773,13 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
     /// <c>UpdateState</c> re-shows the status line immediately afterwards, because Recording
     /// does NOT follow within ~50 ms as this comment used to claim — measured 162-4002 ms on
     /// 2026-08-02 — and a multi-second bare red dot reads as "nothing happened".</para>
+    ///
+    /// <para>What HideWindow leaves here is the PARKED FRAME: WinUI keeps drawing under the cloak,
+    /// so this look is what a reveal from the parked state presents until the next render is
+    /// drawn. It is therefore only ever shown as the start of a recording
+    /// (<see cref="MiniRecorderShowTransition.AwaitsFreshFrame"/>), and it must be the whole
+    /// neutral recording look — the stop icon included, which the previous state's accent
+    /// (Enhancing's green) otherwise left tinted in it.</para>
     /// </summary>
     private void ResetToStartingVisuals()
     {
@@ -1777,6 +1787,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         _dismissButton.Visibility = Visibility.Collapsed;
         _redoButton.Visibility = Visibility.Collapsed;
         _stopButton.Visibility = Visibility.Visible;
+        SetStopAccent(AppTheme.TextPrimary); // the recording phase's chrome stays neutral
         _targetLabelAllowed = false;
         ApplyTargetAppLabel();
         Visualizer.IsActive = false;
@@ -1893,7 +1904,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             if (showDismiss)
                 _dismissIcon.Foreground = AppTheme.Brush(accent);
 
-            Show();
+            Show(pipelineState: null);
         });
     }
 
@@ -1930,7 +1941,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             _redoButton.Visibility = Visibility.Collapsed;
             _dismissButton.Visibility = Visibility.Collapsed;
             _stopButton.Visibility = Visibility.Visible; // user can cancel
-            Show();
+            Show(pipelineState: null);
         });
     }
 
@@ -1961,7 +1972,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             if (notice != null)
             {
                 // Whole pill goes amber with the notice (owner request 2026-07-17): amber
-                // text on blue chrome read as a mixed signal — match ShowError's Warning
+                // text on blue chrome read as a mixed signal — match RenderMessage's Warning
                 // treatment (dot/glow/border) so the pill state is unambiguous.
                 var amber = AppTheme.AccentAmber;
                 StatusText.Text = notice;
@@ -1991,7 +2002,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             // whenever the pipeline is idle").
             _stopButton.Visibility = Visibility.Visible;
 
-            Show();
+            Show(pipelineState: null);
         });
     }
 
@@ -2150,7 +2161,11 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         }
     }
 
-    public void Show()
+    /// <summary>Un-park and reveal the pill for the content a render helper has just set.</summary>
+    /// <param name="pipelineState">The state of the pipeline render being revealed; null for every
+    /// other content. Decides whether a parked pill may be revealed on its parked frame
+    /// (<see cref="MiniRecorderShowTransition.AwaitsFreshFrame"/>).</param>
+    private void Show(RecordingState? pipelineState)
     {
         // Marshal to UI thread — callers may invoke from async pipeline completions
         // (transcription/enhancement) that resume on a thread-pool thread, and every
@@ -2158,7 +2173,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         // DispatcherTimer.Start) must run on the window's UI thread.
         if (!DispatcherQueue.HasThreadAccess)
         {
-            DispatcherQueue.TryEnqueue(Show);
+            DispatcherQueue.TryEnqueue(() => Show(pipelineState));
             return;
         }
 
@@ -2184,6 +2199,12 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         // the measurement is still logged but tagged so it can't be read as a
         // cold-show number.
         var wasOffScreenAtShow = _isOffScreen;
+        // Decided from the PRE-FLIP state, like wasOffScreenAtShow: _isOffScreen goes false below,
+        // after which every reveal would read as an in-place update of a visible pill. A reveal is
+        // pending while _pendingReveal is set OR a two-frame wait is armed: ApplyDpiReconciliation
+        // clears the flag before the cross-DPI reveal's own wait, and CancelDpiSync below disarms it.
+        var awaitFreshFrame = MiniRecorderShowTransition.AwaitsFreshFrame(
+            wasOffScreenAtShow, _pendingReveal || _waitTwoFramesHandler != null, pipelineState);
 
         // Force layout-cache reset before any positioning. InvalidateMeasure can
         // short-circuit when WinUI 3's internal caches say "nothing changed I
@@ -2191,15 +2212,15 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         // window metrics. Detaching + reattaching _rootContainer is a hard
         // reset that WinUI cannot ignore: the visual tree is forced to
         // re-measure against the current XamlRoot.RasterizationScale and
-        // window client size. Runs while window is at -10000,-10000 (between
-        // recordings, courtesy of HideWindow), so no user-visible flicker.
+        // window client size. For a parked pill this runs while it is still
+        // cloaked (legacy path: parked at -10000,-10000), so nothing flickers.
         var contentToReset = _rootContainer;
         Content = null;
         Content = contentToReset;
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        _isOffScreen = false; // Re-enable UpdateState processing
+        _isOffScreen = false; // Leaving Parked: RevealPending until the reveal lands, then Visible
 
         // Tear down any in-flight DPI reconciliation from a prior Show. Must run
         // unconditionally — EnsureXamlRootMatchesTargetDpi below only runs when
@@ -2304,21 +2325,26 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
 
             case MiniRecorderShowTransition.ShowPlan.UncloakInPlace:
             {
+                // A parked pill is still cloaked here, so this move is invisible.
                 AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(x, y, _windowWidth, _windowHeight));
 
                 _rootContainer.InvalidateMeasure();
                 _rootContainer.InvalidateArrange();
                 _rootContainer.UpdateLayout();
 
-                RevealAtGeometry(hwnd, x, y, placement, hasPlacement,
-                    wasOffScreenAtShow ? "cloak-uncloak" : "cloak-uncloak(already-visible)");
+                var site = awaitFreshFrame ? "cloak-uncloak(fresh-frame)"
+                    : wasOffScreenAtShow ? "cloak-uncloak" : "cloak-uncloak(already-visible)";
+                RevealWhenDrawn(awaitFreshFrame, () =>
+                {
+                    RevealAtGeometry(hwnd, x, y, placement, hasPlacement, site);
 
-                if (hasPlacement)
-                    LogPlacementDiagnostics("show", hwnd, placement);
+                    if (hasPlacement)
+                        LogPlacementDiagnostics("show", hwnd, placement);
 
-                // Same defensive safety net as the legacy same-scale path.
-                if (hasPlacement)
-                    EnsureXamlRootMatchesTargetDpi(hwnd, placement);
+                    // Same defensive safety net as the legacy same-scale path.
+                    if (hasPlacement)
+                        EnsureXamlRootMatchesTargetDpi(hwnd, placement);
+                });
                 break;
             }
 
@@ -2387,6 +2413,9 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             default:
             {
                 // No mismatch expected — same-monitor show or first-ever show.
+                // Reveals at once, without AwaitsFreshFrame's wait: this park is off-screen, not
+                // cloaked, and nothing shows WinUI keeps drawing there — a wait for frames that
+                // never come would leave the pill invisible. It keeps its parked-frame flash.
                 // MoveAndResize syncs WinUI's internal layout with the target size.
                 AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(x, y, _windowWidth, _windowHeight));
 
@@ -2627,13 +2656,58 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
     }
 
     /// <summary>
-    /// Wait for two CompositionTarget.Rendering ticks before SetWindowPos(SHOWWINDOW).
-    /// Tick #1: WinUI commits the fresh layout to the swap chain.
-    /// Tick #2: DWM has the new frame ready to present.
-    /// Then SHOWWINDOW presents instantly with no cached-frame flash.
-    /// 33ms total at 60fps — below human perception of layout snap.
+    /// The cross-DPI reveal: SetWindowPos(SHOWWINDOW) — the verified uncloak on the cloak path —
+    /// two CompositionTarget.Rendering ticks after reconciliation re-laid the content out, so it
+    /// presents the fresh frame with no cached-frame flash (see <see cref="AfterTwoFrames"/>).
     /// </summary>
     private void WaitTwoFramesThenShow(IntPtr hwnd, MonitorPlacement placement, string trigger)
+        => AfterTwoFrames(() =>
+        {
+            RevealAtGeometry(hwnd, placement.X, placement.Y, placement, hasPlacement: true,
+                _isCloaked ? "cloak-move-reconcile" : "cross-dpi-inplace");
+
+            Logger.Information(
+                "MiniRecorder DPI reconciliation applied via {Trigger} (pendingReveal=true, waited 2 frames)",
+                trigger);
+            LogPlacementDiagnostics($"show-resync-{trigger}", hwnd, placement);
+        });
+
+    /// <summary>
+    /// Run the cloak path's same-scale reveal (UncloakInPlace) now, or — when <paramref name="afterFreshFrame"/>
+    /// (<see cref="MiniRecorderShowTransition.AwaitsFreshFrame"/>) — only once WinUI has drawn the
+    /// content the render just set. A reveal presents what the window last composed, and a render's
+    /// changes are drawn on the frame AFTER Show() returns, so revealing a parked pill at once put
+    /// its parked frame — the bare red recording dot — on screen before "Done" was drawn (owner
+    /// report, 2026-09-22: two video frames at 30 fps between the paste and "Done"). The wait is
+    /// the one the cross-DPI reveal already takes; the pill is RevealPending (<c>_pendingReveal</c>)
+    /// meanwhile, so a hide or a newer Show cancels it through <see cref="CancelDpiSync"/>.
+    /// </summary>
+    private void RevealWhenDrawn(bool afterFreshFrame, Action reveal)
+    {
+        if (!afterFreshFrame)
+        {
+            reveal();
+            return;
+        }
+
+        _pendingReveal = true;
+        AfterTwoFrames(() =>
+        {
+            _pendingReveal = false;
+            reveal();
+        });
+    }
+
+    /// <summary>
+    /// Run <paramref name="action"/> on the second CompositionTarget.Rendering tick from now.
+    /// Tick #1: WinUI commits the fresh layout to the swap chain.
+    /// Tick #2: DWM has the new frame ready to present.
+    /// So a reveal run here presents the new frame instantly, with no cached-frame flash.
+    /// 33ms total at 60fps — below human perception of layout snap. One pending action at a time:
+    /// a newer call replaces it, <see cref="CancelDpiSync"/> (every Show, every hide, replacement)
+    /// cancels it, and it is dropped when the window was hidden in between.
+    /// </summary>
+    private void AfterTwoFrames(Action action)
     {
         int ticksWaited = 0;
         EventHandler<object>? handler = null;
@@ -2645,23 +2719,17 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
 
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= handler;
             // Clear field only if it still points to THIS handler — a newer
-            // WaitTwoFramesThenShow may have already replaced it via
+            // AfterTwoFrames may have already replaced it via
             // CancelDpiSync+resubscribe.
             if (ReferenceEquals(_waitTwoFramesHandler, handler))
                 _waitTwoFramesHandler = null;
 
             if (MiniRecorderShowTransition.ShouldDropReveal(_isOffScreen))
-                return; // Hidden between reconciliation and frame commit — drop
+                return; // Hidden between the show and the frame commit — drop
 
             try
             {
-                RevealAtGeometry(hwnd, placement.X, placement.Y, placement, hasPlacement: true,
-                    _isCloaked ? "cloak-move-reconcile" : "cross-dpi-inplace");
-
-                Logger.Information(
-                    "MiniRecorder DPI reconciliation applied via {Trigger} (pendingReveal=true, waited 2 frames)",
-                    trigger);
-                LogPlacementDiagnostics($"show-resync-{trigger}", hwnd, placement);
+                action();
             }
             catch (Exception ex)
             {
@@ -2670,10 +2738,9 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         };
 
         // Replace any prior in-flight handler. CancelDpiSync already unsubscribed
-        // any prior handler before this code runs (reconciliation always calls
-        // CancelDpiSync first), but be explicit: if a stale handler somehow remains
-        // subscribed (e.g. via a new Show that didn't go through reconciliation),
-        // remove it now to prevent two handlers ticking together.
+        // any prior handler before this code runs (every caller runs after a
+        // CancelDpiSync), but be explicit: if a stale handler somehow remains
+        // subscribed, remove it now to prevent two handlers ticking together.
         if (_waitTwoFramesHandler != null)
             Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= _waitTwoFramesHandler;
         _waitTwoFramesHandler = handler;
@@ -2762,7 +2829,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             _redoButton.Background = StopNormalBg();
             _redoButton.Visibility = Visibility.Visible;
 
-            Show();
+            Show(pipelineState: null);
         });
     }
 
@@ -3033,7 +3100,9 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         _topmostTimer.Stop();
         CancelDpiSync();
 
-        // Reset visuals and suppress UpdateState so the reset sticks while off-screen.
+        // Park: mark the window hidden and leave the bare recording look drawn while parked (under
+        // the cloak, or at -10000 on the legacy path) — the parked frame a later reveal may present
+        // (MiniRecorderShowTransition.AwaitsFreshFrame).
         _isOffScreen = true;
         ResetToStartingVisuals();
 

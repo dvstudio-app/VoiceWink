@@ -17,6 +17,15 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.98.393] - 2026-09-23
+
+- The recorder pill no longer flashes the red recording dot before showing "Done".
+
+## [1.97.392] - 2026-09-22
+
+- About: third-party licenses now open inside VoiceWink instead of in Notepad.
+- Transcribe File: the Copy button now shows "Copied" on the button itself.
+
 ## [1.96.391] - 2026-09-21
 
 - Image generation: fixed a dropdown rendering defect when returning to Auto.
