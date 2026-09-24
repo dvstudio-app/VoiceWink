@@ -155,7 +155,12 @@ public sealed class OpenAICompatibleClient
             : $"{baseUrl}/chat/completions";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
+        // LAI-1: a local server sends a key only when one is stored; every cloud provider keeps the
+        // header it always sent, byte for byte.
+        if (_config.Provider == AIProvider.LocalServer)
+            LocalServerClient.AddAuthorization(request, _config);
+        else
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
         using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
@@ -173,7 +178,12 @@ public sealed class OpenAICompatibleClient
             }
 
             // Detect models that require the Responses API (e.g. gpt-5-pro, o3-pro)
-            if (response.StatusCode == global::System.Net.HttpStatusCode.NotFound &&
+            // OpenAI only: that is the one provider EnhanceAsync retries on the Responses API. For
+            // any other the (null, true) answer became a null result, which the output filter
+            // turns into "" and the caller into a silent raw paste that looks like a successful
+            // cleanup — reachable through a proxy relaying OpenAI's message (LAI-1 self-review).
+            if (_config.Provider == AIProvider.OpenAI &&
+                response.StatusCode == global::System.Net.HttpStatusCode.NotFound &&
                 errorBody.Contains("v1/responses", StringComparison.OrdinalIgnoreCase))
             {
                 return (null, true);
@@ -194,7 +204,22 @@ public sealed class OpenAICompatibleClient
         }
 
         var responseJson = await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
-        using var doc = JsonDocument.Parse(responseJson);
+        JsonDocument doc;
+        try
+        {
+            doc = JsonDocument.Parse(responseJson);
+        }
+        catch (JsonException) when (_config.Provider == AIProvider.LocalServer)
+        {
+            // LAI-1 (Grok diff r1): a user-run server answering 200 with a web page is the user's
+            // configuration, not contract drift. A raw JsonException is outside every enhancement
+            // catch's Warning list, so it would file a Sentry event per dictation; this is the
+            // same message and level LocalServerClient uses on the Ollama path. Cloud parsing is
+            // unchanged.
+            Logger.Warning("Local server reply is not JSON; Body={Body}", responseJson.TruncateForLog());
+            throw new InvalidOperationException("No OpenAI-compatible server answered at this address");
+        }
+        using var parsedDoc = doc;
 
         // Only the HAPPY PATH sits inside the guard — the same split GeminiImageClient makes.
         // Wrong-kind JsonElement access here (e.g. {"choices":{}}) is API drift that must log

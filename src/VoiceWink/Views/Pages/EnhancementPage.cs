@@ -56,6 +56,8 @@ public sealed class EnhancementPage : Page
         // already used the new one. AttachSubscriptions resyncs provider/model/keys but runs on
         // Loaded, after BuildUI has already seeded the toggle, so it cannot do this job.
         _viewModel.ReloadFromSettings();
+        // LAI-1: the card shows what is STORED, not an unsaved address from an earlier visit.
+        _viewModel.LoadLocalServerSettings();
         BuildUI();
         Loaded += (_, _) =>
         {
@@ -143,9 +145,9 @@ public sealed class EnhancementPage : Page
         _viewModel.SelectedImageModel = enhancement.SelectedImageModel;
         // Force combo sync even if the value didn't change (no PropertyChanged fired)
         if (_textProviderCombo != null)
-            _textProviderCombo.SelectedItem = _viewModel.SelectedProvider.ToString();
+            _textProviderCombo.SelectedItem = AIProviderDisplay.Label(_viewModel.SelectedProvider);
         if (_imageProviderCombo != null)
-            _imageProviderCombo.SelectedItem = _viewModel.SelectedImageProvider.ToString();
+            _imageProviderCombo.SelectedItem = AIProviderDisplay.Label(_viewModel.SelectedImageProvider);
 
         // Keys can change on OTHER pages (ModelsPage saves transcription keys for the same
         // OpenAI/Groq providers) while this singleton VM sits detached — resync the masked
@@ -249,12 +251,12 @@ public sealed class EnhancementPage : Page
             foreach (var p in EnhancementViewModel.AvailableProviders)
             {
                 if (!imageOnly || registry.SupportsImageGeneration(p))
-                    combo.Items.Add(p.ToString());
+                    combo.Items.Add(AIProviderDisplay.Label(p));
             }
-            combo.SelectedItem = initial.ToString();
+            combo.SelectedItem = AIProviderDisplay.Label(initial);
             combo.SelectionChanged += (_, _) =>
             {
-                if (combo.SelectedItem is string str && Enum.TryParse<AIProvider>(str, out var p))
+                if (combo.SelectedItem is string str && AIProviderDisplay.TryParse(str, out var p))
                     onChanged(p);
             };
 
@@ -517,6 +519,24 @@ public sealed class EnhancementPage : Page
             Children = { apiKeyBox, saveBtn, apiKeyStatus }
         };
 
+        // LAI-1: a local server's key is optional (LM Studio can require one; Ollama never does).
+        void ApplyKeyPlaceholder() => apiKeyBox.PlaceholderText = _viewModel.IsLocalServerSelected
+            ? "Only if your server requires one"
+            : "Enter your API key";
+        ApplyKeyPlaceholder();
+
+        var localServerPanel = BuildLocalServerPanel();
+        PropertyChangedEventHandler localServerVisibilityHandler = (_, e) =>
+        {
+            if (e.PropertyName == nameof(EnhancementViewModel.IsLocalServerSelected))
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    localServerPanel.Visibility = _viewModel.IsLocalServerSelected ? Visibility.Visible : Visibility.Collapsed;
+                    ApplyKeyPlaceholder();
+                });
+        };
+        RegisterViewModelSubscription(localServerVisibilityHandler);
+
         // ── Image Provider + Model ─────────────────────────────────────
         var (imageProviderRow, imageProviderCombo) = CreateProviderRow(
             "Provider", _viewModel.SelectedImageProvider,
@@ -633,6 +653,7 @@ public sealed class EnhancementPage : Page
             Children =
             {
                 textProviderRow,
+                localServerPanel,
                 modelLabel,
                 modelCombo,
                 apiKeyLabel,
@@ -673,6 +694,104 @@ public sealed class EnhancementPage : Page
         }
 
         return sections;
+    }
+
+    /// <summary>
+    /// LAI-1: the Local server settings — server type, address + Save, the refusal line, and the
+    /// remote-server note. Shown only while "Local server" is the text provider. Plain ComboBox,
+    /// TextBox, Button and TextBlock only: controls this page already renders in a CLI build.
+    /// </summary>
+    private StackPanel BuildLocalServerPanel()
+    {
+        var typeLabel = new TextBlock
+        {
+            Text = "Server",
+            FontSize = 13,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            Margin = new Thickness(0, 12, 0, 6)
+        };
+        // Two plain-string items; the index IS the LocalServerApi value (Ollama = 0).
+        var typeCombo = new ComboBox { Width = 280, HorizontalAlignment = HorizontalAlignment.Left };
+        AppTheme.AllowParentScroll(typeCombo);
+        typeCombo.Items.Add("Ollama");
+        typeCombo.Items.Add("OpenAI-compatible (LM Studio and others)");
+        typeCombo.SelectedIndex = (int)_viewModel.LocalServerApi;
+        typeCombo.SelectionChanged += (_, _) =>
+        {
+            if (typeCombo.SelectedIndex >= 0 && (LocalServerApi)typeCombo.SelectedIndex != _viewModel.LocalServerApi)
+                _viewModel.LocalServerApi = (LocalServerApi)typeCombo.SelectedIndex;
+        };
+
+        var addressLabel = new TextBlock
+        {
+            Text = "Address",
+            FontSize = 13,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            Margin = new Thickness(0, 8, 0, 6)
+        };
+        var addressBox = new TextBox { Text = _viewModel.LocalServerUrl, Width = 280 };
+        // The last value the BOX wrote. ApplyState runs later on the dispatcher, by which time the
+        // user may have typed more; comparing box to VM there would reset the box to an older
+        // value and drop keystrokes. So only a VM-originated value (a type change, a reload) is
+        // pushed into the box.
+        string? lastFromBox = null;
+        addressBox.TextChanged += (_, _) =>
+        {
+            lastFromBox = addressBox.Text;
+            _viewModel.LocalServerUrl = addressBox.Text;
+        };
+        var saveAddress = AppTheme.CreateAccentButton("Save", (_, _) => _viewModel.SaveLocalServerAddress());
+        var addressRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            Children = { addressBox, saveAddress }
+        };
+
+        var errorText = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.FailureText),
+            Margin = new Thickness(0, 4, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+        var remoteNote = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.WarningText),
+            Margin = new Thickness(0, 4, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+
+        void ApplyState()
+        {
+            errorText.Text = _viewModel.LocalServerError ?? "";
+            errorText.Visibility = string.IsNullOrEmpty(_viewModel.LocalServerError) ? Visibility.Collapsed : Visibility.Visible;
+            var host = _viewModel.LocalServerRemoteHost;
+            remoteNote.Text = host is null ? "" : $"Remote server: your text is sent to {host}.";
+            remoteNote.Visibility = host is null ? Visibility.Collapsed : Visibility.Visible;
+            if (_viewModel.LocalServerUrl != lastFromBox && addressBox.Text != _viewModel.LocalServerUrl)
+                addressBox.Text = _viewModel.LocalServerUrl;
+            if (typeCombo.SelectedIndex != (int)_viewModel.LocalServerApi)
+                typeCombo.SelectedIndex = (int)_viewModel.LocalServerApi;
+        }
+        ApplyState();
+
+        PropertyChangedEventHandler handler = (_, e) =>
+        {
+            if (e.PropertyName is nameof(EnhancementViewModel.LocalServerError)
+                or nameof(EnhancementViewModel.LocalServerRemoteHost)
+                or nameof(EnhancementViewModel.LocalServerUrl)
+                or nameof(EnhancementViewModel.LocalServerApi))
+                DispatcherQueue.TryEnqueue(ApplyState);
+        };
+        RegisterViewModelSubscription(handler);
+
+        return new StackPanel
+        {
+            Children = { typeLabel, typeCombo, addressLabel, addressRow, errorText, remoteNote },
+            Visibility = _viewModel.IsLocalServerSelected ? Visibility.Visible : Visibility.Collapsed
+        };
     }
 
     /// <summary>The "Show all available models" checkbox + its experimental warning, built per
@@ -1723,14 +1842,16 @@ public sealed class EnhancementPage : Page
             const string defaultProviderLabel = "(Default \u2014 uses main selection)";
             var providerCombo = new ComboBox { Width = 320 };
             providerCombo.Items.Add(defaultProviderLabel);
+            // Items are DISPLAY labels (LAI-1: "Local server"); every read below converts back through
+            // AIProviderDisplay.TryParse, and the stored override stays the member name.
             foreach (var p in EnhancementViewModel.AvailableProviders)
-                providerCombo.Items.Add(p.ToString());
+                providerCombo.Items.Add(AIProviderDisplay.Label(p));
 
             // Pre-select from saved override
             if (!string.IsNullOrEmpty(prompt.ProviderOverride)
-                && Enum.TryParse<AIProvider>(prompt.ProviderOverride, out _))
+                && Enum.TryParse<AIProvider>(prompt.ProviderOverride, out var savedOverride))
             {
-                providerCombo.SelectedItem = prompt.ProviderOverride;
+                providerCombo.SelectedItem = AIProviderDisplay.Label(savedOverride);
             }
             else
             {
@@ -1859,7 +1980,7 @@ public sealed class EnhancementPage : Page
             {
                 var sel = providerCombo.SelectedItem as string;
                 if (sel == defaultProviderLabel) return _viewModel.SelectedImageProvider;
-                return Enum.TryParse<AIProvider>(sel, out var p) ? p : _viewModel.SelectedImageProvider;
+                return AIProviderDisplay.TryParse(sel, out var p) ? p : _viewModel.SelectedImageProvider;
             }
 
             // Resolve the effective image model from the combo (Default → null, treated as
@@ -2028,7 +2149,7 @@ public sealed class EnhancementPage : Page
 
             PromptModelOverridePolicy.OverrideContext CurrentContext() => new(
                 providerCombo.SelectedIndex != 0
-                    && Enum.TryParse<AIProvider>(providerCombo.SelectedItem as string, out var p)
+                    && AIProviderDisplay.TryParse(providerCombo.SelectedItem as string, out var p)
                     ? p : null,
                 typeCombo.SelectedIndex == 1);
 
@@ -2263,9 +2384,11 @@ public sealed class EnhancementPage : Page
                 if (!string.IsNullOrEmpty(newName))
                     prompt.Title = newName;
                 var isImage = typeCombo.SelectedIndex == 1;
-                var providerOverride = providerCombo.SelectedIndex == 0
-                    ? null
-                    : providerCombo.SelectedItem as string;
+                // Stored as the MEMBER name (what ParseProviderOverride reads), never the label.
+                var providerOverride = providerCombo.SelectedIndex != 0
+                                       && AIProviderDisplay.TryParse(providerCombo.SelectedItem as string, out var chosenProvider)
+                    ? chosenProvider.ToString()
+                    : null;
                 var modelRaw = modelCombo.SelectedItem as string ?? modelCombo.Text;
                 var modelOverride = modelRaw == defaultModelLabel ? null : modelRaw;
                 // We persist the dropdown's current selection regardless of visibility — if the

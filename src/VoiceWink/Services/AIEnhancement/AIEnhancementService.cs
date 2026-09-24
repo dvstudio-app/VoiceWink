@@ -92,6 +92,32 @@ public sealed class AIEnhancementService
     /// invalidates nothing; "groq" parses and over-invalidates the AI-side cache on a
     /// transcription-side key change — harmless by design.
     /// </summary>
+    /// <summary>LAI-1: the fetch-error line when a local server refuses the connection.</summary>
+    internal const string LocalServerUnreachableMessage = "No server is answering at this address. Is it running?";
+
+    /// <summary>
+    /// LAI-1: false for a provider that works without a stored API key (a user-run server).
+    /// </summary>
+    public bool RequiresApiKey(AIProvider provider) => _providers.RequiresApiKey(provider);
+
+    /// <summary>
+    /// The list a dropdown shows. A keyless user-run server's list is shown as the server returned
+    /// it (minus embedding models, already dropped by its client): the catalog display policy
+    /// curates the CLOUD catalogs and would hide Ollama ids for substrings like "instruct".
+    /// </summary>
+    private List<string> DisplayList(AIProvider provider, Providers.ProviderModelList fetched,
+        Providers.ModelCatalogQuery query, bool showAll)
+        => RequiresApiKey(provider)
+            ? ModelDisplayPolicy.ApplyDisplayPolicy(fetched, query, showAll)
+            : new List<string>(fetched.Models);
+
+    /// <summary>
+    /// LAI-1: forget a provider's cached model lists after its ENDPOINT changed (a Local server's
+    /// address or protocol). Only a key change invalidated them before, and a list cached from the
+    /// old server would otherwise bind instantly in the options dialog. Same body a key change runs.
+    /// </summary>
+    public void InvalidateModelLists(AIProvider provider) => InvalidateModelListCacheForProviderName(provider.ToString());
+
     private void InvalidateModelListCacheForProviderName(string providerName)
     {
         if (!Enum.TryParse<AIProvider>(providerName, ignoreCase: true, out var provider))
@@ -628,6 +654,12 @@ public sealed class AIEnhancementService
     /// </summary>
     private int EffectiveMaxTokens(AIProvider provider, string model)
     {
+        // LAI-1: a user-run server's context is whatever it was started with — llama-server and
+        // LM Studio default to a few thousand tokens — so ask for the cap every build before
+        // ENH-26 sent, not 16000. A cleanup rarely needs a tenth of it.
+        if (provider == AIProvider.LocalServer)
+            return AIProviderConfig.LegacyMaxTokens;
+
         if (PublishedMaxOutputTokensFor(provider, model) is { } published && published > 0)
             return Math.Min(AIProviderConfig.DefaultMaxTokens, published);
 
@@ -1029,7 +1061,10 @@ public sealed class AIEnhancementService
         }
 
         // Guard against stale settings pointing to non-chat models (e.g. classifiers, TTS)
-        if (!ModelDisplayPolicy.IsChatModel(model))
+        // LAI-1: the catalog display policy curates CLOUD catalogs; a keyless user-run server's ids
+        // (Ollama "qwen2.5:7b-instruct") would be refused for the substring "instruct".
+        if (RequiresApiKey(ParseProviderOverride(prompt?.ProviderOverride) ?? SelectedProvider)
+            && !ModelDisplayPolicy.IsChatModel(model))
         {
             // Only self-heal the GLOBAL selection when THIS model actually came from it — a stale
             // non-chat model resolved through a prompt's provider/model override is not the global
@@ -1190,6 +1225,9 @@ public sealed class AIEnhancementService
             ApiKey = apiKey,
             BaseUrl = baseUrl,
             Reasoning = reasoning,
+            LocalApi = provider == AIProvider.LocalServer
+                ? LocalServerEndpoints.ParseApi(_settings.GetString(AppDefaults.LocalServerApiSetting, LocalServerEndpoints.OllamaToken))
+                : LocalServerApi.Ollama,
             // Clamped DOWN against whatever this provider published for this model; see
             // EffectiveMaxTokens for the three arms. This is the only production construction site,
             // so one clamp covers every path that sends a token cap. The image clients and the
@@ -1245,7 +1283,7 @@ public sealed class AIEnhancementService
         var descriptor = _providers.Get(imageProvider);
         if (!descriptor.SupportsImageGeneration)
             throw new InvalidOperationException(
-                $"Image generation is not supported by {imageProvider}. Switch to OpenAI, Gemini, or OpenRouter.");
+                $"Image generation is not supported by {AIProviderDisplay.Label(imageProvider)}. Switch to OpenAI, Gemini, or OpenRouter.");
 
         var model = ResolveModel(prompt);
         if (string.IsNullOrWhiteSpace(model))
@@ -1872,7 +1910,7 @@ public sealed class AIEnhancementService
             // common real-world shape there is (Codex diff review).
             var config = BuildConfig(SelectedModel, provider, reasoningChoice: null,
                 candidateKey: Helpers.ApiKeyFormat.Normalize(candidateKey));
-            if (string.IsNullOrEmpty(config.ApiKey))
+            if (string.IsNullOrEmpty(config.ApiKey) && RequiresApiKey(provider))
                 return (new List<string>(), 0, null);
             ThrowIfOffline(config);
 
@@ -1880,7 +1918,7 @@ public sealed class AIEnhancementService
                 .FetchAvailableModelsAsync(_httpFactory, config, query, showAll, ct).ConfigureAwait(false);
 
             // Display policy only — deliberately NO CaptureImageCapabilities and NO cache store.
-            return (ModelDisplayPolicy.ApplyDisplayPolicy(fetched, query, showAll), fetched.RawCount, null);
+            return (DisplayList(provider, fetched, query, showAll), fetched.RawCount, null);
         }
         catch (HttpRequestException ex) when (ex.StatusCode is global::System.Net.HttpStatusCode.Unauthorized
                                                   or global::System.Net.HttpStatusCode.Forbidden)
@@ -1901,8 +1939,14 @@ public sealed class AIEnhancementService
             else
                 Logger.Warning(ex, "Candidate key validation failed for {Provider}", provider);
             var error = ex is OperationCanceledException
-                ? $"{provider}: no response (timed out)"
-                : Helpers.ProviderApiException.UserFacingMessage(ex);
+                ? $"{AIProviderDisplay.Label(provider)}: no response (timed out)"
+                // Connection REFUSED only (a SocketException underneath): a TLS failure, the
+                // offline pre-flight and a mid-response reset are other facts with their own text.
+                : !RequiresApiKey(provider) && ex is HttpRequestException { StatusCode: null, InnerException: global::System.Net.Sockets.SocketException }
+                    // LAI-1: a user-run server that is not running refuses the connection; say
+                    // so in the user's terms rather than as a socket error.
+                    ? LocalServerUnreachableMessage
+                    : Helpers.ProviderApiException.UserFacingMessage(ex);
             return (new List<string>(), 0, error);
         }
     }
@@ -1922,7 +1966,7 @@ public sealed class AIEnhancementService
         try
         {
             var config = BuildConfig(SelectedModel, provider);
-            if (string.IsNullOrEmpty(config.ApiKey))
+            if (string.IsNullOrEmpty(config.ApiKey) && RequiresApiKey(provider))
                 return (new List<string>(), 0, null);
             ThrowIfOffline(config);
 
@@ -1943,7 +1987,7 @@ public sealed class AIEnhancementService
             // Same commit point, same epoch fence, for the same reasons. A TEXT fetch carries the
             // published output ceilings; every other query carries none and preserves the slice.
             CaptureTokenCeilings(provider, fetched, admit: () => ModelListEpochIsCurrent(provider, epochAtStart));
-            var display = ModelDisplayPolicy.ApplyDisplayPolicy(fetched, query, showAll);
+            var display = DisplayList(provider, fetched, query, showAll);
             // IMG-10b: cache the display list for instant dialog binds. Only HERE — after a real
             // provider round-trip — never on the no-key early return above, whose empty list is a
             // different fact from "this provider's catalog is empty" (plan review). An EMPTY list
@@ -1995,8 +2039,14 @@ public sealed class AIEnhancementService
             // HttpClient timeouts surface as TaskCanceledException WITHOUT ct being
             // signalled — an unreachable/stalling provider deserves an error line too.
             var error = ex is OperationCanceledException
-                ? $"{provider}: no response (timed out)"
-                : Helpers.ProviderApiException.UserFacingMessage(ex);
+                ? $"{AIProviderDisplay.Label(provider)}: no response (timed out)"
+                // Connection REFUSED only (a SocketException underneath): a TLS failure, the
+                // offline pre-flight and a mid-response reset are other facts with their own text.
+                : !RequiresApiKey(provider) && ex is HttpRequestException { StatusCode: null, InnerException: global::System.Net.Sockets.SocketException }
+                    // LAI-1: a user-run server that is not running refuses the connection; say
+                    // so in the user's terms rather than as a socket error.
+                    ? LocalServerUnreachableMessage
+                    : Helpers.ProviderApiException.UserFacingMessage(ex);
             return (new List<string>(), 0, error);
         }
     }
@@ -2124,7 +2174,7 @@ public sealed class AIEnhancementService
         var descriptor = _providers.Get(imageProvider);
         if (!descriptor.SupportsImageGeneration)
             throw new InvalidOperationException(
-                $"Image generation is not supported by {imageProvider}.");
+                $"Image generation is not supported by {AIProviderDisplay.Label(imageProvider)}.");
 
         if (string.IsNullOrWhiteSpace(modelId))
             modelId = DefaultImageModelFor(imageProvider);

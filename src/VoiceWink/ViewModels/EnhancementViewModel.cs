@@ -80,6 +80,7 @@ public partial class EnhancementViewModel : ObservableObject
         ReloadPrompts();
         LoadApiKey();
         LoadImageApiKey();
+        LoadLocalServerSettings();
     }
 
     /// <summary>
@@ -189,21 +190,29 @@ public partial class EnhancementViewModel : ObservableObject
 
     partial void OnSelectedProviderChanged(AIProvider value)
     {
-        // Only persist provider to settings if it has an API key.
-        // This prevents navigating away with a keyless provider stuck in settings.
-        // The UI combo still shows the selection so the user can enter a key and save it,
-        // which then persists the provider (see SaveApiKey).
-        var hasKey = _apiKeys.HasApiKey(value.ToString().ToLowerInvariant());
-        if (hasKey)
+        // Only persist provider to settings if it is USABLE: it has an API key, or it needs none
+        // (LAI-1, a user-run server). This prevents navigating away with a keyless CLOUD provider
+        // stuck in settings. The UI combo still shows the selection so the user can enter a key
+        // and save it, which then persists the provider (see SaveApiKey).
+        //
+        // The keyless half is not a convenience. Without it, choosing "Local server" while an
+        // OpenAI key is stored leaves SelectedProvider on OpenAI, and the next dictation goes to
+        // the cloud under a local label — the privacy fail-open the plan's round-1 review found.
+        // All three uses below read the same flag: persist, restore the model, fetch the list.
+        var usable = _apiKeys.HasApiKey(value.ToString().ToLowerInvariant())
+                     || !_enhancement.RequiresApiKey(value);
+        if (usable)
             _enhancement.SelectedProvider = value;
 
         ApiKeyStatus = ApiKeyStatus.Unknown;
         ModelFetchError = null; // previous provider's error must not linger
         LoadApiKey();
+        LoadLocalServerSettings();
+        OnPropertyChanged(nameof(IsLocalServerSelected));
 
-        // Restore the last-used model for this provider, or clear if no key
+        // Restore the last-used model for this provider, or clear if it cannot run
         _suppressModelSync = true;
-        SelectedModel = hasKey ? _enhancement.SelectedModel : "";
+        SelectedModel = usable ? _enhancement.SelectedModel : "";
         _suppressModelSync = false;
 
         // Fetch text models for the new provider. The loading flag is reset here
@@ -211,8 +220,104 @@ public partial class EnhancementViewModel : ObservableObject
         // identity-guarded); a new fetch re-sets it immediately.
         AvailableModels.Clear();
         IsLoadingModels = false;
-        if (hasKey)
+        if (usable)
             _ = FetchModelsAsync();
+    }
+
+    // ── LAI-1: Local server settings ────────────────────────────────────
+
+    /// <summary>True while the text provider is the user's own AI server.</summary>
+    public bool IsLocalServerSelected => SelectedProvider == AIProvider.LocalServer;
+
+    /// <summary>
+    /// The server type the card shows. Picking one stores it at once together with that type's
+    /// default address — the two settings always describe ONE server, never an Ollama API aimed
+    /// at LM Studio's port.
+    /// </summary>
+    [ObservableProperty] private LocalServerApi _localServerApi;
+
+    /// <summary>The address in the card's box — what Save would store.</summary>
+    [ObservableProperty] private string _localServerUrl = "";
+
+    /// <summary>Why the last Save was refused; null when it was not.</summary>
+    [ObservableProperty] private string? _localServerError;
+
+    /// <summary>
+    /// The host the text is sent to when the SAVED address is not this PC, else null — the card
+    /// says so, because "Local server" would otherwise read as "stays on this PC".
+    /// </summary>
+    public string? LocalServerRemoteHost
+        => LocalServerEndpoints.RemoteHost(LocalServerEndpoints.EffectiveBaseUrl(StoredLocalServerApi(), StoredLocalServerUrl()));
+
+    private static string LocalServerUrlKey => AppDefaults.AiBaseUrlPrefix + AIProvider.LocalServer.ToString().ToLowerInvariant();
+
+    private LocalServerApi StoredLocalServerApi()
+        => LocalServerEndpoints.ParseApi(_settings.GetString(AppDefaults.LocalServerApiSetting, LocalServerEndpoints.OllamaToken));
+
+    private string StoredLocalServerUrl() => _settings.GetString(LocalServerUrlKey, "");
+
+    private bool _loadingLocalServer;
+
+    /// <summary>
+    /// Re-read the stored server into the card — at construction, on a provider change, and each
+    /// time the page is built (this VM is a singleton, so an unsaved address typed on an earlier
+    /// visit would otherwise reappear as if it were stored).
+    /// </summary>
+    public void LoadLocalServerSettings()
+    {
+        _loadingLocalServer = true;
+        try
+        {
+            var api = StoredLocalServerApi();
+            LocalServerApi = api;
+            LocalServerUrl = LocalServerEndpoints.EffectiveBaseUrl(api, StoredLocalServerUrl());
+            LocalServerError = null;
+        }
+        finally { _loadingLocalServer = false; }
+        OnPropertyChanged(nameof(LocalServerRemoteHost));
+    }
+
+    partial void OnLocalServerApiChanged(LocalServerApi value)
+    {
+        if (_loadingLocalServer)
+            return;
+        LocalServerUrl = LocalServerEndpoints.DefaultUrlFor(value);
+        // A different kind of server means a different model catalog: the old id would be sent to
+        // the new server and fail, so the selection starts empty and the user picks from the list.
+        if (IsLocalServerSelected)
+            SelectedModel = "";
+        SaveLocalServerAddress();
+    }
+
+    /// <summary>
+    /// Store the server type and the address in the box. A refused address changes nothing
+    /// stored — the previous server keeps working until a valid one is saved.
+    /// </summary>
+    [RelayCommand]
+    public void SaveLocalServerAddress()
+    {
+        var url = LocalServerUrl.Trim();
+        var reason = LocalServerEndpoints.Validate(url);
+        if (reason is not null)
+        {
+            LocalServerError = reason;
+            return;
+        }
+
+        var api = LocalServerApi;
+        _settings.SetString(AppDefaults.LocalServerApiSetting, LocalServerEndpoints.TokenFor(api));
+        _settings.SetString(LocalServerUrlKey, url);
+        _enhancement.InvalidateModelLists(AIProvider.LocalServer);
+        LocalServerError = null;
+        OnPropertyChanged(nameof(LocalServerRemoteHost));
+        Logger.Information("Local server set: api={Api}, remote={Remote}", api, LocalServerEndpoints.RemoteHost(url) is not null);
+
+        if (IsLocalServerSelected)
+        {
+            ModelFetchError = null;
+            AvailableModels.Clear();
+            _ = FetchModelsAsync();
+        }
     }
 
     partial void OnSelectedImageProviderChanged(AIProvider value)
@@ -293,6 +398,9 @@ public partial class EnhancementViewModel : ObservableObject
             CancelPendingTextFetch();
             Logger.Information("API key cleared for {Provider}", provider);
             AvailableModels.Clear();
+            // LAI-1: a keyless provider still works without the key — list its models again.
+            if (!_enhancement.RequiresApiKey(provider) && TextRowStillShows(provider))
+                _ = FetchModelsAsync();
             if (mirrorsImageRow)
             {
                 LoadImageApiKey();
@@ -363,7 +471,9 @@ public partial class EnhancementViewModel : ObservableObject
             // Empty CATALOG with a key set likely means the key was rejected (some providers
             // return an empty list instead of 401). Nothing was written, so there is nothing to
             // undo — the stored key was never touched.
-            if (rawModelCount == 0)
+            // LAI-1: not for a keyless provider — its key is optional, and a user server with no
+            // models installed says nothing about the key.
+            if (rawModelCount == 0 && _enhancement.RequiresApiKey(provider))
             {
                 RejectCandidate(providerKey, generation, provider, mirrorsImageRow);
                 Logger.Warning("API key for {Provider} returned no models — likely invalid, not saved", provider);

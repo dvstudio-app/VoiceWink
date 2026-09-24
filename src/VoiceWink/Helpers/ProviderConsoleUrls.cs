@@ -45,6 +45,8 @@ internal static class ProviderConsoleUrls
         // an org id) and a bare visit answers "organization does not exist" (owner report
         // 2026-07-31). The root redirects each user to their own org's dashboard.
         AIProvider.Cerebras => "https://cloud.cerebras.ai/",
+        // LAI-1: no vendor console — the key, if any, is one the user set on their own server.
+        AIProvider.LocalServer => null,
         _ => null,
     };
 

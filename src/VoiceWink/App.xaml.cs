@@ -642,6 +642,9 @@ public partial class App : Application, Services.IAppLifetime
         // inert when UpdateCheckFeature.IsEnabled == false, and only Start()'d from behind the
         // LGL-1 gate in StartGatedRuntimeServices.
         services.AddSingleton<Services.Updates.IUpdateScheduler, Services.Updates.UpdateScheduler>();
+        // dvstudio-metrics #85: the one-time install-source report the scheduler's automatic tick
+        // drives (Privacy §4.5). Singleton — it serializes its own attempts.
+        services.AddSingleton<Services.Updates.IInstallSourceReporter, Services.Updates.InstallSourceReporter>();
         // UPD-4b: turns a background-detected update into an applied one when the user hasn't
         // opted out. Singleton (it owns one bounded retry loop). Resolved from
         // StartGatedRuntimeServices — i.e. ON THE UI THREAD, which is load-bearing: its ctor
@@ -3309,7 +3312,7 @@ public partial class App : Application, Services.IAppLifetime
             return null;
         }
         foreach (var p in providers)
-            providerCombo.Items.Add(p.ToString());
+            providerCombo.Items.Add(AIProviderDisplay.Label(p)); // every read parses it back via AIProviderDisplay.TryParse
 
         // Pre-select: previously-used provider if available, else current selection
         var defaultProvider = capturedContext.PreviousProvider
@@ -3370,7 +3373,7 @@ public partial class App : Application, Services.IAppLifetime
             userAdjustedModel = false;
             modelCombo.IsEnabled = false;
             var providerName = providerCombo.SelectedItem as string ?? "";
-            if (!Enum.TryParse<AIProvider>(providerName, out var selProvider))
+            if (!AIProviderDisplay.TryParse(providerName, out var selProvider))
             {
                 suppressModelTracking = true;
                 try
@@ -3702,7 +3705,7 @@ public partial class App : Application, Services.IAppLifetime
             var providerName = (providerCombo.SelectedItem as string)
                 ?? capturedContext.PreviousProvider?.ToString();
             var provider = (!string.IsNullOrEmpty(providerName)
-                && Enum.TryParse<AIProvider>(providerName, out var p))
+                && AIProviderDisplay.TryParse(providerName, out var p))
                 ? p
                 : (capturedContext.PreviousProvider ?? AIProvider.OpenAI);
             // The previous code passed a null model for "(Default)", which ImageOptions resolves to
@@ -4454,7 +4457,7 @@ public partial class App : Application, Services.IAppLifetime
                          // callers never proceed with a provider/model mismatch
 
         var providerStr = providerCombo.SelectedItem as string ?? "";
-        AIProvider? selectedProvider = Enum.TryParse<AIProvider>(providerStr, out var sp) ? sp : null;
+        AIProvider? selectedProvider = AIProviderDisplay.TryParse(providerStr, out var sp) ? sp : null;
 
         // UX-1: remember the confirmed model per provider so the next dialog (and the AI
         // Enhancement page / main pipeline, which share this memory) restore it. Gated on

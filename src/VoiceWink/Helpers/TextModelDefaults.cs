@@ -119,6 +119,9 @@ internal static class TextModelDefaults
         // Catalog-membership-verified against the 2026-09-12 weekly snapshot (gemma-4-31b,
         // gpt-oss-120b, qwen-3.8-27b); NOT verified by a live call from this change.
         AIProvider.Cerebras => "qwen-3.8-27b",
+        // LAI-1: the user's own server carries whatever models THEY installed; there is no id
+        // VoiceWink could suggest that the server is known to have. Nothing is pre-selected.
+        AIProvider.LocalServer => null,
         _ => null,
     };
 }

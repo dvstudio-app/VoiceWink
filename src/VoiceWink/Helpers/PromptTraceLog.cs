@@ -231,6 +231,7 @@ public static class PromptTraceLog
     {
         "Groq", "Deepgram", "ElevenLabs", "OpenAI", "LocalWhisper",
         "Anthropic", "Gemini", "Mistral", "OpenRouter", "Cerebras",
+        "LocalServer",
     };
 
     /// <summary>

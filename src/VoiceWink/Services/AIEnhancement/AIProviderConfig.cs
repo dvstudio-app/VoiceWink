@@ -93,6 +93,12 @@ public class AIProviderConfig
     public Helpers.ReasoningDirective Reasoning { get; init; } = Helpers.ReasoningDirective.None;
 
     /// <summary>
+    /// LAI-1: which protocol a <see cref="AIProvider.LocalServer"/> speaks. Ignored for every
+    /// other provider.
+    /// </summary>
+    public LocalServerApi LocalApi { get; init; } = LocalServerApi.Ollama;
+
+    /// <summary>
     /// IMG-4: the parallel batch's shared call state (response-materialization gate),
     /// set by <c>AIEnhancementService</c> ONLY on the internal batch path — null on every
     /// other call, which the image clients treat as "no gate, no buffer cap" so
@@ -127,6 +133,8 @@ public class AIProviderConfig
             AIProvider.Mistral => "https://api.mistral.ai/v1",
             AIProvider.OpenRouter => "https://openrouter.ai/api/v1",
             AIProvider.Cerebras => "https://api.cerebras.ai/v1",
+            // LAI-1: nothing stored → the default address of the API the user picked.
+            AIProvider.LocalServer => LocalServerEndpoints.EffectiveBaseUrl(LocalApi, null),
             _ => ""
         };
     }

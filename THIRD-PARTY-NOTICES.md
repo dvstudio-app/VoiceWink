@@ -32,6 +32,7 @@ no content changes were needed).
 | Serilog.Sinks.Debug | 3.0.0 | Apache-2.0 | https://github.com/serilog/serilog-sinks-debug |
 | Serilog.Sinks.File | 6.0.0 | Apache-2.0 | https://github.com/serilog/serilog-sinks-file |
 | SharpHook | 5.3.8 | MIT | https://github.com/TolikPylypchuk/SharpHook |
+| System.Diagnostics.EventLog | 8.0.2 | MIT | https://github.com/dotnet/runtime |
 | System.Drawing.Common | 8.0.11 | MIT | https://github.com/dotnet/runtime |
 | System.Management | 8.0.0 | MIT | https://github.com/dotnet/runtime |
 | System.Security.Cryptography.ProtectedData | 8.0.0 | MIT | https://github.com/dotnet/runtime |

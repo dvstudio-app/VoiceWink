@@ -472,6 +472,21 @@ public static class AppDefaults
     /// </summary>
     public const string LastSeenChangelogVersion = "lastSeenChangelogVersion";
 
+    /// <summary>
+    /// The one-time install-source record (dvstudio-metrics #85; Privacy §4.5), written only by
+    /// <c>InstallSourceReporter</c>. <see cref="InstallSourceInstallStamp"/> is the Velopack install
+    /// root's creation time ("O") the record belongs to — a different stamp means a new installation;
+    /// <see cref="InstallSource"/> is <c>msstore</c> | <c>not-detected</c>;
+    /// <see cref="InstallSourceReport"/> is <c>pending</c> | <c>sent</c> | <c>gave-up</c> | <c>none</c>;
+    /// <see cref="InstallSourceReportAttempts"/> counts attempts as a decimal string. App-managed — NOT in
+    /// <see cref="Defaults"/>, and deliberately untouched by "Reset all settings": clearing them would
+    /// let the same installation be counted twice.
+    /// </summary>
+    public const string InstallSourceInstallStamp = "installSourceInstallStamp";
+    public const string InstallSource = "installSource";
+    public const string InstallSourceReport = "installSourceReport";
+    public const string InstallSourceReportAttempts = "installSourceReportAttempts";
+
     // AI Enhancement
     public const string AiEnhancementEnabled = "aiEnhancementEnabled";
     public const string AiProvider = "aiProvider";
@@ -482,6 +497,17 @@ public static class AppDefaults
     public const string ApiKeyPrefix = "apikey_";
     public const string LastActivePromptId = "lastActivePromptId";
     public const string CustomPrompts = "customPrompts";
+
+    /// <summary>
+    /// LAI-1: which protocol the Local server provider speaks — <c>"ollama"</c> or
+    /// <c>"openai"</c> (<see cref="Services.AIEnhancement.LocalServerEndpoints"/>). Its address is
+    /// <c>aiBaseUrl_localserver</c>, the per-provider base-URL key every provider already has.
+    /// App-managed, NOT in <see cref="Defaults"/>, on purpose: the address key is import-protected
+    /// by its prefix, so if this one travelled on its own an imported settings file would pair
+    /// another machine's server TYPE with this machine's ADDRESS — an Ollama address spoken to as
+    /// LM Studio, failing every dictation. The two stay together or not at all. Absent = Ollama.
+    /// </summary>
+    public const string LocalServerApiSetting = "localServerApi";
 
     /// <summary>
     /// Builds the settings key used to store the selected model for an AI provider.

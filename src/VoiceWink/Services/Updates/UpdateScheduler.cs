@@ -36,6 +36,7 @@ public sealed class UpdateScheduler : IUpdateScheduler, IDisposable
     private readonly bool _featureEnabled;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Func<bool> _applyingProbe;
+    private readonly IInstallSourceReporter? _installSource;
 
     private readonly object _lifecycleLock = new();
     private CancellationTokenSource? _cts;
@@ -50,13 +51,14 @@ public sealed class UpdateScheduler : IUpdateScheduler, IDisposable
     public event Action<string>? UpdateReadyToInstall;
     public event Action? UpdateNoLongerAvailable;
 
-    public UpdateScheduler(IUpdateService updates, SettingsService settings)
+    public UpdateScheduler(IUpdateService updates, SettingsService settings, IInstallSourceReporter installSource)
         : this(
             updates,
             settings,
             UpdateCheckFeature.IsEnabled,
             static (d, ct) => Task.Delay(d, ct),
-            App.IsExclusiveMaintenanceActive)
+            App.IsExclusiveMaintenanceActive,
+            installSource)
     {
     }
 
@@ -68,13 +70,15 @@ public sealed class UpdateScheduler : IUpdateScheduler, IDisposable
         SettingsService settings,
         bool featureEnabled,
         Func<TimeSpan, CancellationToken, Task> delay,
-        Func<bool> applyingProbe)
+        Func<bool> applyingProbe,
+        IInstallSourceReporter? installSource = null)
     {
         _updates = updates;
         _settings = settings;
         _featureEnabled = featureEnabled;
         _delay = delay;
         _applyingProbe = applyingProbe;
+        _installSource = installSource;
     }
 
     public void Start()
@@ -236,6 +240,20 @@ public sealed class UpdateScheduler : IUpdateScheduler, IDisposable
                     _lastNotifiedVersion = null;
                     UpdateNoLongerAvailable?.Invoke();
                 }
+            }
+
+            // dvstudio-metrics #85 (Privacy §4.5): the one-time install-source report rides THIS
+            // path — an automatic check, so the build flag, the toggle and the LGL-1 gate already
+            // hold; a manual check never reaches it. It runs on every automatic tick: it classifies
+            // the installation once whatever the check's outcome (the Store log rolls over within
+            // days, so an offline first launch must still record it), and sends only when this
+            // check just reached the server. Awaited after the update events, and contained, so it
+            // can neither delay an install hand-off nor kill the tick.
+            if (_installSource is { } installSource)
+            {
+                var networkProven = result.Outcome is UpdateCheckOutcome.UpToDate or UpdateCheckOutcome.UpdateAvailable;
+                try { await installSource.RunAsync(networkProven, ct).ConfigureAwait(false); }
+                catch (Exception ex) { Logger.Warning(ex, "Install-source report threw"); }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

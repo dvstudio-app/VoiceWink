@@ -3471,7 +3471,9 @@ public sealed class OnboardingPage : Page
         var provider = Enum.TryParse<Services.AIEnhancement.AIProvider>(raw, out var p)
             ? p
             : Services.AIEnhancement.AIProvider.OpenAI;
-        var hasKey = !string.IsNullOrEmpty(_apiKeys.GetApiKey(provider.ToString().ToLowerInvariant()));
+        // LAI-1: a keyless provider (Local server) is never "incomplete" for want of a key.
+        var hasKey = provider == Services.AIEnhancement.AIProvider.LocalServer
+                     || !string.IsNullOrEmpty(_apiKeys.GetApiKey(provider.ToString().ToLowerInvariant()));
         var hasModel = !string.IsNullOrEmpty(_settings.GetString(AppDefaults.AiModelKey(provider), ""));
         return EnhancementSummaryText(enabled: true, hasKey, hasModel);
     }

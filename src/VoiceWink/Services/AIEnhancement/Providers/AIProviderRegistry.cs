@@ -1,4 +1,4 @@
-﻿namespace VoiceWink.Services.AIEnhancement.Providers;
+namespace VoiceWink.Services.AIEnhancement.Providers;
 
 /// <summary>
 /// Lookup table for <see cref="IAIProviderDescriptor"/>. DI-registered as a singleton.
@@ -29,7 +29,7 @@ public sealed class AIProviderRegistry
         => _byProvider.TryGetValue(provider, out var descriptor) && descriptor.SupportsImageGeneration;
 
     /// <summary>
-    /// Build the standard production registry with all 7 supported providers.
+    /// Build the standard production registry with every supported provider (seven cloud + the LAI-1 Local server).
     /// Used by DI registration and by tests that need a working registry.
     /// </summary>
     public static AIProviderRegistry CreateDefault() => new(new IAIProviderDescriptor[]
@@ -56,5 +56,10 @@ public sealed class AIProviderRegistry
         // weekly /vw-model-review.
         new OpenAIStyleDescriptor(AIProvider.OpenRouter, supportsImageGeneration: true),
         new OpenAIStyleDescriptor(AIProvider.Cerebras, supportsImageGeneration: false),
+        new LocalServerDescriptor(),
     });
+
+    /// <summary>LAI-1: false for a provider that works without a stored API key.</summary>
+    public bool RequiresApiKey(AIProvider provider)
+        => !_byProvider.TryGetValue(provider, out var descriptor) || descriptor.RequiresApiKey;
 }

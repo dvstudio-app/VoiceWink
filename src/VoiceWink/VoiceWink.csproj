@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.98.393</Version>
-    <AssemblyVersion>1.98.393.0</AssemblyVersion>
-    <FileVersion>1.98.393.0</FileVersion>
+    <Version>1.99.394</Version>
+    <AssemblyVersion>1.99.394.0</AssemblyVersion>
+    <FileVersion>1.99.394.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
@@ -296,6 +296,9 @@
 
     <!-- WMI for SMBIOS UUID read in hardware fingerprint -->
     <PackageReference Include="System.Management" Version="8.0.0" />
+
+    <!-- Reads the Microsoft Store's own event log for the one-time install-source report (dvstudio-metrics #85) -->
+    <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.2" />
 
     <!-- P/Invoke Generation -->
     <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.106">

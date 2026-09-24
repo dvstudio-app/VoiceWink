@@ -10,6 +10,15 @@ public interface IAIProviderDescriptor
 
     bool SupportsImageGeneration { get; }
 
+    /// <summary>
+    /// LAI-1: false for a provider that works WITHOUT a stored API key (a user-run server). Every
+    /// "no key, so stop" site consults this — the model fetch, the provider persist on the
+    /// Enhancement page — and a keyless provider's ids skip the catalog display policy
+    /// (<c>ModelDisplayPolicy</c>), which exists to curate the cloud catalogs and would refuse an
+    /// Ollama id like <c>qwen2.5:7b-instruct</c> for the substring "instruct".
+    /// </summary>
+    bool RequiresApiKey => true;
+
     /// <summary>Model ID used when the user hasn't selected an image model yet.</summary>
     string DefaultImageModel { get; }
 

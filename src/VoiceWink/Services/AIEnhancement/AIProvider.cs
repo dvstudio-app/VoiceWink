@@ -21,5 +21,13 @@ public enum AIProvider
     Groq,
     Mistral,
     OpenRouter,
-    Cerebras
+    Cerebras,
+
+    /// <summary>
+    /// LAI-1: an AI server the user runs themselves — Ollama, LM Studio, or any
+    /// OpenAI-compatible endpoint. No API key required (<c>RequiresApiKey</c> is false), no
+    /// image generation, and its model list is the server's own. Shown to the user as
+    /// "Local server" (<c>AIProviderDisplay</c>); persisted by this member NAME like the rest.
+    /// </summary>
+    LocalServer
 }

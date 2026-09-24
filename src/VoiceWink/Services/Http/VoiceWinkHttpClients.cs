@@ -19,6 +19,8 @@ namespace VoiceWink.Services.Http;
 /// one automatic retry lives at the OPERATION level (<c>TranscriptionConnectRetry</c>),
 /// where re-invoking <c>TranscribeAsync</c> yields a fresh stream by construction —
 /// which is exactly what a handler-level retry cannot do.</item>
+/// <item><c>local-ai</c> (LAI-1) — the user's own AI server: 2 min Timeout, NO retry,
+/// connect-bounded + translated, no proxy, no redirects.</item>
 /// <item><c>downloads</c> — 10 min Timeout, untouched: ModelDownloadManager owns its
 /// bounded-retry + HTTP-Range-resume + stall machinery.</item>
 /// <item><c>licensing</c> — 30 s Timeout, retry handler attached but disabled
@@ -36,6 +38,9 @@ internal static class VoiceWinkHttpClients
     /// full Timeout budget.
     /// </summary>
     internal static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>LAI-1: the named client for a user-run AI server (see its registration).</summary>
+    internal const string LocalAi = "local-ai";
 
     internal static void Register(IServiceCollection services)
     {
@@ -94,8 +99,36 @@ internal static class VoiceWinkHttpClients
         // must never route through an egress proxy or follow a redirect off the loopback.
         services.AddHttpClient("parakeet-local", c => c.Timeout = TimeSpan.FromMinutes(5))
             .UseSocketsHttpHandler((h, _) => { h.UseProxy = false; h.AllowAutoRedirect = false; });
+        // LAI-1: the user's own AI server (Ollama, LM Studio, any OpenAI-compatible endpoint).
+        // NO RetryingHandler: a slow local completion is a model at work, not a flaky WAN call,
+        // and a replay would queue a second generation behind the first on a one-slot server.
+        // The translator stays so a dead remote host fails as an HttpRequestException rather than
+        // an OCE the enhancement path would read as "cancelled". No proxy and no redirects: text
+        // meant for 127.0.0.1 must never route through an egress proxy or be redirected off the
+        // machine. The text-enhancement deadline (60 s) bounds a dictation; this Timeout bounds the
+        // model-list fetch.
+        services.AddHttpClient(LocalAi, c => c.Timeout = TimeSpan.FromMinutes(2))
+            .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
+            .UseSocketsHttpHandler((h, _) =>
+            {
+                h.ConnectTimeout = ConnectTimeout;
+                h.UseProxy = false;
+                h.AllowAutoRedirect = false;
+            });
         services.AddHttpClient("downloads", c => c.Timeout = TimeSpan.FromMinutes(10));
         services.AddHttpClient("licensing", c => c.Timeout = TimeSpan.FromSeconds(30))
             .AddHttpMessageHandler<RetryingHandler>();
+        // dvstudio-metrics #85: the one-time install-source report (Privacy §4.5). One GET to
+        // updates.voicewink.app whose ANY response ends it. No retry handler — InstallSourceReporter
+        // owns the three-attempt budget and counts each attempt before sending, so a handler replay
+        // would be an uncounted duplicate report. No redirects: a 3xx must never carry the request
+        // (and the user's IP) to another host. No cookies: nothing may make it linkable.
+        services.AddHttpClient(Services.Updates.InstallSourceReporter.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(15))
+            .UseSocketsHttpHandler((h, _) =>
+            {
+                h.ConnectTimeout = ConnectTimeout;
+                h.AllowAutoRedirect = false;
+                h.UseCookies = false;
+            });
     }
 }

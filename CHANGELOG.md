@@ -17,6 +17,11 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.99.394] - 2026-09-24
+
+- AI Enhancement can use your own AI server: Ollama, LM Studio, or any OpenAI-compatible server.
+- A copy installed from the Microsoft Store now tells DV Studio so once; the updated privacy policy explains it, and it stays off while automatic update checks are off.
+
 ## [1.98.393] - 2026-09-23
 
 - The recorder pill no longer flashes the red recording dot before showing "Done".
