@@ -24,12 +24,9 @@ public sealed class GeminiImageClient
     {
         _http = http;
         _config = config;
-        // IMG-4: a parallel batch caps buffering at the image-response limit so an
-        // oversized (incl. chunked, no Content-Length) response fails DURING buffering —
-        // never N concurrent full default-limit buffers. Ctor-set: the factory client is
-        // fresh here, so the property is still settable. Null context = byte-identical.
-        if (config.BatchContext != null)
-            _http.MaxResponseContentBufferSize = HttpResponseExtensions.MaxImageResponseBytes;
+        // Reject oversized bodies during HTTP buffering, before JSON materialization.
+        // The factory client is fresh here; this protects single and batch requests.
+        _http.MaxResponseContentBufferSize = HttpResponseExtensions.MaxImageResponseBytes;
     }
 
     public async Task<byte[]> GenerateAsync(

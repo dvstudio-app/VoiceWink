@@ -21,6 +21,11 @@ public class TranscriptionModelInfo
     /// </summary>
     public string? FallbackUrl { get; init; }
     public long FileSizeBytes { get; init; }
+
+    /// <summary>True when FileSizeBytes is a trusted exact payload length and the
+    /// download's byte ceiling. False retains legacy estimates under a fixed ceiling.
+    /// Bundle members are always exact.</summary>
+    public bool FileSizeIsExact { get; init; }
     public bool IsDownloaded { get; set; }
     public string? LocalPath { get; init; }
     public bool SupportsStreaming { get; init; }

@@ -1348,7 +1348,7 @@ internal enum ClipboardProbePhase
     /// Its sequence number also best-effort-tags VoiceWink's own text write.</summary>
     AfterSet,
 
-    /// <summary>Sequence-only sample inside <c>SendCtrlVModifierSafeAsync</c>, after the
+    /// <summary>Sequence-only sample inside <c>SendCtrlVWithPrefix</c>, after the
     /// modifier wait and immediately before <c>SendInput</c> — the race boundary pays one
     /// open-free syscall, never a detailed sample.</summary>
     PreSend,

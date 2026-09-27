@@ -12,8 +12,8 @@ namespace VoiceWink.Helpers;
 /// are HWND-equality only, so a user switching to a DIFFERENT field inside the SAME window
 /// during that wait is invisible: the dictation lands in the field they moved to and is
 /// reported as success. PST-6/PST-8 closed this for their own paths by moving the wait ahead
-/// and dispatching synchronously; PST-7 extends that to every path where an element identity
-/// was actually proven.</para>
+/// and dispatching synchronously. Every text and image dispatch now uses that order,
+/// including paths without a proven element identity.</para>
 ///
 /// <para><b>Deliberately partial.</b> An unreadable late identity PROCEEDS (fail open). PST-7
 /// exists to stop a PROVEN wrong-field paste, not to add a refusal class — treating "cannot
@@ -23,23 +23,6 @@ namespace VoiceWink.Helpers;
 /// </summary>
 internal static class PreSendIdentityCoordinator
 {
-    /// <summary>
-    /// PST-7 (Codex diff round 1, finding 3): the implication that makes "no await between the
-    /// identity decision and the keystroke" true — an attempt with a proven identity is ALWAYS
-    /// pre-waited, and only pre-waited attempts take the synchronous
-    /// <c>SendCtrlVWithPrefix</c> dispatch instead of the awaiting
-    /// <c>SendCtrlVModifierSafeAsync</c>.
-    /// <para><b>History:</b> the first PST-7 wave pinned ONLY this boolean implication; the
-    /// sequence <c>decision → final checks → synchronous send</c> itself stayed inline in
-    /// <c>ClipboardService</c>, correct by inspection and unpinnable by test. That gap is now
-    /// CLOSED by <see cref="RunPreWaitedSequenceAsync"/> (the ordering seam, 2026-07-30) —
-    /// this predicate remains the single source of the pre-wait flag the call site branches
-    /// on.</para>
-    /// </summary>
-    public static bool RequiresPreWaitedModifiers(
-        bool willVerify, bool suppressRestore, bool identityGuardApplicable)
-        => willVerify || suppressRestore || identityGuardApplicable;
-
     /// <summary>
     /// Classify the late identity check. Pure; the ordering is enforced by
     /// <see cref="RunAsync"/>.
@@ -83,11 +66,8 @@ internal static class PreSendIdentityCoordinator
     }
 
     /// <summary>
-    /// Run the identity decision behind the caller's awaited wait. Retained for the PLAIN
-    /// (non-pre-waited) path, where the wait closure is a no-op and only the decision + its
-    /// log line matter (every attempt reports exactly one identity outcome — the
-    /// four-outcomes-sum-to-total UAT metric). Pre-waited attempts use
-    /// <see cref="RunPreWaitedSequenceAsync"/> instead, which owns the full ordering.
+    /// Classification-only convenience seam. Dispatch callers use
+    /// <see cref="RunPreWaitedSequenceAsync"/>, which owns the full send ordering.
     /// </summary>
     public static async Task<PreSendIdentityResult> RunAsync(
         bool guardApplicable,
@@ -103,7 +83,7 @@ internal static class PreSendIdentityCoordinator
     /// <summary>
     /// PST-7 ordering seam (Codex PST-7 diff round 2's open gap, closed here): the ENTIRE
     /// pre-waited send sequence — <c>prepare → identity decision → log → block? → fallback
-    /// baseline → target alive → foreground → synchronous send</c> — behind one awaited
+    /// baseline → target alive → foreground → proceed gate → synchronous send</c> — behind one awaited
     /// preparation step and one NON-ASYNC tail.
     ///
     /// <para><b>What is structurally guaranteed:</b> <see cref="RunPreWaitedTail"/> is a
@@ -118,9 +98,8 @@ internal static class PreSendIdentityCoordinator
     /// not). A closure could still block internally (<c>.GetAwaiter().GetResult()</c> before
     /// its native call would recreate the drift window without any signature change) — the
     /// production call site therefore passes single-expression closures over the real
-    /// operations, and their directness is review-pinned. Production ROUTING (all three
-    /// pre-wait reasons taking this sequence; the plain path logging exactly once) is a
-    /// diff-review/UAT responsibility — coordinator tests cannot see the call site.</para>
+    /// operations. ClipboardDispatchWiringTests separately pins both production methods
+    /// to this sequence and the direct synchronous sender; native delivery remains UAT.</para>
     ///
     /// <para><paramref name="prepare"/> returns the modifier-release prefix so the prefix
     /// reaches <paramref name="send"/> by VALUE through the seam rather than via a captured
@@ -140,13 +119,14 @@ internal static class PreSendIdentityCoordinator
         Func<PasteResult?> checkTargetAlive,
         Func<PasteResult?> checkForeground,
         Func<NativeInterop.INPUT[], bool> send,
-        Func<PasteResult> sendFailedResult)
+        Func<PasteResult> sendFailedResult,
+        Func<PasteResult?>? checkProceed = null)
     {
         var modifierPrefix = await prepare().ConfigureAwait(false);
         return RunPreWaitedTail(
             modifierPrefix, guardApplicable, priorIdentity, usableBaselineIdentity,
             probeIdentity, logOutcome, blockedResult, checkFallbackBaseline,
-            checkTargetAlive, checkForeground, send, sendFailedResult);
+            checkTargetAlive, checkForeground, send, sendFailedResult, checkProceed);
     }
 
     /// <summary>NON-ASYNC by design — see <see cref="RunPreWaitedSequenceAsync"/>. Every
@@ -163,7 +143,8 @@ internal static class PreSendIdentityCoordinator
         Func<PasteResult?> checkTargetAlive,
         Func<PasteResult?> checkForeground,
         Func<NativeInterop.INPUT[], bool> send,
-        Func<PasteResult> sendFailedResult)
+        Func<PasteResult> sendFailedResult,
+        Func<PasteResult?>? checkProceed)
     {
         var identity = Resolve(guardApplicable, priorIdentity, usableBaselineIdentity, probeIdentity);
         logOutcome(identity);
@@ -176,6 +157,8 @@ internal static class PreSendIdentityCoordinator
             return new PreSendSequenceResult(PreSendSequenceStage.TargetLost, targetFail, identity);
         if (checkForeground() is { } foregroundFail)
             return new PreSendSequenceResult(PreSendSequenceStage.ForegroundLost, foregroundFail, identity);
+        if (checkProceed?.Invoke() is { } proceedFail)
+            return new PreSendSequenceResult(PreSendSequenceStage.ProceedDeclined, proceedFail, identity);
         if (!send(modifierPrefix))
             return new PreSendSequenceResult(PreSendSequenceStage.SendFailed, sendFailedResult(), identity);
 
@@ -183,17 +166,20 @@ internal static class PreSendIdentityCoordinator
     }
 }
 
-/// <summary>Which stage of the pre-waited sequence settled the attempt. The five failure
-/// stages map 1:1 onto the shipped outcomes (verified per-mapping in diff review):
+/// <summary>Which stage of the pre-waited sequence settled the attempt. The six failure
+/// stages preserve their caller-supplied results. Ordinary outcomes are:
 /// Blocked → FocusMovedInTarget, FallbackBaselineUnusable → NoEditableFocused,
 /// TargetLost → TargetGone, ForegroundLost → LostForegroundPostUia,
-/// SendFailed → SendInputFailed.</summary>
+/// ProceedDeclined → AbortedByRecordingStart (image), SendFailed → SendInputFailed.</summary>
+/// <remarks>The image SendFailed callback preserves its late recording-gate classification:
+/// an incomplete send coinciding with a new recording reports AbortedByRecordingStart.</remarks>
 internal enum PreSendSequenceStage
 {
     Blocked,
     FallbackBaselineUnusable,
     TargetLost,
     ForegroundLost,
+    ProceedDeclined,
     SendFailed,
     Dispatched
 }

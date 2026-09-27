@@ -19,6 +19,13 @@ using global::System.IO;
 /// </summary>
 internal interface IModelSourceFailure;
 
+/// <summary>The source headers or body exceed the trusted download ceiling.
+/// Non-transient: discard its partial before attempting another source.</summary>
+internal sealed class ModelDownloadTooLargeException : InvalidOperationException, IModelSourceFailure
+{
+    public ModelDownloadTooLargeException(string message) : base(message) { }
+}
+
 /// <summary>A remote transfer fault (send, response read, stall, resume-protocol violation) —
 /// transient via the <see cref="IOException"/> arm, and a source failure for the fallback.</summary>
 internal sealed class ModelSourceIOException : IOException, IModelSourceFailure

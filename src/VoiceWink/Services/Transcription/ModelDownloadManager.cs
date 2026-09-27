@@ -40,6 +40,8 @@ public sealed class ModelDownloadManager
     // transfer retries up to MaxDownloadAttempts, each attempt resuming from the bytes already in
     // the .download file via a Range request. Production uses the defaults; the internal test-seam
     // ctor overrides them so retry/resume tests run at ms scale instead of waiting real seconds.
+    // Exact catalog sizes take precedence; legacy estimates cannot authorize unbounded writes.
+    internal const long LegacyMaximumDownloadBytes = 8L * 1024 * 1024 * 1024;
     private const int DefaultMaxDownloadAttempts = 4;
     private static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultRetryBackoff = TimeSpan.FromSeconds(2);
@@ -302,6 +304,8 @@ public sealed class ModelDownloadManager
         {
             if (string.IsNullOrEmpty(model.DownloadUrl))
                 throw new ArgumentException("Model has no download URL", nameof(model));
+            if (model.FileSizeIsExact && model.FileSizeBytes <= 0)
+                throw new ArgumentException("An exact model download size must be positive", nameof(model));
             return;
         }
 
@@ -713,6 +717,7 @@ public sealed class ModelDownloadManager
             DownloadUrl = file.Url,
             FallbackUrl = file.FallbackUrl,
             FileSizeBytes = file.FileSizeBytes,
+            FileSizeIsExact = true,
         };
 
         await DownloadAndVerifyFromSourcesAsync(fileDescriptor, file.Sha256Hash, tempPath, progress, ct)
@@ -785,6 +790,13 @@ public sealed class ModelDownloadManager
                         await StreamModelToTempAsync(descriptor, sources[s], tempPath, progress, ct)
                             .ConfigureAwait(false);
                         break; // tempPath now holds this source's complete file
+                    }
+                    catch (ModelDownloadTooLargeException)
+                    {
+                        // Streaming has closed the partial. Never carry oversized source bytes
+                        // to another host. A failed delete is LOCAL and must escape unchanged.
+                        File.Delete(tempPath);
+                        throw;
                     }
                     catch (Exception ex) when (attempt < _maxDownloadAttempts && IsTransientDownloadError(ex, ct))
                     {
@@ -1073,7 +1085,16 @@ public sealed class ModelDownloadManager
     private async Task StreamModelToTempAsync(TranscriptionModelInfo model, string url,
         string tempPath, IProgress<double>? progress, CancellationToken ct)
     {
+        long maximumBytes = model.FileSizeIsExact
+            ? model.FileSizeBytes
+            : LegacyMaximumDownloadBytes;
         long existing = File.Exists(tempPath) ? new FileInfo(tempPath).Length : 0;
+        if (existing > maximumBytes)
+        {
+            // Local debris has no reliable source attribution. Restart this source cleanly.
+            File.Delete(tempPath);
+            existing = 0;
+        }
 
         var httpClient = _httpFactory.CreateClient("downloads");
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -1123,9 +1144,20 @@ public sealed class ModelDownloadManager
 
         long startOffset = resuming ? existing : 0;
 
+        // Refuse oversized headers before opening the file. Subtraction avoids overflow in
+        // the startOffset + remaining sum below, including a malicious resumed Content-Length.
+        if ((response.Content.Headers.ContentRange?.Length is { } declaredTotal
+             && declaredTotal > maximumBytes)
+            || (response.Content.Headers.ContentLength is { } declaredRemaining
+                && declaredRemaining > maximumBytes - startOffset))
+        {
+            throw new ModelDownloadTooLargeException(
+                $"Model download exceeds its {maximumBytes}-byte limit.");
+        }
+
         // Server-authoritative total (Content-Range total on 206, Content-Length on 200), or -1 if
-        // the server didn't declare one. ONLY this drives the completeness check — never the
-        // approximate model.FileSizeBytes hint, which legitimately differs from the real file.
+        // the server didn't declare one. This drives the completeness check; legacy size hints
+        // are approximate. Trusted exact catalog sizes independently cap headers and writes.
         long serverTotal =
             response.Content.Headers.ContentRange?.Length
             ?? (resuming
@@ -1165,6 +1197,11 @@ public sealed class ModelDownloadManager
             while ((bytesRead = await RemoteAsync(
                 () => contentStream.ReadAsync(buffer, stallCts.Token).AsTask(), ct).ConfigureAwait(false)) > 0)
             {
+                if (bytesRead > maximumBytes - written)
+                {
+                    throw new ModelDownloadTooLargeException(
+                        $"Model download exceeds its {maximumBytes}-byte limit.");
+                }
                 await LocalAsync(
                     () => fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), stallCts.Token).AsTask()).ConfigureAwait(false);
                 written += bytesRead;

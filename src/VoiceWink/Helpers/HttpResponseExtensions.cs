@@ -66,7 +66,7 @@ internal static class HttpResponseExtensions
         }
         catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.ConfigurationLimitExceeded)
         {
-            // IMG-4: the batch path caps HttpClient.MaxResponseContentBufferSize at the
+            // Image clients cap HttpClient.MaxResponseContentBufferSize at the
             // image-response limit, so an oversized (incl. chunked, no Content-Length)
             // response fails HERE during buffering. Translate ONLY this specific error to
             // the app-authored copy — every other HttpRequestException (network failures)
@@ -151,11 +151,11 @@ internal static class HttpResponseExtensions
     /// <summary>
     /// Maximum response body size (10 MB). Transcription/AI text responses should never exceed this.
     /// </summary>
-    private const long MaxResponseBytes = 10 * 1024 * 1024;
+    internal const long MaxTextResponseBytes = 10 * 1024 * 1024;
 
     /// <summary>
     /// Maximum response body size for image generation (50 MB). 4K images can be 20-30 MB base64.
-    /// Internal (IMG-4): the ONE image-response limit — the batch path also applies it as
+    /// Internal: the ONE image-response limit — both single and batch clients apply it as
     /// <c>HttpClient.MaxResponseContentBufferSize</c> so an oversized/chunked response fails
     /// DURING buffering instead of after N concurrent full buffers, and the URL-fallback
     /// download's manual cap reuses it.
@@ -164,11 +164,11 @@ internal static class HttpResponseExtensions
 
     /// <summary>
     /// Read response content as string with size limit enforcement.
-    /// Throws InvalidOperationException if response exceeds MaxResponseBytes.
+    /// Throws InvalidOperationException if response exceeds MaxTextResponseBytes.
     /// </summary>
     public static Task<string> ReadAsStringLimitedAsync(
         this HttpContent content, CancellationToken ct = default)
-        => ReadWithLimitAsync(content, MaxResponseBytes, ct);
+        => ReadWithLimitAsync(content, MaxTextResponseBytes, ct);
 
     /// <summary>
     /// Read response content with a higher limit for image generation (4K images can be 20-30 MB base64).

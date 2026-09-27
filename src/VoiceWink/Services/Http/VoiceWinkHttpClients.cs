@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using VoiceWink.Helpers;
 
 namespace VoiceWink.Services.Http;
 
@@ -47,7 +48,11 @@ internal static class VoiceWinkHttpClients
         services.AddTransient<RetryingHandler>();
         services.AddTransient<ConnectTimeoutTranslatingHandler>();
 
-        services.AddHttpClient("ai", c => c.Timeout = TimeSpan.FromMinutes(5))
+        services.AddHttpClient("ai", c =>
+            {
+                c.Timeout = TimeSpan.FromMinutes(5);
+                c.MaxResponseContentBufferSize = HttpResponseExtensions.MaxTextResponseBytes;
+            })
             .AddHttpMessageHandler<RetryingHandler>()
             .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
             .UseSocketsHttpHandler((h, _) => h.ConnectTimeout = ConnectTimeout);
@@ -88,7 +93,11 @@ internal static class VoiceWinkHttpClients
             .AddHttpMessageHandler<RetryingHandler>()
             .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
             .UseSocketsHttpHandler((h, _) => h.ConnectTimeout = ConnectTimeout);
-        services.AddHttpClient("transcription", c => c.Timeout = TimeSpan.FromMinutes(5))
+        services.AddHttpClient("transcription", c =>
+            {
+                c.Timeout = TimeSpan.FromMinutes(5);
+                c.MaxResponseContentBufferSize = HttpResponseExtensions.MaxTextResponseBytes;
+            })
             .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
             .UseSocketsHttpHandler((h, _) => h.ConnectTimeout = ConnectTimeout);
         // TRN-29: the resident parakeet-server on loopback. NEITHER handler, on purpose: no
@@ -105,9 +114,13 @@ internal static class VoiceWinkHttpClients
         // The translator stays so a dead remote host fails as an HttpRequestException rather than
         // an OCE the enhancement path would read as "cancelled". No proxy and no redirects: text
         // meant for 127.0.0.1 must never route through an egress proxy or be redirected off the
-        // machine. The text-enhancement deadline (60 s) bounds a dictation; this Timeout bounds the
-        // model-list fetch.
-        services.AddHttpClient(LocalAi, c => c.Timeout = TimeSpan.FromMinutes(2))
+        // machine. The Local server enhancement deadline (110 s, LAI-8) bounds a dictation and must
+        // stay below this Timeout; this Timeout bounds the model-list fetch and the preload.
+        services.AddHttpClient(LocalAi, c =>
+            {
+                c.Timeout = TimeSpan.FromMinutes(2);
+                c.MaxResponseContentBufferSize = HttpResponseExtensions.MaxTextResponseBytes;
+            })
             .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
             .UseSocketsHttpHandler((h, _) =>
             {

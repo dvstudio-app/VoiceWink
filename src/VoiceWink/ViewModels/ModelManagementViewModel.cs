@@ -367,6 +367,15 @@ public partial class ModelManagementViewModel : ObservableObject
             model.DownloadProgress = 0;
             model.ErrorMessage = "Download failed. Check your connection and try again.";
         }
+        catch (Services.Transcription.ModelDownloadTooLargeException ex)
+        {
+            // An oversized remote source is an expected download refusal, not an app error.
+            Logger.Warning("Model download exceeds size limit: {Name}: {ErrorType}",
+                model.Name, ex.GetType().Name);
+            model.IsDownloading = false;
+            model.DownloadProgress = 0;
+            model.ErrorMessage = "Model download exceeds size limit.";
+        }
         catch (Services.Transcription.ModelLocalIOException ex)
         {
             // NET-5: the disk is full. Environmental, fully handled, and the ONE download failure

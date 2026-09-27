@@ -17,6 +17,14 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.100.395] - 2026-09-27
+
+- Ollama: the model loads while you speak and stays loaded for 30 minutes.
+- Local server: more time to answer.
+- Local server: a server that is not running now shows a short message on the recorder.
+- Local server settings suggest models, and say when Ollama is running on the processor.
+- Security fixes for downloads, server responses, automatic paste, and CSV exports.
+
 ## [1.99.394] - 2026-09-24
 
 - AI Enhancement can use your own AI server: Ollama, LM Studio, or any OpenAI-compatible server.

@@ -259,6 +259,28 @@ public partial class EnhancementViewModel : ObservableObject
     private bool _loadingLocalServer;
 
     /// <summary>
+    /// LAI-8: the model advice under the Ollama card, from the laptop and desktop benchmarks
+    /// (<c>docs/plans/2026-09-23-local-ai-enhancement/bench/</c>). Ollama tags, so shown for the
+    /// Ollama type only. Thinking-only models are named because <c>think:false</c> does not stop
+    /// them: they reason in the reply itself, which timed out on every dictation in owner UAT 233.1.
+    /// </summary>
+    public const string LocalServerModelAdvice =
+        "Recommended: qwen3.5:4b, or gemma4:12b-it-qat with a dedicated graphics card. Thinking-only models such as qwen3:4b don't work.";
+
+    /// <summary>LAI-8: shown when Ollama reported the selected model on the processor.</summary>
+    public const string LocalServerProcessorHint =
+        "Ollama runs this model on the processor. To use integrated graphics, set OLLAMA_IGPU_ENABLE=1 and restart Ollama.";
+
+    /// <summary>
+    /// LAI-8: true when the last preload of the SELECTED model found it with nothing in video
+    /// memory. Re-read when the card is built and when the model changes; a preload that finishes
+    /// while the page is open shows on the next visit.
+    /// </summary>
+    public bool LocalServerRunsOnProcessor
+        => LocalServerApi == global::VoiceWink.Services.AIEnhancement.LocalServerApi.Ollama
+           && _enhancement.LocalServerComputeFor(_enhancement.SelectedModel) == LocalServerCompute.Processor;
+
+    /// <summary>
     /// Re-read the stored server into the card — at construction, on a provider change, and each
     /// time the page is built (this VM is a singleton, so an unsaved address typed on an earlier
     /// visit would otherwise reappear as if it were stored).
@@ -275,6 +297,7 @@ public partial class EnhancementViewModel : ObservableObject
         }
         finally { _loadingLocalServer = false; }
         OnPropertyChanged(nameof(LocalServerRemoteHost));
+        OnPropertyChanged(nameof(LocalServerRunsOnProcessor));
     }
 
     partial void OnLocalServerApiChanged(LocalServerApi value)
@@ -346,6 +369,9 @@ public partial class EnhancementViewModel : ObservableObject
     {
         if (!_suppressModelSync)
             _enhancement.SelectedModel = value;
+        // LAI-8: the processor hint is keyed on the selected model, and the card re-reads it only
+        // on this notification.
+        OnPropertyChanged(nameof(LocalServerRunsOnProcessor));
     }
 
     partial void OnSelectedImageModelChanged(string value)

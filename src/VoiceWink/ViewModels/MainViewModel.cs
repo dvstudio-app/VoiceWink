@@ -4450,6 +4450,8 @@ public partial class MainViewModel : ObservableObject
             startedOk = true;
             StatusText = "Recording...";
             Logger.Information("Recording started: {Path}", _currentRecordingPath);
+            // LAI-8: a local model loads while the user speaks. Fire-and-forget, never throws.
+            _enhancement.StartLocalServerPreload();
 
             // AUD-11: the capture is provably live by now (the start throws otherwise), so the
             // watchdog arms WITH the timer — its prime tick runs synchronously, and that tick
@@ -4673,6 +4675,8 @@ public partial class MainViewModel : ObservableObject
         }
 
         Logger.Information("Recording started: {Path}", warmRecordingPath);
+        // LAI-8: a local model loads while the user speaks. Fire-and-forget, never throws.
+        _enhancement.StartLocalServerPreload();
 
         // Only now — the session provably exists — may the delayed mute arm (Codex diff r3).
         ScheduleDelayedMute();
@@ -7240,6 +7244,9 @@ public partial class MainViewModel : ObservableObject
                     : "Provider rejected the request",
                 DefaultPillMaxCodeUnits);
 
+        if (ex is HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded })
+            return new ProviderPillText("Response too large", DefaultPillMaxCodeUnits);
+
         // 4. Statusless failures keep today's message. NOT because "no status means no response" —
         //    that would be false, e.g. GeminiImageClient derives a statusless throw from a SUCCESSFUL
         //    response's finish reason (Codex diff review round 3, 2026-07-26). It is simply that these
@@ -7528,6 +7535,8 @@ public partial class MainViewModel : ObservableObject
             => Services.Http.RetryingHandler.IsTransientStatus(status)
                 ? "Provider error — try again"
                 : "Provider rejected the request",
+        HttpRequestException { HttpRequestError: HttpRequestError.ConfigurationLimitExceeded }
+            => "Response too large",
         HttpRequestException => "Network error — check your connection",
         TimeoutException => "Transcription timed out",
         // InvalidOperationException was "API error" until the 2026-07-25 copy review: jargon,

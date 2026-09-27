@@ -24,6 +24,14 @@ internal sealed class LocalServerClient
     /// </summary>
     internal const int OllamaContextTokens = 8192;
 
+    /// <summary>
+    /// LAI-8: how long Ollama keeps the model loaded after a request. Its default is 5 minutes,
+    /// after which the next dictation pays the whole model load (21 s on an Intel Arc 140V,
+    /// owner UAT 233). Sent on every request rather than asked of the user as an environment
+    /// variable; a request value overrides OLLAMA_KEEP_ALIVE.
+    /// </summary>
+    internal const string OllamaKeepAlive = "30m";
+
     private readonly HttpClient _http;
     private readonly AIProviderConfig _config;
 
@@ -57,6 +65,7 @@ internal sealed class LocalServerClient
             },
             stream = false,
             think = false,
+            keep_alive = OllamaKeepAlive,
             options = new
             {
                 temperature = config.Temperature,
@@ -119,6 +128,89 @@ internal sealed class LocalServerClient
             return content.GetString() ?? "";
         throw NotThisKindOfServer(LocalServerApi.Ollama, "message", json);
     }
+
+    /// <summary>
+    /// LAI-8: an Ollama load-only request — <c>/api/generate</c> with no prompt loads the model and
+    /// returns. <c>num_ctx</c> MUST equal the chat request's: Ollama reloads a model whose context
+    /// changes, so a mismatched preload would make the dictation's own request load it again.
+    /// </summary>
+    internal static string BuildOllamaLoadBody(AIProviderConfig config)
+        => JsonSerializer.Serialize(new
+        {
+            model = config.ModelName,
+            stream = false,
+            keep_alive = OllamaKeepAlive,
+            options = new { num_ctx = OllamaContextTokens }
+        });
+
+    /// <summary>
+    /// LAI-8: loads the model while the user is still speaking, then reads <c>/api/ps</c> to learn
+    /// whether it runs on the processor. Returns that answer, or null when it cannot tell. Every
+    /// failure is the caller's to swallow — a preload never affects the dictation it precedes.
+    /// </summary>
+    public async Task<bool?> PreloadOllamaModelAsync(CancellationToken ct)
+    {
+        var baseUrl = _config.GetBaseUrl().TrimEnd('/');
+        using (var load = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/generate"))
+        {
+            AddAuthorization(load, _config);
+            load.Content = new StringContent(BuildOllamaLoadBody(_config), Encoding.UTF8, "application/json");
+            using var loaded = await _http.SendAsync(load, ct).ConfigureAwait(false);
+            if (!loaded.IsSuccessStatusCode)
+            {
+                Logger.Debug("Local server preload refused: HTTP {Status}", (int)loaded.StatusCode);
+                return null;
+            }
+        }
+
+        using var ps = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/api/ps");
+        AddAuthorization(ps, _config);
+        using var running = await _http.SendAsync(ps, ct).ConfigureAwait(false);
+        if (!running.IsSuccessStatusCode)
+            return null;
+        var json = await running.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
+        return ParseRunsOnCpu(json, _config.ModelName);
+    }
+
+    /// <summary>
+    /// Reads Ollama's <c>/api/ps</c>: true when the named model is loaded with nothing in video
+    /// memory (<c>size_vram</c> 0), false when any of it is, null when the model is not listed or
+    /// the reply has another shape. Matches <c>name</c> or <c>model</c>, case-insensitive.
+    /// </summary>
+    internal static bool? ParseRunsOnCpu(string json, string model)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("models", out var rows)
+                || rows.ValueKind != JsonValueKind.Array)
+                return null;
+            foreach (var row in rows.EnumerateArray())
+            {
+                if (row.ValueKind != JsonValueKind.Object || !NamesModel(row, model))
+                    continue;
+                if (!row.TryGetProperty("size", out var size) || size.ValueKind != JsonValueKind.Number
+                    || !row.TryGetProperty("size_vram", out var vram) || vram.ValueKind != JsonValueKind.Number)
+                    return null;
+                if (!size.TryGetInt64(out var total) || total <= 0 || !vram.TryGetInt64(out var inVram))
+                    return null;
+                return inVram == 0;
+            }
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool NamesModel(JsonElement row, string model)
+        => HasString(row, "name", model) || HasString(row, "model", model);
+
+    private static bool HasString(JsonElement row, string property, string value)
+        => row.TryGetProperty(property, out var el) && el.ValueKind == JsonValueKind.String
+           && string.Equals(el.GetString(), value, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The server's model list: Ollama <c>/api/tags</c>, else <c>/models</c>.</summary>
     public async Task<ProviderModelList> FetchModelsAsync(bool unfiltered, CancellationToken ct)

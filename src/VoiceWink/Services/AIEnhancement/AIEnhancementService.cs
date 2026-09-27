@@ -26,12 +26,35 @@ public sealed class AIEnhancementService
     /// </summary>
     internal static readonly TimeSpan DefaultEnhancementTimeout = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// LAI-8: the deadline for the user's own AI server. A cloud call taking a minute is a failure;
+    /// a local model LOADING is normal (owner UAT 233: 42 s for the first request on a laptop CPU,
+    /// 28 s on its integrated GPU, and a 12B model's cold load plus a long dictation measured 67 s).
+    /// Below the <c>local-ai</c> client's 2-minute timeout, so this deadline is the one that fires.
+    /// </summary>
+    internal static readonly TimeSpan LocalServerEnhancementTimeout = TimeSpan.FromSeconds(110);
+
+    /// <summary>
+    /// LAI-8: the pill reason when a user-run server refuses the connection — the model-list
+    /// message (<see cref="LocalServerUnreachableMessage"/>) does not fit the 26-unit reason budget
+    /// the fallback pill composes, and Windows' own socket text ran to 89.
+    /// </summary>
+    internal const string LocalServerNotRunningMessage = "Local server not running";
+
     private readonly IHttpClientFactory _httpFactory;
     private readonly ApiKeyManager _apiKeys;
     private readonly SettingsService _settings;
     private readonly AIProviderRegistry _providers;
     private readonly Func<bool> _networkAvailable;
     private readonly TimeSpan _enhancementTimeout;
+    private readonly TimeSpan _localServerEnhancementTimeout;
+
+    // LAI-8 preload: one in flight at a time, and the last answer about where a model runs —
+    // kept WITH the model it describes, so a switch to another model reads Unknown.
+    private int _localServerPreloadRunning;
+    private volatile LocalServerComputeReading? _localServerCompute;
+
+    private sealed record LocalServerComputeReading(string Model, LocalServerCompute Compute);
 
     private List<CustomPrompt>? _cachedPrompts;
 
@@ -62,7 +85,8 @@ public sealed class AIEnhancementService
         SettingsService settings,
         AIProviderRegistry providers,
         Func<bool>? networkAvailable = null,
-        TimeSpan? enhancementTimeout = null)
+        TimeSpan? enhancementTimeout = null,
+        TimeSpan? localServerEnhancementTimeout = null)
     {
         _httpFactory = httpFactory;
         _apiKeys = apiKeys;
@@ -72,6 +96,7 @@ public sealed class AIEnhancementService
         // defaults, so the DI registration stays a plain AddSingleton.
         _networkAvailable = networkAvailable ?? NetworkInterface.GetIsNetworkAvailable;
         _enhancementTimeout = enhancementTimeout ?? DefaultEnhancementTimeout;
+        _localServerEnhancementTimeout = localServerEnhancementTimeout ?? LocalServerEnhancementTimeout;
         // IMG-10b: a key change makes every cached list for that provider suspect. The
         // manager is the ONE key-write funnel, so this covers all save/clear/rollback
         // sites at once. Both are DI singletons with identical lifetimes — the
@@ -1252,7 +1277,7 @@ public sealed class AIEnhancementService
     private async Task<string> CallProviderWithDeadlineAsync(AIProviderConfig config, string systemPrompt, string userText, CancellationToken ct)
     {
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadlineCts.CancelAfter(_enhancementTimeout);
+        deadlineCts.CancelAfter(config.Provider == AIProvider.LocalServer ? _localServerEnhancementTimeout : _enhancementTimeout);
         try
         {
             return await CallProviderAsync(config, systemPrompt, userText, deadlineCts.Token).ConfigureAwait(false);
@@ -1260,6 +1285,101 @@ public sealed class AIEnhancementService
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             throw new TimeoutException("Enhancement timed out");
+        }
+        catch (HttpRequestException ex) when (IsLocalServerRefused(config.Provider, ex))
+        {
+            // LAI-8: short app copy for the pill; the socket error stays on InnerException.
+            throw new HttpRequestException(LocalServerNotRunningMessage, ex);
+        }
+    }
+
+    /// <summary>
+    /// A keyless user-run server that refused the connection — nothing is listening at the address.
+    /// Connection REFUSED only (a SocketException underneath): a TLS failure, the offline pre-flight
+    /// and a mid-response reset are other facts with their own text.
+    /// </summary>
+    private bool IsLocalServerRefused(AIProvider provider, Exception ex)
+        => !RequiresApiKey(provider)
+           && ex is HttpRequestException
+           {
+               StatusCode: null,
+               InnerException: global::System.Net.Sockets.SocketException
+               {
+                   SocketErrorCode: global::System.Net.Sockets.SocketError.ConnectionRefused
+               }
+           };
+
+    /// <summary>
+    /// LAI-8: where the Local server last reported running <paramref name="model"/> — read by the
+    /// Enhancement page's hint. Unknown until a preload of THAT model has asked Ollama.
+    /// </summary>
+    internal LocalServerCompute LocalServerComputeFor(string model)
+        => _localServerCompute is { } reading && string.Equals(reading.Model, model, StringComparison.OrdinalIgnoreCase)
+            ? reading.Compute
+            : LocalServerCompute.Unknown;
+
+    /// <summary>
+    /// LAI-8: at recording start, ask Ollama to load the selected model so the load overlaps the
+    /// dictation instead of following it (a 21-30 s wait on a laptop, owner UAT 233). Fire-and-
+    /// forget on the thread pool: it never delays the recording, never throws, and at most one runs
+    /// at a time. Only when enhancement is on, the text provider is Local server, the server type is
+    /// Ollama and a model is chosen; a prompt that routes to Local server through an override is not
+    /// preloaded.
+    /// </summary>
+    public void StartLocalServerPreload()
+    {
+        try
+        {
+            if (!IsEnabled || SelectedProvider != AIProvider.LocalServer)
+                return;
+            var model = SelectedModel;
+            if (string.IsNullOrWhiteSpace(model))
+                return;
+            if (Interlocked.Exchange(ref _localServerPreloadRunning, 1) == 1)
+                return;
+            try
+            {
+                _ = Task.Run(() => PreloadLocalServerAsync(model));
+            }
+            catch
+            {
+                Volatile.Write(ref _localServerPreloadRunning, 0);
+                throw;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug("Local server preload not started: {ErrorType}", ex.GetType().Name);
+        }
+    }
+
+    internal async Task PreloadLocalServerAsync(string model)
+    {
+        // A previous answer may describe another server; say nothing until this one answers.
+        _localServerCompute = null;
+        try
+        {
+            var config = BuildConfig(model, AIProvider.LocalServer);
+            if (config.LocalApi != LocalServerApi.Ollama)
+                return;
+            var client = new Clients.LocalServerClient(_httpFactory.CreateClient(Services.Http.VoiceWinkHttpClients.LocalAi), config);
+            var onCpu = await client.PreloadOllamaModelAsync(CancellationToken.None).ConfigureAwait(false);
+            if (onCpu is { } cpu)
+            {
+                var compute = cpu ? LocalServerCompute.Processor : LocalServerCompute.GraphicsCard;
+                _localServerCompute = new LocalServerComputeReading(model, compute);
+                Logger.Information("Local server model loaded on the {Compute}", compute);
+            }
+        }
+        catch (Exception ex)
+        {
+            // A server that is not running is the common case here, and the dictation's own request
+            // reports it; Debug keeps a closed Ollama from logging a line per recording.
+            Logger.Debug("Local server preload failed: {ErrorType}", ex.GetType().Name);
+        }
+        finally
+        {
+            Volatile.Write(ref _localServerPreloadRunning, 0);
         }
     }
 
@@ -1940,9 +2060,7 @@ public sealed class AIEnhancementService
                 Logger.Warning(ex, "Candidate key validation failed for {Provider}", provider);
             var error = ex is OperationCanceledException
                 ? $"{AIProviderDisplay.Label(provider)}: no response (timed out)"
-                // Connection REFUSED only (a SocketException underneath): a TLS failure, the
-                // offline pre-flight and a mid-response reset are other facts with their own text.
-                : !RequiresApiKey(provider) && ex is HttpRequestException { StatusCode: null, InnerException: global::System.Net.Sockets.SocketException }
+                : IsLocalServerRefused(provider, ex)
                     // LAI-1: a user-run server that is not running refuses the connection; say
                     // so in the user's terms rather than as a socket error.
                     ? LocalServerUnreachableMessage
@@ -2040,9 +2158,7 @@ public sealed class AIEnhancementService
             // signalled — an unreachable/stalling provider deserves an error line too.
             var error = ex is OperationCanceledException
                 ? $"{AIProviderDisplay.Label(provider)}: no response (timed out)"
-                // Connection REFUSED only (a SocketException underneath): a TLS failure, the
-                // offline pre-flight and a mid-response reset are other facts with their own text.
-                : !RequiresApiKey(provider) && ex is HttpRequestException { StatusCode: null, InnerException: global::System.Net.Sockets.SocketException }
+                : IsLocalServerRefused(provider, ex)
                     // LAI-1: a user-run server that is not running refuses the connection; say
                     // so in the user's terms rather than as a socket error.
                     ? LocalServerUnreachableMessage

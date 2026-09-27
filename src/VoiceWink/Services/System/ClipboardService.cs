@@ -583,51 +583,55 @@ public sealed class ClipboardService
                 PasteResultPresentation.NoTextBoxMessage);
         }
 
-        // Final liveness/identity re-check immediately before the send — same recycled-HWND
-        // protection as the text path (the UIA work, drift recovery, and gate above span
-        // long enough for a destroy+recycle that hwnd-equality foreground checks cannot see).
-        if (ValidateTargetSnapshot(targetSnapshot, targetWindow)
-            is PasteTargetValidity.Gone or PasteTargetValidity.Recycled)
-        {
-            Logger.Warning(
-                "Image paste target 0x{Target:X} vanished/recycled during focus restore; image left on clipboard for manual retry",
-                targetWindow);
-            return PasteResult.Fail(PasteAttemptOutcome.TargetGone, PasteResultPresentation.WindowClosedMessage);
-        }
-
-        // Post-gate foreground guard — mirrors the text path: the gate can fail open
-        // after a stall, and an image pasted into whatever stole focus meanwhile would
-        // be a wrong-app paste.
-        if (targetWindow != IntPtr.Zero && NativeInterop.GetForegroundWindow() != targetWindow)
-        {
-            Logger.Warning(
-                "Image paste target 0x{Target:X} lost foreground during the pre-send gate; image left on clipboard for manual retry",
-                targetWindow);
-            return PasteResult.Fail(PasteAttemptOutcome.LostForegroundPostUia, PasteResultPresentation.NotInFrontMessage);
-        }
-
-        // IMG-BG final fence, immediately before the send: the foreground checks above can't
-        // see a recording that keeps the SAME target foreground (the pill never steals focus).
-        if (proceedGate is { } gateBeforeSend && !gateBeforeSend())
-        {
-            Logger.Information("Image paste aborted before Ctrl+V — recording started; image left on clipboard");
-            return PasteResult.Fail(PasteAttemptOutcome.AbortedByRecordingStart, PasteResultPresentation.RecordingStartedMessage);
-        }
-
-        // The gate rides INTO the sender too — its bounded modifier wait (400 ms) is long
-        // enough for the recording-hotkey press to start a recording (Codex diff round 3).
-        // A false return is disambiguated by re-reading the gate: tripped ⇒ aborted-by-
-        // recording (image safely on clipboard), else a genuine SendInput failure.
-        if (!await SendCtrlVModifierSafeAsync(proceedGate).ConfigureAwait(false))
-        {
-            if (proceedGate is { } gateAfterSendAttempt && !gateAfterSendAttempt())
+        // Await modifier release BEFORE the final gates. An app switch while a modifier
+        // is held must decline the paste, just as a switch during the earlier UIA work does.
+        // Image delivery keeps its existing identity behavior: no extra UIA reads here.
+        var sequence = await Helpers.PreSendIdentityCoordinator.RunPreWaitedSequenceAsync(
+            prepare: BuildModifierReleasePrefixAsync,
+            guardApplicable: false,
+            priorIdentity: null,
+            usableBaselineIdentity: static () => null,
+            probeIdentity: static () => null,
+            logOutcome: static _ => { },
+            blockedResult: static () => PasteResult.Fail(PasteAttemptOutcome.FocusMovedInTarget, PasteResultPresentation.FocusMovedMessage),
+            checkFallbackBaseline: static () => null,
+            checkTargetAlive: () =>
             {
-                Logger.Information("Image paste aborted during the modifier wait — recording started; image left on clipboard");
+                if (ValidateTargetSnapshot(targetSnapshot, targetWindow)
+                    is not (PasteTargetValidity.Gone or PasteTargetValidity.Recycled))
+                    return null;
+                Logger.Warning("Image paste target 0x{Target:X} vanished/recycled before the send; image left on clipboard", targetWindow);
+                return PasteResult.Fail(PasteAttemptOutcome.TargetGone, PasteResultPresentation.WindowClosedMessage);
+            },
+            checkForeground: () =>
+            {
+                if (targetWindow == IntPtr.Zero || NativeInterop.GetForegroundWindow() == targetWindow)
+                    return null;
+                Logger.Warning("Image paste target 0x{Target:X} lost foreground before the send; image left on clipboard", targetWindow);
+                return PasteResult.Fail(PasteAttemptOutcome.LostForegroundPostUia, PasteResultPresentation.NotInFrontMessage);
+            },
+            checkProceed: () =>
+            {
+                if (proceedGate is null || proceedGate())
+                    return null;
+                Logger.Information("Image paste aborted before Ctrl+V — recording started; image left on clipboard");
                 return PasteResult.Fail(PasteAttemptOutcome.AbortedByRecordingStart, PasteResultPresentation.RecordingStartedMessage);
-            }
-            Logger.Warning("Failed to send Ctrl+V for image paste; image left on clipboard for manual retry");
-            return PasteResult.Fail(PasteAttemptOutcome.SendInputFailed, PasteResultPresentation.KeystrokeBlockedMessage);
-        }
+            },
+            send: prefix => SendCtrlVWithPrefix(prefix),
+            sendFailedResult: () =>
+            {
+                // Preserve the existing image failure classification if recording started
+                // during the failed send itself; successful sends do not re-read the gate.
+                if (proceedGate is { } gateAfterSendAttempt && !gateAfterSendAttempt())
+                {
+                    Logger.Information("Image paste aborted during send — recording started; image left on clipboard");
+                    return PasteResult.Fail(PasteAttemptOutcome.AbortedByRecordingStart, PasteResultPresentation.RecordingStartedMessage);
+                }
+                Logger.Warning("Failed to send Ctrl+V for image paste; image left on clipboard for manual retry");
+                return PasteResult.Fail(PasteAttemptOutcome.SendInputFailed, PasteResultPresentation.KeystrokeBlockedMessage);
+            }).ConfigureAwait(false);
+        if (sequence.Failure is { } failure)
+            return failure;
 
         Logger.Debug("Image pasted — clipboard kept (no restore) so user can re-paste");
         return PasteResult.Success();
@@ -1196,30 +1200,12 @@ public sealed class ClipboardService
                 return PasteResult.Fail(outcome, PasteResultPresentation.NoTextBoxMessage);
             }
 
-            // PST-6 send sequencing. On a VERIFIED path the modifier wait moves AHEAD of
-            // the baseline + final checks, so nothing awaits between the last check and
-            // SendInput (Codex diff review round 5): SendCtrlVModifierSafeAsync's bounded
-            // 400 ms wait sat there, and a switch to another field INSIDE the same
-            // Chromium window is invisible to the HWND-equality checks — the paste would
-            // land in the wrong field, and rung 2 could then also paste into the right
-            // one, leaving the dictation in both. Unverified paths keep the shipped
-            // ordering byte-for-byte.
+            // Every text path waits before its final liveness/foreground checks, including
+            // OOP-WebView2 and other paths with no readable element identity. Verification
+            // eligibility and the fail-open identity policy remain independent of ordering.
             var willVerify = ShouldVerifyDelivery(targetWindow, route);
-            // PST-8: the suppression route joins the pre-waited/synchronous send path. WinUI
-            // targets never enter ShouldVerifyDelivery, so they would otherwise take the
-            // unverified path whose 400 ms modifier wait sits BETWEEN the identity check and
-            // SendInput — leaving exactly the same-window drift window the suppression's
-            // identity check exists to close (Codex diff review round 2).
-            // PST-7: any path carrying a PROVEN element identity joins the pre-waited /
-            // synchronous send too — that is the whole fix. The identity was proven by a probe
-            // taken after the restore's last focus-changing call, so re-checking it after the
-            // modifier wait catches a same-window field switch that the HWND-equality checks
-            // below structurally cannot see. Paths with no proven identity keep the shipped
-            // ordering byte-for-byte.
             var priorIdentity = preRestoreStage.VerifiedRuntimeId;
             var identityGuardApplicable = priorIdentity is { Length: > 0 };
-            var preWaitModifiers = Helpers.PreSendIdentityCoordinator.RequiresPreWaitedModifiers(
-                willVerify, suppressRestore, identityGuardApplicable);
 
             // The insertion-verification BASELINE. Taken before the final liveness/
             // foreground checks so those remain the last thing between us and SendInput
@@ -1236,13 +1222,13 @@ public sealed class ClipboardService
             // One Information line per attempt, and the four outcomes SUM to total attempts so
             // UAT can compute real PST-7 coverage rather than infer it (both gap branches are
             // deliberately visible — an unreadable or never-proven identity means the
-            // wrong-field window stays open on that attempt). BOTH paths below route through
+            // wrong-field window stays open on that attempt). Every text path routes through
             // this single template.
             void LogIdentityOutcome(Helpers.PreSendIdentityResult r) => Logger.Information(
                 "text paste: pre-send identity check {IdentityOutcome} (source={IdentitySource})",
                 r.Outcome, r.Source);
 
-            // The three final checks exist ONCE and serve BOTH paths below (ordering seam,
+            // The three final checks serve every text path (ordering seam,
             // 2026-07-30). Their bodies are the shipped ones verbatim — same log templates,
             // same outcomes, same presentations.
             //
@@ -1295,97 +1281,46 @@ public sealed class ClipboardService
                 return PasteResult.Fail(PasteAttemptOutcome.LostForegroundPostUia, PasteResultPresentation.NotInFrontMessage);
             };
 
-            if (preWaitModifiers)
-            {
-                // ORDERING SEAM (2026-07-30, closes Codex PST-7 diff round 2's open gap): the
-                // whole pre-waited sequence — prepare → identity decision → log → block? →
-                // fallback baseline → target alive → foreground → SYNCHRONOUS send — runs
-                // inside the coordinator's non-async tail, where the compiler forbids an
-                // await between the decision and the keystroke. Named arguments are
-                // load-bearing for the three same-typed checks (review-pinned order), and the
-                // send closure must stay a single direct SendCtrlVWithPrefix expression.
-                var sequence = await Helpers.PreSendIdentityCoordinator.RunPreWaitedSequenceAsync(
-                    prepare: async () =>
-                    {
-                        var prefix = await BuildModifierReleasePrefixAsync().ConfigureAwait(false);
-                        if (willVerify)
-                            deliveryBaseline = Helpers.UiaFocusBridge.TryGetFocusedElementTextReadback();
-                        return prefix;
-                    },
-                    guardApplicable: identityGuardApplicable,
-                    priorIdentity: priorIdentity,
-                    usableBaselineIdentity: () => deliveryBaseline?.RuntimeId,
-                    probeIdentity: () => Helpers.UiaFocusBridge.TryGetFocusedElementShapeWithIdentity()?.RuntimeId,
-                    logOutcome: LogIdentityOutcome,
-                    blockedResult: () =>
-                    {
-                        Logger.Warning(
-                            "text paste: focus moved to a different element inside target 0x{Target:X} during the modifier wait — blocking Ctrl+V, text kept on clipboard",
-                            targetWindow);
-                        return PasteResult.Fail(PasteAttemptOutcome.FocusMovedInTarget, PasteResultPresentation.FocusMovedMessage);
-                    },
-                    checkFallbackBaseline: checkFallbackBaseline,
-                    checkTargetAlive: checkTargetAlive,
-                    checkForeground: checkForeground,
-                    send: prefix => SendCtrlVWithPrefix(prefix, probeAttempt),
-                    sendFailedResult: () =>
-                    {
-                        Logger.Warning("Failed to send Ctrl+V for text paste; transcription left on clipboard for manual Ctrl+V");
-                        return PasteResult.Fail(PasteAttemptOutcome.SendInputFailed, PasteResultPresentation.KeystrokeBlockedMessage);
-                    }).ConfigureAwait(false);
-                if (sequence.Failure is { } sequenceFail)
+            // ORDERING SEAM (2026-07-30, closes Codex PST-7 diff round 2's open gap): the
+            // whole pre-waited sequence — prepare → identity decision → log → block? →
+            // fallback baseline → target alive → foreground → SYNCHRONOUS send — runs
+            // inside the coordinator's non-async tail, where the compiler forbids an
+            // await between the decision and the keystroke. Named arguments are
+            // load-bearing for the three same-typed checks (review-pinned order), and the
+            // send closure must stay a single direct SendCtrlVWithPrefix expression.
+            var sequence = await Helpers.PreSendIdentityCoordinator.RunPreWaitedSequenceAsync(
+                prepare: async () =>
                 {
-                    outcome = sequenceFail.Outcome;
-                    return sequenceFail;
-                }
-            }
-            else
-            {
-                // PLAIN path — the shipped ordering byte-for-byte: identity decision + its
-                // log line still run on EVERY attempt (the metric above), then the same
-                // named checks, then the awaited modifier-safe send whose internal 400 ms
-                // wait is exactly the pre-PST-6 behaviour this path preserves.
-                var identityResult = await Helpers.PreSendIdentityCoordinator.RunAsync(
-                    identityGuardApplicable,
-                    priorIdentity,
-                    waitModifiers: () => Task.CompletedTask,
-                    usableBaselineIdentity: () => deliveryBaseline?.RuntimeId,
-                    probeIdentity: () => Helpers.UiaFocusBridge.TryGetFocusedElementShapeWithIdentity()?.RuntimeId)
-                    .ConfigureAwait(false);
-                LogIdentityOutcome(identityResult);
-                if (identityResult.ShouldBlock)
+                    var prefix = await BuildModifierReleasePrefixAsync().ConfigureAwait(false);
+                    if (willVerify)
+                        deliveryBaseline = Helpers.UiaFocusBridge.TryGetFocusedElementTextReadback();
+                    return prefix;
+                },
+                guardApplicable: identityGuardApplicable,
+                priorIdentity: priorIdentity,
+                usableBaselineIdentity: () => deliveryBaseline?.RuntimeId,
+                probeIdentity: () => Helpers.UiaFocusBridge.TryGetFocusedElementShapeWithIdentity()?.RuntimeId,
+                logOutcome: LogIdentityOutcome,
+                blockedResult: () =>
                 {
-                    // Provably unreachable here — this path implies the guard is inapplicable,
-                    // which resolves NoPriorGap — kept so the plain path mirrors the shipped
-                    // combined flow exactly (zero-behaviour-change refactor).
                     Logger.Warning(
                         "text paste: focus moved to a different element inside target 0x{Target:X} during the modifier wait — blocking Ctrl+V, text kept on clipboard",
                         targetWindow);
-                    outcome = PasteAttemptOutcome.FocusMovedInTarget;
-                    return PasteResult.Fail(outcome, PasteResultPresentation.FocusMovedMessage);
-                }
-                if (checkFallbackBaseline() is { } baselineFail)
-                {
-                    outcome = baselineFail.Outcome;
-                    return baselineFail;
-                }
-                if (checkTargetAlive() is { } targetFail)
-                {
-                    outcome = targetFail.Outcome;
-                    return targetFail;
-                }
-                if (checkForeground() is { } foregroundFail)
-                {
-                    outcome = foregroundFail.Outcome;
-                    return foregroundFail;
-                }
-                var sent = await SendCtrlVModifierSafeAsync(probeSink: probeAttempt).ConfigureAwait(false);
-                if (!sent)
+                    return PasteResult.Fail(PasteAttemptOutcome.FocusMovedInTarget, PasteResultPresentation.FocusMovedMessage);
+                },
+                checkFallbackBaseline: checkFallbackBaseline,
+                checkTargetAlive: checkTargetAlive,
+                checkForeground: checkForeground,
+                send: prefix => SendCtrlVWithPrefix(prefix, probeAttempt),
+                sendFailedResult: () =>
                 {
                     Logger.Warning("Failed to send Ctrl+V for text paste; transcription left on clipboard for manual Ctrl+V");
-                    outcome = PasteAttemptOutcome.SendInputFailed;
-                    return PasteResult.Fail(outcome, PasteResultPresentation.KeystrokeBlockedMessage);
-                }
+                    return PasteResult.Fail(PasteAttemptOutcome.SendInputFailed, PasteResultPresentation.KeystrokeBlockedMessage);
+                }).ConfigureAwait(false);
+            if (sequence.Failure is { } sequenceFail)
+            {
+                outcome = sequenceFail.Outcome;
+                return sequenceFail;
             }
 
             // PST-6: Ctrl+V was DISPATCHED — that is all SendInput proves. Verify whether the
@@ -2027,38 +1962,8 @@ public sealed class ClipboardService
     }
 
     /// <summary>
-    /// Simulate Ctrl+V via SendInput, modifier-safe: waits (bounded 400 ms) for any
-    /// physically-held side-specific modifier to be released and force-releases
-    /// stragglers in the SAME input batch ahead of the chord — so the target never
-    /// observes Ctrl+V merged with a held Alt/Shift/Win (AltGr on the RightAlt
-    /// recording hotkey being the canonical case). Keys are scan-code-enriched
-    /// (CreateKeyInputEx) for targets that read raw scan codes.
-    /// <para>IMG-BG: <paramref name="proceedGate"/> re-checks AFTER the modifier wait,
-    /// immediately before SendInput — the 400 ms wait is itself long enough for the user's
-    /// recording-hotkey press to start a recording (very plausibly the exact press the wait
-    /// observed), and an earlier fence can't see it (Codex diff review round 3).</para>
-    /// </summary>
-    private async Task<bool> SendCtrlVModifierSafeAsync(Func<bool>? proceedGate = null, ClipboardProbeAttempt? probeSink = null)
-    {
-        var releases = await BuildModifierReleasePrefixAsync().ConfigureAwait(false);
-
-        if (proceedGate is { } gate && !gate())
-        {
-            Logger.Information("Ctrl+V send aborted after the modifier wait — recording started");
-            return false;
-        }
-
-        return SendCtrlVWithPrefix(releases, probeSink);
-    }
-
-    /// <summary>
-    /// PST-6: the Ctrl+V dispatch WITHOUT the modifier wait — the caller's
-    /// resend calls this directly because round-4 sequencing requires the wait to
-    /// happen BEFORE the rung's identity/liveness/foreground checks, so no await
-    /// separates the last check from the send. <paramref name="probeSink"/> is
-    /// null for ladder resends: the REL-16 probe's fixed PreSend/PostSend phases
-    /// belong to the ORIGINAL send alone, and a second pair would poison
-    /// <see cref="ClipboardProbeAttempt.Integrity"/>.
+    /// Synchronous Ctrl+V dispatch. Both callers finish modifier preparation before
+    /// target validation in PreSendIdentityCoordinator. The image path has no probe sink.
     /// </summary>
     private bool SendCtrlVWithPrefix(NativeInterop.INPUT[] releases, ClipboardProbeAttempt? probeSink = null)
     {

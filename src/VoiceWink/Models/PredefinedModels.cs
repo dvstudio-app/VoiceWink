@@ -109,6 +109,7 @@ public static class PredefinedModels
             DownloadUrl = $"{MirrorBase}/ggml-large-v3-turbo-q8_0.bin",
             FallbackUrl = $"{UpstreamBase}/ggml-large-v3-turbo-q8_0.bin",
             FileSizeBytes = 874_188_075,
+            FileSizeIsExact = true,
             Sha256Hash = "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"
         },
         new()
@@ -120,6 +121,7 @@ public static class PredefinedModels
             DownloadUrl = $"{MirrorBase}/ggml-medium-q8_0.bin",
             FallbackUrl = $"{UpstreamBase}/ggml-medium-q8_0.bin",
             FileSizeBytes = 823_369_779,
+            FileSizeIsExact = true,
             Sha256Hash = "42a1ffcbe4167d224232443396968db4d02d4e8e87e213d3ee2e03095dea6502"
         },
         new()
@@ -131,6 +133,7 @@ public static class PredefinedModels
             DownloadUrl = $"{MirrorBase}/ggml-small-q8_0.bin",
             FallbackUrl = $"{UpstreamBase}/ggml-small-q8_0.bin",
             FileSizeBytes = 264_464_607,
+            FileSizeIsExact = true,
             Sha256Hash = "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f"
         },
         new()
@@ -142,6 +145,7 @@ public static class PredefinedModels
             DownloadUrl = $"{MirrorBase}/ggml-base-q8_0.bin",
             FallbackUrl = $"{UpstreamBase}/ggml-base-q8_0.bin",
             FileSizeBytes = 81_768_585,
+            FileSizeIsExact = true,
             Sha256Hash = "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9"
         },
         new()
@@ -153,6 +157,7 @@ public static class PredefinedModels
             DownloadUrl = $"{MirrorBase}/ggml-tiny-q8_0.bin",
             FallbackUrl = $"{UpstreamBase}/ggml-tiny-q8_0.bin",
             FileSizeBytes = 43_537_433,
+            FileSizeIsExact = true,
             Sha256Hash = "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca"
         },
     ];

@@ -763,8 +763,29 @@ public sealed class EnhancementPage : Page
             TextWrapping = TextWrapping.Wrap
         };
 
+        // LAI-8: model advice (Ollama tags, so Ollama only) and the processor hint.
+        var adviceText = new TextBlock
+        {
+            Text = EnhancementViewModel.LocalServerModelAdvice,
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            Margin = new Thickness(0, 8, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+        var processorHint = new TextBlock
+        {
+            Text = EnhancementViewModel.LocalServerProcessorHint,
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.WarningText),
+            Margin = new Thickness(0, 4, 0, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+
         void ApplyState()
         {
+            var isOllama = _viewModel.LocalServerApi == LocalServerApi.Ollama;
+            adviceText.Visibility = isOllama ? Visibility.Visible : Visibility.Collapsed;
+            processorHint.Visibility = _viewModel.LocalServerRunsOnProcessor ? Visibility.Visible : Visibility.Collapsed;
             errorText.Text = _viewModel.LocalServerError ?? "";
             errorText.Visibility = string.IsNullOrEmpty(_viewModel.LocalServerError) ? Visibility.Collapsed : Visibility.Visible;
             var host = _viewModel.LocalServerRemoteHost;
@@ -782,14 +803,15 @@ public sealed class EnhancementPage : Page
             if (e.PropertyName is nameof(EnhancementViewModel.LocalServerError)
                 or nameof(EnhancementViewModel.LocalServerRemoteHost)
                 or nameof(EnhancementViewModel.LocalServerUrl)
-                or nameof(EnhancementViewModel.LocalServerApi))
+                or nameof(EnhancementViewModel.LocalServerApi)
+                or nameof(EnhancementViewModel.LocalServerRunsOnProcessor))
                 DispatcherQueue.TryEnqueue(ApplyState);
         };
         RegisterViewModelSubscription(handler);
 
         return new StackPanel
         {
-            Children = { typeLabel, typeCombo, addressLabel, addressRow, errorText, remoteNote },
+            Children = { typeLabel, typeCombo, addressLabel, addressRow, errorText, remoteNote, adviceText, processorHint },
             Visibility = _viewModel.IsLocalServerSelected ? Visibility.Visible : Visibility.Collapsed
         };
     }

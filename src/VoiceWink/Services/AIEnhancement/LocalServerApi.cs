@@ -19,6 +19,17 @@ public enum LocalServerApi
 }
 
 /// <summary>
+/// LAI-8: where the Local server last reported running its model (Ollama's <c>/api/ps</c>, read
+/// after a preload). Unknown until asked; only Ollama reports it.
+/// </summary>
+public enum LocalServerCompute
+{
+    Unknown,
+    Processor,
+    GraphicsCard
+}
+
+/// <summary>
 /// LAI-1: pure mapping between the two settings a Local server stores (<c>localServerApi</c> +
 /// <c>aiBaseUrl_localserver</c>) and what the settings card shows. No I/O, no settings access.
 /// </summary>
