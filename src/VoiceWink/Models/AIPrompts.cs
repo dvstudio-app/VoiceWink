@@ -59,7 +59,7 @@ public static class AIPrompts
     /// locale-bound and conversion-free: "usual written form" alone invited unit and currency
     /// conversion, which changes facts.
     ///
-    /// The three EXAMPLES sit INSIDE the scoped block, and the carve-out names them
+    /// The four EXAMPLES sit INSIDE the scoped block, and the carve-out names them
     /// ("ignore this entire block <i>including its examples</i>") — placement is the whole
     /// safety argument, because cleanup demonstrations visible to Assistant would teach it to
     /// reformat instead of answer. Upstream VoiceInk can put examples at top level only because
@@ -69,9 +69,17 @@ public static class AIPrompts
     /// rules apply in the transcript's own language. Recorded residual: a custom prompt that is
     /// neither editing nor answering (summarize, extract) falls outside the opening whitelist
     /// and still sees the examples; widening that whitelist risks re-capturing Assistant and was
-    /// deliberately NOT done. Examples earn their tokens by demonstrating several rules each —
+    /// deliberately NOT done; since LAI-9b the fourth example shows a request being cleaned
+    /// rather than carried out, which nudges such a prompt the same way. Examples earn their
+    /// tokens by demonstrating several rules each —
     /// notably the bare-"sorry" guard, which a small model follows far more reliably when shown
-    /// than when told.</para>
+    /// than when told. The fourth (LAI-9b, 2026-09-27) is a short command with nothing to act on,
+    /// cleaned as a command: small local models refused or answered exactly that shape. Measured on
+    /// the laptop bench (<c>bench/README.md</c>, "Envelope A/B"): <c>qwen3.5:4b</c> 9 → 23 of 30
+    /// clean on the two refusing shapes, with no refusal short enough to slip under
+    /// <c>Helpers/CleanupOutputGuard</c>. A reworded user-turn preamble was tested with it and
+    /// REJECTED: alone it made refusals worse and shorter (1 of 30 under the guard line), and
+    /// together with the example it produced 2 such short refusals.</para>
     ///
     /// <para><b>The fill-in-the-blank rule</b> (2026-08-01, prompted by an upstream VoiceInk
     /// comparison) closes a gap the anti-invention rule does NOT cover: a model can satisfy
@@ -149,6 +157,9 @@ public static class AIPrompts
 
         Input: we need like three to four servers at about twenty five percent capacity
         Output: We need 3-4 servers at about 25% capacity.
+
+        Input: uh just walk me through that part again
+        Output: Just walk me through that part again.
 
         Rules:
 

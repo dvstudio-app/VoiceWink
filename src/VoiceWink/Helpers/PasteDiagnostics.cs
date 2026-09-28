@@ -15,7 +15,6 @@ internal enum PasteAttemptOutcome
     TargetGone,
     TargetElevated,
     ForegroundAcquireFailed,
-    ForegroundNotSettled,
     LostForegroundPostUia,
     NoEditableFocused,
     /// <summary>PST-4: the recording-start captured element still EXISTS but focus

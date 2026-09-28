@@ -17,6 +17,11 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.101.396] - 2026-09-28
+
+- Local server: when the model answers instead of cleaning up, your own words are pasted.
+- AI cleanup handles short spoken commands more reliably.
+
 ## [1.100.395] - 2026-09-27
 
 - Ollama: the model loads while you speak and stays loaded for 30 minutes.

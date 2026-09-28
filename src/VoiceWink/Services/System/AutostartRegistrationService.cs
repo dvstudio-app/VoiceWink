@@ -73,6 +73,23 @@ public sealed class AutostartRegistrationService
                     Logger.Warning("Autostart enable requested but no launcher resolved; preserving existing HKCU\\Run entry");
                     return;
                 }
+                if (kind == LauncherKind.DotnetHost)
+                {
+                    // dotnet.exe is a CONSOLE host: a Run entry launching it opens a console
+                    // window at sign-in, and closing that window kills VoiceWink. Never register
+                    // it. Remove a dotnet-hosted entry an earlier build wrote; leave any other
+                    // value alone — it can be an installed build's entry on the same machine.
+                    if (IsDotnetHostedCommand(_registry.GetValue(RunKeyPath, RunValueName)))
+                    {
+                        _registry.DeleteValue(RunKeyPath, RunValueName);
+                        Logger.Information("Autostart skipped for a dotnet-hosted build; removed its console-window HKCU\\Run entry");
+                    }
+                    else
+                    {
+                        Logger.Information("Autostart skipped for a dotnet-hosted build (launcher: {LauncherKind})", kind);
+                    }
+                    return;
+                }
                 _registry.SetValue(RunKeyPath, RunValueName, command);
                 Logger.Information("Autostart enabled (launcher: {LauncherKind})", kind);
             }
@@ -87,6 +104,35 @@ public sealed class AutostartRegistrationService
             Logger.Warning(ex, "Failed to {Action} autostart registry entry",
                 enabled ? "set" : "remove");
         }
+    }
+
+    /// <summary>
+    /// True when a Run command's executable (its first token, quoted or bare) is <c>dotnet</c> —
+    /// the shape <see cref="LauncherKind.DotnetHost"/> used to write. Matches the file name only,
+    /// so a directory called <c>dotnet</c> holding an apphost does not count.
+    /// </summary>
+    internal static bool IsDotnetHostedCommand(string? command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            return false;
+
+        var text = command.TrimStart();
+        string exe;
+        if (text[0] == '"')
+        {
+            var close = text.IndexOf('"', 1);
+            exe = close < 0 ? text[1..] : text[1..close];
+        }
+        else
+        {
+            var space = text.IndexOf(' ');
+            exe = space < 0 ? text : text[..space];
+        }
+
+        return string.Equals(
+            global::System.IO.Path.GetFileNameWithoutExtension(exe.Trim()),
+            "dotnet",
+            StringComparison.OrdinalIgnoreCase);
     }
 }
 

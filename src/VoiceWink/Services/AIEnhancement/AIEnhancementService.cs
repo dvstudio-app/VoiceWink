@@ -1153,7 +1153,10 @@ public sealed class AIEnhancementService
             // a correct answer — the same data-loss class this card set out to fix, one surface
             // over (Codex diff review r2). The comma incident is already stopped upstream, at
             // the machine/user boundary inside TextPipelineRunner, so nothing here needs it.
-            return string.IsNullOrWhiteSpace(filtered) ? transcribedText : filtered;
+            if (string.IsNullOrWhiteSpace(filtered))
+                return transcribedText;
+            ThrowIfAnswerShaped(providerOverride ?? SelectedProvider, prompt, transcribedText, filtered);
+            return filtered;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -2168,6 +2171,24 @@ public sealed class AIEnhancementService
     }
 
     /// <summary>
+    /// LAI-9: refuse a Local server cleanup reply shaped like an answer (<see cref="Helpers.CleanupOutputGuard"/>).
+    /// Thrown inside both enhance methods' <c>try</c>, so it rides their Warning branch and
+    /// MainViewModel's existing fallback: the raw transcript pastes, History stores the
+    /// <c>[Enhancement failed]</c> marker, and the pill names the reason. Logs word counts only —
+    /// never the reply, which can echo the dictation.
+    /// </summary>
+    private static void ThrowIfAnswerShaped(AIProvider provider, CustomPrompt prompt, string input, string output)
+    {
+        if (!Helpers.CleanupOutputGuard.Applies(provider, prompt)
+            || !Helpers.CleanupOutputGuard.LooksLikeAnswer(input, output))
+            return;
+        Logger.Warning("AI enhancement failed: the Local server reply to the cleanup prompt grew from {InputWords} to {OutputWords} words "
+            + "(limit 1.5 × input + 8), so the model answered or refused the dictation instead of cleaning it; the transcription was used unchanged",
+            Helpers.CleanupOutputGuard.CountWords(input), Helpers.CleanupOutputGuard.CountWords(output));
+        throw new InvalidOperationException(Helpers.CleanupOutputGuard.RefusedReason);
+    }
+
+    /// <summary>
     /// Run text enhancement with a specific model override. Does not change the persisted
     /// SelectedModel setting. Used by the redo feature.
     /// </summary>
@@ -2225,7 +2246,10 @@ public sealed class AIEnhancementService
             // a correct answer — the same data-loss class this card set out to fix, one surface
             // over (Codex diff review r2). The comma incident is already stopped upstream, at
             // the machine/user boundary inside TextPipelineRunner, so nothing here needs it.
-            return string.IsNullOrWhiteSpace(filtered) ? transcribedText : filtered;
+            if (string.IsNullOrWhiteSpace(filtered))
+                return transcribedText;
+            ThrowIfAnswerShaped(provider, prompt, transcribedText, filtered);
+            return filtered;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
