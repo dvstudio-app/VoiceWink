@@ -3550,11 +3550,13 @@ public partial class App : Application, Services.IAppLifetime
             Foreground = AppTheme.Brush(AppTheme.TextPrimary),
             FontSize = 13
         };
+        // AcceptsReturn BEFORE Text: a TextBox still single-line when Text is set keeps only the
+        // first line, and the redo then ran on the first paragraph alone (2026-09-28).
         var inputBox = new TextBox
         {
+            AcceptsReturn = true,
             Text = capturedContext.RawText,
             TextWrapping = TextWrapping.Wrap,
-            AcceptsReturn = true,
             MaxHeight = 120,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             FontSize = 13
@@ -4471,7 +4473,9 @@ public partial class App : Application, Services.IAppLifetime
             enhancement.RememberModelFor(chosenProvider, selectedModel, isImageGeneration);
         }
 
-        var editedText = inputBox.Text?.Trim() ?? capturedContext.RawText;
+        var editedText = inputBox.Text is { } boxText
+            ? TextBoxLineEndings.ToLf(boxText).Trim()
+            : capturedContext.RawText;
         var selectedAspect = AppTheme.SelectedIndicatorTag(aspectCombo);
         var selectedSizeTier = AppTheme.SelectedIndicatorTag(sizeCombo);
         // IMG-12: the standing REQUEST, not the combo's tag — a hidden row still holds whatever an

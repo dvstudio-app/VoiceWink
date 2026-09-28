@@ -1358,21 +1358,42 @@ public sealed class AIEnhancementService
 
     internal async Task PreloadLocalServerAsync(string model)
     {
+        try
+        {
+            await ReadLocalServerComputeAsync(model, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _localServerPreloadRunning, 0);
+        }
+    }
+
+    /// <summary>
+    /// Loads <paramref name="model"/> on the Ollama server and records where it runs. Never throws
+    /// except for cancellation; Unknown when the server did not say.
+    /// </summary>
+    private async Task<LocalServerCompute> ReadLocalServerComputeAsync(string model, CancellationToken ct)
+    {
         // A previous answer may describe another server; say nothing until this one answers.
         _localServerCompute = null;
         try
         {
             var config = BuildConfig(model, AIProvider.LocalServer);
             if (config.LocalApi != LocalServerApi.Ollama)
-                return;
+                return LocalServerCompute.Unknown;
             var client = new Clients.LocalServerClient(_httpFactory.CreateClient(Services.Http.VoiceWinkHttpClients.LocalAi), config);
-            var onCpu = await client.PreloadOllamaModelAsync(CancellationToken.None).ConfigureAwait(false);
+            var onCpu = await client.PreloadOllamaModelAsync(ct).ConfigureAwait(false);
             if (onCpu is { } cpu)
             {
                 var compute = cpu ? LocalServerCompute.Processor : LocalServerCompute.GraphicsCard;
                 _localServerCompute = new LocalServerComputeReading(model, compute);
                 Logger.Information("Local server model loaded on the {Compute}", compute);
+                return compute;
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -1380,9 +1401,40 @@ public sealed class AIEnhancementService
             // reports it; Debug keeps a closed Ollama from logging a line per recording.
             Logger.Debug("Local server preload failed: {ErrorType}", ex.GetType().Name);
         }
-        finally
+        return LocalServerCompute.Unknown;
+    }
+
+    /// <summary>The integrated-graphics fix's re-check: load the selected model again and read where it runs.</summary>
+    internal Task<LocalServerCompute> RecheckLocalServerComputeAsync(CancellationToken ct)
+        => ReadLocalServerComputeAsync(SelectedModel, ct);
+
+    /// <summary>
+    /// Polls the Ollama address until it answers or <paramref name="timeout"/> passes — the
+    /// integrated-graphics fix's wait after restarting Ollama.
+    /// </summary>
+    internal async Task<bool> WaitForLocalServerAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
         {
-            Volatile.Write(ref _localServerPreloadRunning, 0);
+            try
+            {
+                var config = BuildConfig(SelectedModel, AIProvider.LocalServer);
+                var client = new Clients.LocalServerClient(_httpFactory.CreateClient(Services.Http.VoiceWinkHttpClients.LocalAi), config);
+                if (await client.PingOllamaAsync(ct).ConfigureAwait(false))
+                    return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Not listening yet.
+            }
+            if (DateTime.UtcNow >= deadline)
+                return false;
+            await Task.Delay(500, ct).ConfigureAwait(false);
         }
     }
 

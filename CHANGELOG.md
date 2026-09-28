@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.102.398] - 2026-09-28
+
+- Redo with another model now uses the whole dictation, not only its first paragraph.
+- Local server: when Ollama runs your model on the processor, VoiceWink offers to switch it to your graphics in one click.
+- Updates download only what changed, so they are much smaller.
+
 ## [1.101.396] - 2026-09-28
 
 - Local server: when the model answers instead of cleaning up, your own words are pasted.

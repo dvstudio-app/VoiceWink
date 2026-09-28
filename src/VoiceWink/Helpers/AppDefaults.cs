@@ -510,6 +510,13 @@ public static class AppDefaults
     public const string LocalServerApiSetting = "localServerApi";
 
     /// <summary>
+    /// The Ollama models the "Use integrated graphics" dialog was already shown for, newline-
+    /// separated, so the Enhancement page opens it by itself once per model. App-managed, NOT in
+    /// <see cref="Defaults"/>: a record of what was shown, not a preference.
+    /// </summary>
+    public const string LocalServerGraphicsOfferedModels = "localServerGraphicsOfferedModels";
+
+    /// <summary>
     /// Builds the settings key used to store the selected model for an AI provider.
     /// Centralizes the <c>aiModel_{provider}</c> convention so callers don't hand-interpolate.
     /// </summary>

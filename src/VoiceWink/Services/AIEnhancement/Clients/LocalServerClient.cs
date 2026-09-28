@@ -172,6 +172,15 @@ internal sealed class LocalServerClient
         return ParseRunsOnCpu(json, _config.ModelName);
     }
 
+    /// <summary>True when an Ollama server answers <c>/api/version</c> at the configured address.</summary>
+    public async Task<bool> PingOllamaAsync(CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_config.GetBaseUrl().TrimEnd('/')}/api/version");
+        AddAuthorization(request, _config);
+        using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
+        return response.IsSuccessStatusCode;
+    }
+
     /// <summary>
     /// Reads Ollama's <c>/api/ps</c>: true when the named model is loaded with nothing in video
     /// memory (<c>size_vram</c> 0), false when any of it is, null when the model is not listed or

@@ -260,16 +260,84 @@ public partial class EnhancementViewModel : ObservableObject
 
     /// <summary>
     /// LAI-8: the model advice under the Ollama card, from the laptop and desktop benchmarks
-    /// (<c>docs/plans/2026-09-23-local-ai-enhancement/bench/</c>). Ollama tags, so shown for the
-    /// Ollama type only. Thinking-only models are named because <c>think:false</c> does not stop
-    /// them: they reason in the reply itself, which timed out on every dictation in owner UAT 233.1.
+    /// (<c>docs/plans/2026-09-23-local-ai-enhancement/bench/</c>; LAI-10 kept qwen3.5:4b over its 2b
+    /// and 9b sizes). Ollama tags, so shown for the Ollama type only. The thinking-only qwen3:4b
+    /// warning was dropped 2026-09-28 (owner): no longer a model anyone picks.
     /// </summary>
     public const string LocalServerModelAdvice =
-        "Recommended: qwen3.5:4b, or gemma4:12b-it-qat with a dedicated graphics card. Thinking-only models such as qwen3:4b don't work.";
+        "Recommended model: qwen3.5:4b. With a dedicated graphics card: gemma4:12b-it-qat.";
 
-    /// <summary>LAI-8: shown when Ollama reported the selected model on the processor.</summary>
-    public const string LocalServerProcessorHint =
-        "Ollama runs this model on the processor. To use integrated graphics, set OLLAMA_IGPU_ENABLE=1 and restart Ollama.";
+    /// <summary>
+    /// LAI-8: shown when Ollama reported the selected model on the processor. One line, plain
+    /// words (owner, 2026-09-28); the fix is behind the page's "Speed it up" link.
+    /// </summary>
+    public const string LocalServerProcessorHint = "Ollama runs this model on the processor, which is slower.";
+
+    /// <summary>The page link that opens the integrated-graphics dialog.</summary>
+    public const string LocalServerProcessorFixLink = "Speed it up";
+
+    /// <summary>
+    /// The processor hint's tooltip — for a server on another computer, where VoiceWink cannot make
+    /// the switch: the manual step, the one place besides the dialog's failure line that names the variable.
+    /// </summary>
+    public const string LocalServerProcessorHintTooltip =
+        "To use that computer's graphics, set OLLAMA_IGPU_ENABLE to 1 there and restart Ollama.";
+
+    /// <summary>
+    /// True when the integrated-graphics fix can run here: the hint shows and the server is on
+    /// this PC — the fix sets a variable and restarts Ollama on THIS machine.
+    /// </summary>
+    public bool CanFixLocalServerGraphics => LocalServerRunsOnProcessor && LocalServerRemoteHost is null;
+
+    /// <summary>
+    /// True when the page should open the integrated-graphics dialog by itself: the fix can run
+    /// and the dialog has not been shown for this model before. Once per model — declining is an
+    /// answer, and the hint's link stays for later.
+    /// </summary>
+    public bool ShouldOfferLocalServerGraphics
+        => CanFixLocalServerGraphics
+           && !ReadOfferedGraphicsModels().Contains(_enhancement.SelectedModel, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Records that the dialog was shown for the selected model.</summary>
+    public void MarkLocalServerGraphicsOffered()
+    {
+        var models = ReadOfferedGraphicsModels();
+        var model = _enhancement.SelectedModel;
+        if (string.IsNullOrWhiteSpace(model) || models.Contains(model, StringComparer.OrdinalIgnoreCase))
+            return;
+        models.Add(model);
+        // Bounded: a user trying many models must not grow settings.json without end.
+        var kept = models.Skip(Math.Max(0, models.Count - MaxOfferedGraphicsModels));
+        _settings.SetString(AppDefaults.LocalServerGraphicsOfferedModels, string.Join("\n", kept));
+    }
+
+    private const int MaxOfferedGraphicsModels = 20;
+
+    private List<string> ReadOfferedGraphicsModels()
+        => _settings.GetString(AppDefaults.LocalServerGraphicsOfferedModels, "")
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+    /// <summary>
+    /// Sets OLLAMA_IGPU_ENABLE=1, restarts Ollama and re-checks where the selected model runs;
+    /// the hint follows the new reading.
+    /// </summary>
+    public async Task<OllamaGraphicsFixOutcome> FixLocalServerGraphicsAsync(CancellationToken ct)
+    {
+        var fix = new OllamaIntegratedGraphics(
+            new WindowsOllamaHost(),
+            token => _enhancement.WaitForLocalServerAsync(TimeSpan.FromSeconds(30), token),
+            _enhancement.RecheckLocalServerComputeAsync);
+        try
+        {
+            return await Task.Run(() => fix.ApplyAsync(ct), ct);
+        }
+        finally
+        {
+            OnPropertyChanged(nameof(LocalServerRunsOnProcessor));
+            OnPropertyChanged(nameof(CanFixLocalServerGraphics));
+        }
+    }
 
     /// <summary>
     /// LAI-8: true when the last preload of the SELECTED model found it with nothing in video

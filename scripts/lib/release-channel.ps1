@@ -102,8 +102,8 @@ function Resolve-KeepMaxReleases {
        0  = keep everything, explicitly                                    -> Source 'keep-everything'
        1  = REFUSED. Keeping only the newest release deletes the previous FULL package - the one a
             client may be mid-download on - and leaves nothing on R2 to reinstall from if the newest
-            release turns out bad. It is NOT about the next pack's delta base: vpk downloads the
-            current latest release before generating deltas, so that is never missing.
+            release turns out bad. It is NOT about the next pack's delta base: release-update.ps1
+            step 4a downloads the newest release before packing, so that is never missing.
       N>=2 = as given                                                      -> Source 'explicit'
     Anything below -1 is a caller bug and throws.
     #>

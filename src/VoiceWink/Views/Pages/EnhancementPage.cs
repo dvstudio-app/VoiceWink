@@ -18,6 +18,7 @@ using VoiceWink.Services.AppMode;
 using VoiceWink.Services.Input;
 using VoiceWink.Services.System; // SettingsService (still used; Codex's unused-using nit was incorrect)
 using VoiceWink.ViewModels;
+using VoiceWink.Views.Dialogs;
 
 namespace VoiceWink.Views.Pages;
 
@@ -64,6 +65,10 @@ public sealed class EnhancementPage : Page
             AttachSubscriptions(); // also fetches models
             _viewModel.ReloadPrompts();
             RefreshPromptList();
+            // Once per model: Ollama was found running it on the processor, and this PC's Ollama
+            // can be switched to integrated graphics.
+            if (_viewModel.IsLocalServerSelected && _viewModel.ShouldOfferLocalServerGraphics)
+                _ = ShowOllamaGraphicsDialogAsync(markOffered: true);
         };
         Unloaded += (_, _) => DetachSubscriptions();
     }
@@ -772,20 +777,46 @@ public sealed class EnhancementPage : Page
             Margin = new Thickness(0, 8, 0, 0),
             TextWrapping = TextWrapping.Wrap
         };
-        var processorHint = new TextBlock
+        // One line, never wrapped (owner, 2026-09-28): the hint trims, and the fix lives behind
+        // the link (this PC) or the tooltip (a remote server).
+        var processorHintText = new TextBlock
         {
             Text = EnhancementViewModel.LocalServerProcessorHint,
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.WarningText),
-            Margin = new Thickness(0, 4, 0, 0),
-            TextWrapping = TextWrapping.Wrap
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            VerticalAlignment = VerticalAlignment.Center
         };
+        var fixLink = AppTheme.CreateActionLink(EnhancementViewModel.LocalServerProcessorFixLink, () => _ = ShowOllamaGraphicsDialogAsync());
+        fixLink.TextWrapping = TextWrapping.NoWrap;
+        fixLink.Margin = new Thickness(10, 0, 0, 0);
+        fixLink.VerticalAlignment = VerticalAlignment.Center;
+        var processorHint = new Grid
+        {
+            // Left-aligned so the link follows the text; the star column still trims the text
+            // when the card is too narrow for both.
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 4, 0, 0),
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto }
+            }
+        };
+        processorHint.Children.Add(processorHintText);
+        processorHint.Children.Add(fixLink);
+        Grid.SetColumn(fixLink, 1);
 
         void ApplyState()
         {
             var isOllama = _viewModel.LocalServerApi == LocalServerApi.Ollama;
             adviceText.Visibility = isOllama ? Visibility.Visible : Visibility.Collapsed;
             processorHint.Visibility = _viewModel.LocalServerRunsOnProcessor ? Visibility.Visible : Visibility.Collapsed;
+            var canFix = _viewModel.CanFixLocalServerGraphics;
+            fixLink.Visibility = canFix ? Visibility.Visible : Visibility.Collapsed;
+            // The manual instruction only where VoiceWink cannot switch (a server on another computer).
+            ToolTipService.SetToolTip(processorHintText, canFix ? null : EnhancementViewModel.LocalServerProcessorHintTooltip);
             errorText.Text = _viewModel.LocalServerError ?? "";
             errorText.Visibility = string.IsNullOrEmpty(_viewModel.LocalServerError) ? Visibility.Collapsed : Visibility.Visible;
             var host = _viewModel.LocalServerRemoteHost;
@@ -814,6 +845,37 @@ public sealed class EnhancementPage : Page
             Children = { typeLabel, typeCombo, addressLabel, addressRow, errorText, remoteNote, adviceText, processorHint },
             Visibility = _viewModel.IsLocalServerSelected ? Visibility.Visible : Visibility.Collapsed
         };
+    }
+
+    // A second ShowAsync while a dialog is open throws; one dialog at a time (the About page's rule).
+    private static bool s_graphicsDialogOpen;
+
+    /// <summary>The integrated-graphics dialog — from the hint's link, or once per model on page open.</summary>
+    private async Task ShowOllamaGraphicsDialogAsync(bool markOffered = false)
+    {
+        if (s_graphicsDialogOpen || XamlRoot is null)
+            return;
+        s_graphicsDialogOpen = true;
+        try
+        {
+            var dialog = new OllamaGraphicsDialog(_viewModel.SelectedModel, _viewModel.FixLocalServerGraphicsAsync)
+            {
+                XamlRoot = XamlRoot
+            };
+            // The one-time offer counts only once the user has seen it: a ShowAsync that throws
+            // (another dialog open) leaves it for the next visit.
+            if (markOffered)
+                dialog.Opened += (_, _) => _viewModel.MarkLocalServerGraphicsOffered();
+            await dialog.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.ForContext<EnhancementPage>().Warning("Integrated-graphics dialog failed: {ErrorType}", ex.GetType().Name);
+        }
+        finally
+        {
+            s_graphicsDialogOpen = false;
+        }
     }
 
     /// <summary>The "Show all available models" checkbox + its experimental warning, built per
@@ -1360,11 +1422,12 @@ public sealed class EnhancementPage : Page
             Margin = new Thickness(0, 0, 0, 16)
         };
 
+        // AcceptsReturn BEFORE Text — a single-line TextBox keeps only the first line of what it is given.
         var promptBox = new TextBox
         {
+            AcceptsReturn = true,
             Text = prompt.PromptText,
             PlaceholderText = "Enter your prompt instructions",
-            AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
             Height = 200
         };
