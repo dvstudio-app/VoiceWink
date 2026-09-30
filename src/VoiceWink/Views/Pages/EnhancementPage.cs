@@ -221,22 +221,6 @@ public sealed class EnhancementPage : Page
                 providerSection,
             }
         };
-        // LAI-3/LAI-4: the local AI models — shown while "On this PC" is the text provider, the one
-        // provider that uses them. A download or delete refreshes that provider's model list.
-        if (OnThisPcAvailability.IsOffered && _viewModel.LocalModels is { } localModels)
-        {
-            var localModelsCard = LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
-                _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels);
-            localModelsCard.Visibility = _viewModel.IsOnThisPcSelected ? Visibility.Visible : Visibility.Collapsed;
-            PropertyChangedEventHandler localModelsVisibilityHandler = (_, e) =>
-            {
-                if (e.PropertyName == nameof(EnhancementViewModel.IsOnThisPcSelected))
-                    DispatcherQueue.TryEnqueue(() => localModelsCard.Visibility =
-                        _viewModel.IsOnThisPcSelected ? Visibility.Visible : Visibility.Collapsed);
-            };
-            RegisterViewModelSubscription(localModelsVisibilityHandler);
-            root.Children.Add(localModelsCard);
-        }
         root.Children.Add(promptsSection);
 
         AppTheme.SetPageScrollContent(this, root);
@@ -271,11 +255,8 @@ public sealed class EnhancementPage : Page
             var combo = new ComboBox { Width = 280, HorizontalAlignment = HorizontalAlignment.Left };
             AppTheme.AllowParentScroll(combo);
             var registry = App.Services.GetRequiredService<AIProviderRegistry>();
-            foreach (var p in EnhancementViewModel.ProvidersIncluding(initial))
-            {
-                if (!imageOnly || registry.SupportsImageGeneration(p))
-                    combo.Items.Add(AIProviderDisplay.Label(p));
-            }
+            AppTheme.AddProviderItems(combo, EnhancementViewModel.ProvidersIncluding(initial)
+                .Where(p => !imageOnly || registry.SupportsImageGeneration(p)));
             combo.SelectedItem = AIProviderDisplay.Label(initial);
             combo.SelectionChanged += (_, _) =>
             {
@@ -660,20 +641,42 @@ public sealed class EnhancementPage : Page
         // flood both dropdowns at once.
         var (showAllCheck, showAllWarning) = BuildShowAllModelsRow(
             () => _viewModel.ShowAllModels, v => _viewModel.ShowAllModels = v);
-        // LAI-4: "On this PC" has no key and a fixed catalog — no key row, no show-all escape hatch.
+        // VoiceWink Engine (LAI-4, "On this PC"): no key and a fixed catalog — no key row, no show-all
+        // escape hatch, and its models are ROWS in this card instead of the Model dropdown (owner,
+        // 2026-09-30: one place to pick the model and download it).
+        var localModelsHost = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        void RebuildLocalModelRows()
+        {
+            localModelsHost.Children.Clear();
+            if (!OnThisPcAvailability.IsOffered || _viewModel.LocalModels is not { } localModels)
+                return;
+            localModelsHost.Children.Add(LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
+                id => string.Equals(_viewModel.SelectedModel, id, StringComparison.Ordinal),
+                id => _viewModel.SelectedModel = id,
+                _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels));
+        }
         void ApplyOnThisPcRows()
         {
-            var keyRows = _viewModel.IsOnThisPcSelected ? Visibility.Collapsed : Visibility.Visible;
+            var engine = _viewModel.IsOnThisPcSelected;
+            var keyRows = engine ? Visibility.Collapsed : Visibility.Visible;
             apiKeyLabel.Visibility = keyRows;
             saveBtnRow.Visibility = keyRows;
             showAllCheck.Visibility = keyRows;
-            showAllWarning.Visibility = !_viewModel.IsOnThisPcSelected && _viewModel.ShowAllModels
+            showAllWarning.Visibility = !engine && _viewModel.ShowAllModels
                 ? Visibility.Visible : Visibility.Collapsed;
+            modelCombo.Visibility = keyRows;
+            localModelsHost.Visibility = engine ? Visibility.Visible : Visibility.Collapsed;
+            if (engine)
+                RebuildLocalModelRows();
         }
         ApplyOnThisPcRows();
         PropertyChangedEventHandler onThisPcRowsHandler = (_, e) =>
         {
-            if (e.PropertyName == nameof(EnhancementViewModel.IsOnThisPcSelected))
+            // The rows are rebuilt on a new selection too, so Select / Active follows the model
+            // chosen here, after a download, or healed after a delete. A running download survives
+            // the rebuild: the store owns it and the new row reattaches.
+            if (e.PropertyName == nameof(EnhancementViewModel.IsOnThisPcSelected)
+                || (e.PropertyName == nameof(EnhancementViewModel.SelectedModel) && _viewModel.IsOnThisPcSelected))
                 DispatcherQueue.TryEnqueue(ApplyOnThisPcRows);
         };
         RegisterViewModelSubscription(onThisPcRowsHandler);
@@ -696,6 +699,7 @@ public sealed class EnhancementPage : Page
                 localServerPanel,
                 modelLabel,
                 modelCombo,
+                localModelsHost,
                 apiKeyLabel,
                 saveBtnRow,
                 showAllCheck,
@@ -1141,7 +1145,7 @@ public sealed class EnhancementPage : Page
                 Padding = new Thickness(8, 2, 8, 2),
                 Child = new TextBlock
                 {
-                    Text = $"Model: {prompt.ModelOverride}",
+                    Text = $"Model: {EngineModelLabel.Label(Enum.TryParse<AIProvider>(prompt.ProviderOverride, out var badgeProvider) ? badgeProvider : _viewModel.SelectedProvider, prompt.ModelOverride)}",
                     FontSize = 11,
                     Foreground = AppTheme.Brush(AppTheme.AccentBlue)
                 }
@@ -1968,10 +1972,9 @@ public sealed class EnhancementPage : Page
             // would save as "(Default)" and move this prompt to the global provider.
             var hasSavedOverride = Enum.TryParse<AIProvider>(prompt.ProviderOverride, out var savedOverride)
                                    && !string.IsNullOrEmpty(prompt.ProviderOverride);
-            foreach (var p in hasSavedOverride
-                         ? EnhancementViewModel.ProvidersIncluding(savedOverride)
-                         : EnhancementViewModel.AvailableProviders)
-                providerCombo.Items.Add(AIProviderDisplay.Label(p));
+            AppTheme.AddProviderItems(providerCombo, hasSavedOverride
+                ? EnhancementViewModel.ProvidersIncluding(savedOverride)
+                : EnhancementViewModel.AvailableProviders);
 
             // Pre-select from saved override
             if (hasSavedOverride)
@@ -2280,8 +2283,15 @@ public sealed class EnhancementPage : Page
 
             var lastContext = CurrentContext();
 
+            // The provider whose list the combo shows: the override, else the main text provider.
+            // VoiceWink Engine rows are names; this maps them back to the stored id.
+            AIProvider? ListProvider(PromptModelOverridePolicy.OverrideContext ctx)
+                => ctx.ProviderOverride ?? (ctx.IsImage ? null : _viewModel.SelectedProvider);
+
             string? NormalizeModel(string? raw)
-                => string.IsNullOrWhiteSpace(raw) || raw == defaultModelLabel ? null : raw.Trim();
+                => string.IsNullOrWhiteSpace(raw) || raw == defaultModelLabel
+                    ? null
+                    : EngineModelLabel.Id(ListProvider(lastContext), raw.Trim());
 
             // User-driven changes update the pending choice; programmatic mutations
             // during a refresh are excluded via suppressModelTracking (the ItemsSource
@@ -2344,15 +2354,18 @@ public sealed class EnhancementPage : Page
                     // state (the PR #163 0x80070490 class). Build the list (sentinel
                     // first) then assign once.
                     var items = new List<string>(models.Count + 1) { defaultModelLabel };
-                    items.AddRange(models);
+                    items.AddRange(EngineModelLabel.Labels(ListProvider(lastContext), models));
                     modelCombo.ItemsSource = items;
 
-                    if (string.IsNullOrEmpty(pendingModelOverride))
+                    var pendingLabel = pendingModelOverride is null
+                        ? null
+                        : EngineModelLabel.Label(ListProvider(lastContext), pendingModelOverride);
+                    if (string.IsNullOrEmpty(pendingLabel))
                         modelCombo.SelectedIndex = 0; // "(Default — uses main selection)"
-                    else if (items.Contains(pendingModelOverride))
-                        modelCombo.SelectedItem = pendingModelOverride;
+                    else if (items.Contains(pendingLabel))
+                        modelCombo.SelectedItem = pendingLabel;
                     else
-                        modelCombo.Text = pendingModelOverride;
+                        modelCombo.Text = pendingLabel;
                 }
                 finally
                 {
@@ -2515,7 +2528,7 @@ public sealed class EnhancementPage : Page
                     ? chosenProvider.ToString()
                     : null;
                 var modelRaw = modelCombo.SelectedItem as string ?? modelCombo.Text;
-                var modelOverride = modelRaw == defaultModelLabel ? null : modelRaw;
+                var modelOverride = NormalizeModel(modelRaw);
                 // We persist the dropdown's current selection regardless of visibility — if the
                 // user has set up a "2K" preference on gpt-image-2 and now flips the provider to
                 // gemini-2.5-flash-image (no tier), hiding the dropdown shouldn't *erase* the

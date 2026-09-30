@@ -3337,11 +3337,12 @@ public partial class App : Application, Services.IAppLifetime
             Log.Warning("No providers available for enhancement dialog (isImage={IsImage})", isImageGeneration);
             return null;
         }
-        foreach (var p in providers)
-            providerCombo.Items.Add(AIProviderDisplay.Label(p)); // every read parses it back via AIProviderDisplay.TryParse
-
-        var currentProviderIdx = providers.IndexOf(defaultProvider);
-        providerCombo.SelectedIndex = currentProviderIdx >= 0 ? currentProviderIdx : 0;
+        // Grouped with headings (ProviderListLayout); every read parses the label back via
+        // AIProviderDisplay.TryParse. Selected by LABEL - the headings shift every index.
+        AppTheme.AddProviderItems(providerCombo, providers);
+        providerCombo.SelectedItem = AIProviderDisplay.Label(providers.Contains(defaultProvider)
+            ? defaultProvider
+            : ProviderListLayout.Ordered(providers).First());
 
         // Model dropdown
         var modelCombo = new ComboBox
@@ -3447,7 +3448,8 @@ public partial class App : Application, Services.IAppLifetime
                 {
                     // Single ItemsSource swap (see the clear branches) — one container
                     // rebuild, not N incremental Adds into the live editable combo.
-                    modelCombo.ItemsSource = filtered;
+                    // VoiceWink Engine models show by name; the confirm maps the pick back to its id.
+                    modelCombo.ItemsSource = EngineModelLabel.Labels(selProvider, filtered);
 
                     // Pre-select (UX-1): redo-chain recency, then the per-provider persisted
                     // memory, then the provider default — for ANY selected provider, not just
@@ -3465,7 +3467,7 @@ public partial class App : Application, Services.IAppLifetime
                             : TextModelDefaults.DefaultModelFor(selProvider),
                         filtered);
                     if (next != null)
-                        modelCombo.SelectedItem = next;
+                        modelCombo.SelectedItem = EngineModelLabel.Label(selProvider, next);
                 }
                 finally { suppressModelTracking = false; }
 
@@ -4483,6 +4485,7 @@ public partial class App : Application, Services.IAppLifetime
 
         var providerStr = providerCombo.SelectedItem as string ?? "";
         AIProvider? selectedProvider = AIProviderDisplay.TryParse(providerStr, out var sp) ? sp : null;
+        selectedModel = EngineModelLabel.Id(selectedProvider, selectedModel);
 
         // UX-1: remember the confirmed model per provider so the next dialog (and the AI
         // Enhancement page / main pipeline, which share this memory) restore it. Gated on

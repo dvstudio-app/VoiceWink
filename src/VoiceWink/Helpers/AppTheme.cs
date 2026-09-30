@@ -587,13 +587,31 @@ public static class AppTheme
             combo.Items.Add(HotkeyKeyDisplay.ToDisplayToken(key));
     }
 
-    private static void AddHotkeyGroupHeader(ComboBox combo, string label) => combo.Items.Add(new ComboBoxItem
+    private static void AddHotkeyGroupHeader(ComboBox combo, string label) => AddComboGroupHeader(combo, label);
+
+    /// <summary>A heading inside a combo's list: a disabled item, so it is never selected, and the
+    /// selection readers (which read a string <c>SelectedItem</c>) never see it.</summary>
+    public static void AddComboGroupHeader(ComboBox combo, string label) => combo.Items.Add(new ComboBoxItem
     {
         Content = $"\u2500\u2500\u2500 {label} \u2500\u2500\u2500",
         IsEnabled = false,
         Foreground = Brush(DimText),
         FontSize = 11
     });
+
+    /// <summary>Adds provider display labels in <see cref="ProviderListLayout"/> order, with its
+    /// "On this PC" / "Cloud" headings. Items stay the plain label strings every reader parses back
+    /// through <c>AIProviderDisplay.TryParse</c>.</summary>
+    public static void AddProviderItems(ComboBox combo, IEnumerable<Services.AIEnhancement.AIProvider> providers)
+    {
+        foreach (var row in ProviderListLayout.Rows(providers))
+        {
+            if (row.Heading is { } heading)
+                AddComboGroupHeader(combo, heading);
+            else
+                combo.Items.Add(Services.AIEnhancement.AIProviderDisplay.Label(row.Provider!.Value));
+        }
+    }
 
     /// <summary>
     /// Populate an aspect-ratio combo with shape-indicator boxes; pre-select <paramref name="selectedAspect"/>.

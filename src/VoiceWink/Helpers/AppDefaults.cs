@@ -92,15 +92,17 @@ public static class AppDefaults
     /// <summary>
     /// The shipped filler list (comma-separated; the ONE source — <c>FillerWordManager</c> splits
     /// this, it does not keep its own copy). Every entry must be a filler in EVERY language the app
-    /// recognises and a word in NONE, because the removal runs on every transcript whose language
-    /// is English or unknown (<c>FillerWordManager.AppliesTo</c>). Until 2026-09-13 the list carried
+    /// recognises and a word in none of them except where <c>FillerWordManager</c>'s collision table
+    /// keeps it, because the removal runs on every transcript in every
+    /// language (<c>FillerWordManager.EffectiveWords</c>, since 2026-09-30). Until 2026-09-13 the list carried
     /// <c>ah</c>, <c>eh</c> and <c>er</c>: whole-word, case-insensitive, on every language — which
     /// deleted Dutch and German "er" ("Er is een probleem" → "Is een probleem"), French "eh" and the
     /// interjection "ah" from every dictation in those languages. <c>um</c> stays because it is the
     /// most common English filler — and it is the ONE residual: the German preposition ("um acht")
-    /// and the Portuguese article ("um carro"). That is why an EXPLICIT non-English recognition
-    /// language skips the removal entirely and only Auto-detect keeps the residual (the wizard
-    /// asks for the language; picking it is the fix). <c>uhm</c>/<c>umm</c>/<c>ehm</c>/<c>euh</c>
+    /// and the Portuguese article ("um carro"), and a word in Icelandic, Faroese and Luxembourgish
+    /// too — so an explicit recognition language of any of those keeps it (the manager's collision
+    /// table), and only Auto-detect keeps the residual
+    /// (the wizard asks for the language; picking it is the fix). <c>uhm</c>/<c>umm</c>/<c>ehm</c>/<c>euh</c>
     /// were added the same day — the spellings the engines actually emit for the same sounds, and
     /// "euh" is the Dutch/French one. Deliberately NOT VoiceInk's <c>mm</c>/<c>hm</c>: "5 mm" is a
     /// measurement.

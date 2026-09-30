@@ -20,12 +20,21 @@ internal sealed record LocalModelFile(
     string Sha256,
     string UpstreamUrl);
 
-/// <summary>One catalog model: the GGUF, its licence file, and what the tier recommendation needs.</summary>
+/// <summary>One catalog model: the GGUF, its licence file, what the tier recommendation needs, and
+/// its Accuracy / Speed stars (1-5, the Models page's scale).</summary>
+/// <remarks><b>Where the stars come from</b> (the local AI plan's bench, `30-claude-revised-plan.md`,
+/// one desktop, the owner's 40-case dictation corpus, the shipped envelope): Accuracy follows the
+/// pass score — Gemma 4 12B 40/40 (★5), Qwen3.5 4B 35/40 (★4), Qwen3.5 2B 28/40 (★3). Speed follows
+/// the measured cleanup times, relative to one another — the 2B about twice as fast as the 4B on the
+/// same CPU (★5 / ★4), the 12B two to five times slower than the 4B on the same graphics card (★3).
+/// A model or engine change re-runs the bench and revisits these. No language is named: the bench
+/// measured four, and the per-language line waits for more (owner decision 2026-09-30).</remarks>
 internal sealed record LocalModelEntry(
     string Id,
     string DisplayName,
     LocalModelTier Tier,
-    string Note,
+    int Accuracy,
+    int Speed,
     string Licence,
     LocalModelFile Model,
     LocalModelFile LicenceFile,
@@ -74,7 +83,8 @@ internal static class LocalModelCatalog
         Id: "qwen3.5-2b-q4km",
         DisplayName: "Qwen3.5 2B",
         Tier: LocalModelTier.Light,
-        Note: "Fastest and smallest. English is good; other languages are weaker.",
+        Accuracy: 3,
+        Speed: 5,
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "Qwen3.5-2B-Q4_K_M.gguf",
@@ -94,7 +104,8 @@ internal static class LocalModelCatalog
         Id: "qwen3.5-4b-q4km",
         DisplayName: "Qwen3.5 4B",
         Tier: LocalModelTier.Standard,
-        Note: "Best balance of quality and speed. Good in English, Dutch, French and German.",
+        Accuracy: 4,
+        Speed: 4,
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "Qwen3.5-4B-Q4_K_M.gguf",
@@ -114,7 +125,8 @@ internal static class LocalModelCatalog
         Id: "gemma-4-12b-qat",
         DisplayName: "Gemma 4 12B",
         Tier: LocalModelTier.Best,
-        Note: "Highest quality in every language. Needs a graphics card with 12 GB.",
+        Accuracy: 5,
+        Speed: 3,
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",

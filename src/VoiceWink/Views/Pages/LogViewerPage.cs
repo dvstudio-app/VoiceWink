@@ -23,6 +23,16 @@ public sealed class LogViewerPage : Page
     private long _lastPosition;
     private bool _autoScroll = true;
 
+    // Search (LogSearch): null = the ordinary tail of today's file; otherwise only matching lines,
+    // from every daily log file, and the live tail adds new matches as they are written.
+    private TextBox _searchBox = null!;
+    private TextBlock _searchSummary = null!;
+    private readonly DispatcherTimer _searchDebounce;
+    private string? _query;
+    private int _searchTotal;
+    private int _searchUnreadable;
+    private CancellationTokenSource? _searchCts;
+
     public LogViewerPage()
     {
         RequestedTheme = AppTheme.ElementTheme;
@@ -32,18 +42,40 @@ public sealed class LogViewerPage : Page
         _tailTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _tailTimer.Tick += OnTailTick;
 
-        Loaded += (_, _) =>
+        // Typing restarts this; the search runs once the text has been still for 300 ms.
+        _searchDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _searchDebounce.Tick += (_, _) =>
         {
-            _logBlock.Blocks.Clear();
-            _lastPosition = 0;
-            FindCurrentLogFile();
-            ReadFullLog();
-            _tailTimer.Start();
+            _searchDebounce.Stop();
+            var query = LogSearch.Normalize(_searchBox.Text);
+            if (query == _query)
+                return;
+            _query = query;
+            RefreshView();
         };
+
+        // Ctrl+F puts the cursor in the search box.
+        var findAccelerator = new Microsoft.UI.Xaml.Input.KeyboardAccelerator
+        {
+            Key = Windows.System.VirtualKey.F,
+            Modifiers = Windows.System.VirtualKeyModifiers.Control,
+        };
+        findAccelerator.Invoked += (_, e) =>
+        {
+            _searchBox.Focus(FocusState.Keyboard);
+            _searchBox.SelectAll();
+            e.Handled = true;
+        };
+        KeyboardAccelerators.Add(findAccelerator);
+        KeyboardAcceleratorPlacementMode = Microsoft.UI.Xaml.Input.KeyboardAcceleratorPlacementMode.Hidden;
+
+        Loaded += (_, _) => RefreshView();
 
         Unloaded += (_, _) =>
         {
             _tailTimer.Stop();
+            _searchDebounce.Stop();
+            _searchCts?.Cancel();
         };
     }
 
@@ -84,9 +116,14 @@ public sealed class LogViewerPage : Page
             {
                 _tailTimer.Stop();
                 App.ClearAndReinitializeLogs();
+                _currentLogPath = null;
+                if (_query != null)
+                {
+                    RefreshView();
+                    return;
+                }
                 _logBlock.Blocks.Clear();
                 _lastPosition = 0;
-                _currentLogPath = null;
                 FindCurrentLogFile();
                 if (_currentLogPath != null)
                     ReadFullLog();
@@ -139,6 +176,39 @@ public sealed class LogViewerPage : Page
             buttonRow.Children.Add(btn);
         }
 
+        // Search box: every daily log file, not just the lines shown below. Escape clears it.
+        _searchBox = new TextBox
+        {
+            PlaceholderText = "Search all logs",
+            Height = 34,
+            FontSize = 13,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 4),
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_searchBox, "Search all logs");
+        _searchBox.TextChanged += (_, _) =>
+        {
+            _searchDebounce.Stop();
+            _searchDebounce.Start();
+        };
+        _searchBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Escape && _searchBox.Text.Length > 0)
+            {
+                _searchBox.Text = "";
+                e.Handled = true;
+            }
+        };
+
+        _searchSummary = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(2, 0, 0, 8),
+            Visibility = Visibility.Collapsed,
+        };
+
         // Log output area
         _logBlock = new RichTextBlock
         {
@@ -170,6 +240,8 @@ public sealed class LogViewerPage : Page
         stack.Children.Add(autoScrollToggle);
         stack.Children.Add(verboseToggle);
         stack.Children.Add(buttonRow);
+        stack.Children.Add(_searchBox);
+        stack.Children.Add(_searchSummary);
 
         // Use a Grid so the ScrollViewer can fill remaining space
         var layout = new Grid();
@@ -247,6 +319,11 @@ public sealed class LogViewerPage : Page
                 FindCurrentLogFile();
                 if (_currentLogPath != null)
                 {
+                    if (_query != null)
+                    {
+                        RefreshView();
+                        return;
+                    }
                     _lastPosition = 0;
                     _logBlock.Blocks.Clear();
                     ReadFullLog();
@@ -259,19 +336,43 @@ public sealed class LogViewerPage : Page
             {
                 // File was truncated/rotated
                 _lastPosition = 0;
-                _logBlock.Blocks.Clear();
+                if (_query == null)
+                    _logBlock.Blocks.Clear();
             }
 
             if (fs.Length == _lastPosition) return;
 
             fs.Seek(_lastPosition, SeekOrigin.Begin);
-            using var reader = new StreamReader(fs);
-            var newContent = reader.ReadToEnd();
-            _lastPosition = fs.Position;
-
-            var lines = newContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var line in lines)
-                AppendLogLine(line.TrimEnd('\r'));
+            IReadOnlyList<string> lines;
+            if (_query != null)
+            {
+                var complete = new List<string>();
+                _lastPosition = LogSearch.ReadCompleteLines(fs, complete.Add, CancellationToken.None);
+                lines = complete;
+            }
+            else
+            {
+                using var reader = new StreamReader(fs);
+                var newContent = reader.ReadToEnd();
+                _lastPosition = fs.Position;
+                lines = newContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            }
+            var matched = 0;
+            foreach (var raw in lines)
+            {
+                var line = raw.TrimEnd('\r');
+                if (_query != null && !LogSearch.Matches(line, _query))
+                    continue;
+                AppendLogLine(line);
+                matched++;
+            }
+            if (_query != null)
+            {
+                if (matched == 0)
+                    return;
+                _searchTotal += matched;
+                ShowSearchSummary();
+            }
 
             if (_autoScroll)
                 ScrollToBottom();
@@ -290,7 +391,98 @@ public sealed class LogViewerPage : Page
         else if (line.Contains("[DBG]"))
             color = AppTheme.DimText;
 
-        AppendLine(line, color);
+        if (_query == null)
+        {
+            AppendLine(line, color);
+            return;
+        }
+
+        // A search result: the matched text in bold, the rest in the line's level colour.
+        var paragraph = new Microsoft.UI.Xaml.Documents.Paragraph { Margin = new Thickness(0) };
+        var brush = AppTheme.Brush(color);
+        foreach (var (text, isMatch) in LogSearch.Segments(line, _query))
+        {
+            paragraph.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
+            {
+                Text = text,
+                Foreground = isMatch ? AppTheme.Brush(AppTheme.TextPrimary) : brush,
+                FontWeight = isMatch ? FontWeights.Bold : FontWeights.Normal,
+            });
+        }
+        AddParagraph(paragraph);
+    }
+
+    /// <summary>Shows the ordinary tail of today's file, or - while the search box holds text - the
+    /// matching lines from every daily log file.</summary>
+    private void RefreshView()
+    {
+        _searchCts?.Cancel();
+        if (_query == null)
+        {
+            _searchSummary.Visibility = Visibility.Collapsed;
+            _logBlock.Blocks.Clear();
+            _lastPosition = 0;
+            FindCurrentLogFile();
+            ReadFullLog();
+            _tailTimer.Start();
+            return;
+        }
+        _ = RunSearchAsync(_query);
+    }
+
+    private async Task RunSearchAsync(string query)
+    {
+        var cts = new CancellationTokenSource();
+        _searchCts = cts;
+        _tailTimer.Stop();
+        _searchSummary.Text = "Searching…";
+        _searchSummary.Visibility = Visibility.Visible;
+        LogSearch.Result result;
+        try
+        {
+            var dir = AppPaths.LogsDir;
+            result = await Task.Run(() => LogSearch.Search(LogSearch.LogFilesOldestFirst(dir), query, LogSearch.MaxShown, cts.Token));
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(ex, "Log search failed");
+            if (_searchCts == cts && !cts.IsCancellationRequested)
+            {
+                _logBlock.Blocks.Clear();
+                _searchTotal = 0;
+                _searchUnreadable = 0;
+                _searchSummary.Text = "The search failed.";
+            }
+            return;
+        }
+        // A newer search, a cleared box, or leaving the page (Unloaded cancels) replaced this one.
+        if (_searchCts != cts || _query != query || cts.IsCancellationRequested)
+            return;
+
+        _logBlock.Blocks.Clear();
+        foreach (var line in result.Lines)
+            AppendLogLine(line);
+        _searchTotal = result.Total;
+        _searchUnreadable = result.Unreadable;
+        ShowSearchSummary();
+
+        // The tail continues where the search stopped reading today's file, so no line shows twice.
+        FindCurrentLogFile();
+        _lastPosition = _currentLogPath != null && string.Equals(result.LastFile, _currentLogPath, StringComparison.OrdinalIgnoreCase)
+            ? result.LastFileEnd
+            : 0;
+        ScrollToBottom();
+        _tailTimer.Start();
+    }
+
+    private void ShowSearchSummary()
+    {
+        _searchSummary.Text = LogSearch.Summary(_searchTotal, Math.Min(_searchTotal, LogSearch.MaxShown), _searchUnreadable);
+        _searchSummary.Visibility = Visibility.Visible;
     }
 
     private const int MaxParagraphs = 500;
@@ -306,6 +498,11 @@ public sealed class LogViewerPage : Page
             Text = text,
             Foreground = AppTheme.Brush(color)
         });
+        AddParagraph(paragraph);
+    }
+
+    private void AddParagraph(Microsoft.UI.Xaml.Documents.Paragraph paragraph)
+    {
         _logBlock.Blocks.Add(paragraph);
 
         // Prune old paragraphs to prevent unbounded memory growth

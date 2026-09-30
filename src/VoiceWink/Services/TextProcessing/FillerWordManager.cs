@@ -9,16 +9,15 @@ namespace VoiceWink.Services.TextProcessing;
 /// Removes filler words (uh, um, hmm, etc.) from transcribed text.
 /// Pipeline step 2: TranscriptionOutputFilter → FillerWordManager.
 ///
-/// <para><b>The list is English, so the removal is gated on the recognition language</b>
-/// (2026-09-13). The filter is whole-word and case-insensitive, and the pipeline runs it on every
-/// transcript — so until this gate existed, a Dutch or German dictation lost every "er"
-/// ("Er is een probleem" → "Is een probleem", "Er kommt morgen" → "Kommt morgen") and a French one
-/// its "eh", from a default the user never chose. The rule (<see cref="AppliesTo"/>): an English
-/// or UNKNOWN language (null, empty, <c>auto</c>) applies the list; any other explicit language
-/// skips the stage. Unknown still applies because the engines never hand the detected language
-/// back to this pipeline, and the list itself was trimmed to entries that are fillers everywhere
-/// (<see cref="AppDefaults.DefaultFillerWords"/> carries the per-word reasoning, including the one
-/// residual, German "um" under Auto-detect).</para>
+/// <para><b>Which words are removed depends on the recognition language</b>
+/// (<see cref="EffectiveWords"/>). The filter is whole-word and case-insensitive, so a list entry
+/// that is a real word in the dictated language deletes that word: until 2026-09-13 the default
+/// carried "er" and "eh", and a Dutch or German dictation lost every "er" ("Er is een probleem" →
+/// "Is een probleem"). The list was then trimmed to sounds (<see cref="AppDefaults.DefaultFillerWords"/>),
+/// and since 2026-09-30 (owner) those sounds are removed in EVERY language, minus <c>um</c> where it
+/// is a word — German ("um acht"), Portuguese ("um carro"), Icelandic, Faroese and Luxembourgish. A list holding any entry the shipped
+/// list does not is the user's own and is applied only for English or an unknown language, the rule
+/// every list followed before: the app cannot know its entries are sounds everywhere.</para>
 /// </summary>
 public sealed class FillerWordManager
 {
@@ -38,20 +37,55 @@ public sealed class FillerWordManager
         _settings = settings;
     }
 
+    /// <summary>Languages in which a shipped filler is an ordinary word, and that word.</summary>
+    private static readonly (string Language, string Word)[] ShippedWordCollisions =
+    [
+        ("de", "um"),   // "um acht" — at eight
+        ("pt", "um"),   // "um carro" — a car
+        ("is", "um"),   // Icelandic — about
+        ("fo", "um"),   // Faroese — about; if
+        ("lb", "um"),   // Luxembourgish — on the
+    ];
+
     /// <summary>
-    /// Whether filler removal runs for a transcript recognised as <paramref name="language"/>
-    /// (a whisper.cpp-style code — <c>en</c>, <c>nl</c>, <c>auto</c> — or null when the caller
-    /// has none). Pure; the case table lives in <c>FillerWordManagerTests</c>.
+    /// The fillers removed from a transcript recognised as <paramref name="language"/> (a
+    /// whisper.cpp-style code — <c>en</c>, <c>nl</c>, <c>auto</c> — or null when the caller has
+    /// none), given the configured comma-separated <paramref name="wordList"/>. Empty = the stage
+    /// does nothing. Pure; the case table lives in <c>FillerWordManagerTests</c>.
     /// </summary>
     /// <remarks>
-    /// English applies, including a regioned form (<c>en-US</c>). Unknown applies: null, empty,
-    /// whitespace and <c>auto</c> — the detected language never reaches this stage, so refusing
-    /// here would switch the feature off for every Auto-detect user, English ones included. Any
-    /// other explicit code skips: the list is English and its entries are ordinary words in
-    /// other languages. Trimmed and case-insensitive, like every other language comparison in
-    /// the app (an imported <c>"NL"</c> must not slip past the gate).
+    /// English or unknown (<see cref="IsEnglishOrUnknown"/>): the whole list. Any other language:
+    /// a list made only of shipped entries (any subset, order or case) minus that language's
+    /// <see cref="ShippedWordCollisions"/>; a list with any other entry, nothing — the user's own
+    /// words may be real words in that language.
     /// </remarks>
-    internal static bool AppliesTo(string? language)
+    internal static string[] EffectiveWords(string? language, string wordList)
+    {
+        var words = wordList
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(w => w.Length > 0)
+            .ToArray();
+        if (IsEnglishOrUnknown(language))
+            return words;
+
+        var shipped = AppDefaults.DefaultFillerWords.Split(',', StringSplitOptions.TrimEntries);
+        if (!words.All(w => shipped.Contains(w, StringComparer.OrdinalIgnoreCase)))
+            return [];
+
+        var baseCode = language!.Trim().Replace('_', '-').Split('-')[0];
+        return words
+            .Where(w => !ShippedWordCollisions.Any(c =>
+                c.Language.Equals(baseCode, StringComparison.OrdinalIgnoreCase)
+                && c.Word.Equals(w, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// English, including a regioned form (<c>en-US</c>), or unknown: null, empty, whitespace and
+    /// <c>auto</c> — the detected language never reaches this stage. Trimmed and case-insensitive,
+    /// like every other language comparison in the app (an imported <c>"NL"</c> is not English).
+    /// </summary>
+    internal static bool IsEnglishOrUnknown(string? language)
     {
         if (string.IsNullOrWhiteSpace(language))
             return true;
@@ -64,8 +98,8 @@ public sealed class FillerWordManager
     }
 
     /// <summary>
-    /// Remove the configured fillers from <paramref name="text"/> when the stage applies to
-    /// <paramref name="language"/> (see <see cref="AppliesTo"/>; null = unknown = applies).
+    /// Remove the fillers that apply to <paramref name="language"/> from <paramref name="text"/>
+    /// (see <see cref="EffectiveWords"/>; null = unknown).
     /// </summary>
     public string Filter(string text, string? language = null)
     {
@@ -76,13 +110,14 @@ public sealed class FillerWordManager
         if (!removeFillers)
             return text;
 
-        if (!AppliesTo(language))
+        var words = EffectiveWords(language,
+            _settings.GetString(AppDefaults.FillerWords, AppDefaults.DefaultFillerWords));
+        if (words.Length == 0)
         {
             Logger.Debug("Filler removal skipped for recognition language {Language}", language);
             return text;
         }
-
-        var wordList = _settings.GetString(AppDefaults.FillerWords, AppDefaults.DefaultFillerWords);
+        var wordList = string.Join(",", words);
 
         Regex? regex;
         lock (_regexLock)

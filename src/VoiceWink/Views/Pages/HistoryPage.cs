@@ -1560,7 +1560,7 @@ public sealed class HistoryPage : Page
         _detailImageNote!.Visibility = Visibility.Collapsed;
         var modelInfo = ModelDisplayName.ResolveForHistory(t.ModelName);
         if (!string.IsNullOrEmpty(t.EnhancementModelName))
-            modelInfo += $"  \u2192  {t.EnhancementModelName}";
+            modelInfo += $"  \u2192  {EngineModelLabel.ForHistory(t.EnhancementModelName)}";
         // Image generation items: always show all three knobs with explicit labels so the user
         // can see the full configuration that produced the image, with "Auto" for any unset slot.
         // IsNullOrWhiteSpace (not IsNullOrEmpty) so a corrupt all-whitespace persisted value

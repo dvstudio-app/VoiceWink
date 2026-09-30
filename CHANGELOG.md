@@ -17,6 +17,14 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.104.400] - 2026-09-30
+
+- AI enhancement's built-in engine is now called VoiceWink Engine, leads the provider list, and is the default on new installs.
+- VoiceWink Engine's models are picked and downloaded right in the Text Enhancement card, with the best model for your PC first.
+- VoiceWink Engine models show their names, not file ids, in every model list and in History.
+- Filler sounds like "uh" and "hmm" are now removed in every language, not only English.
+- The Log Viewer has a search box (Ctrl+F) that searches all saved logs.
+
 ## [1.103.399] - 2026-09-30
 
 - AI enhancement can run on this PC: choose "On this PC" as the provider and download a model. No API key needed.

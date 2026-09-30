@@ -1,3 +1,4 @@
+using Microsoft.UI;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -8,43 +9,60 @@ using VoiceWink.Services.Transcription;
 namespace VoiceWink.Views.Pages;
 
 /// <summary>
-/// LAI-3: the AI Enhancement page's "Local AI models" card — one row per
-/// <see cref="LocalModelCatalog"/> model with its size, its note, a "Recommended" tag on the tier
-/// <see cref="LocalModelRecommendation"/> picks for this PC, the floor a row sits below, and
-/// Download ⇄ Cancel / Delete. The page only hosts it (shown while "On this PC" is the text
-/// provider, behind <see cref="OnThisPcAvailability.IsOffered"/>); every decision lives in the
-/// catalog, the store, the recommendation and — LAI-4 — the engine host, which runs a finished
-/// download's first-use check and stops the engine before a delete. Only plain controls the page already renders (Border, Grid, StackPanel,
-/// TextBlock, ProgressBar) — no templated WinUI control this CLI build has not proven.
+/// The VoiceWink Engine's model rows, shown INSIDE the Text Enhancement card in place of the Model
+/// dropdown while that provider is selected (owner, 2026-09-30 — the separate "Local AI models" card
+/// read as disconnected from the choice it serves). Rows follow the Models page: name and size, the
+/// Accuracy / Speed stars, and Download ⇄ Cancel, Select / Active, Delete.
+/// <para>The model <see cref="LocalModelRecommendation"/> picks for this PC comes first, tagged "Best
+/// for this PC"; the others follow under "Other models". Every decision lives in the catalog, the
+/// store, the recommendation and the engine host — a finished download starts its first-use check,
+/// a delete stops the engine first. Only plain controls the page already renders (Border, Grid,
+/// StackPanel, TextBlock, ProgressBar).</para>
 /// </summary>
 internal static class LocalModelsSection
 {
+    /// <param name="isSelected">Whether a model id is the provider's selected model.</param>
+    /// <param name="select">Makes an installed model the selected one.</param>
+    /// <param name="changed">A download finished or a model was deleted.</param>
     internal static UIElement Build(LocalModelStore store, LocalHardwareProfile profile,
-        OnThisPcEngine? engine = null, Action? installedChanged = null)
+        Func<string, bool> isSelected, Action<string> select,
+        OnThisPcEngine? engine = null, Action? changed = null)
     {
         var recommended = LocalModelRecommendation.Recommend(profile);
-        var rows = new StackPanel { Spacing = 12 };
-        rows.Children.Add(AppTheme.CreateSectionHeader("Local AI models"));
-        rows.Children.Add(new TextBlock
+        var rows = new StackPanel { Spacing = 4 };
+        if (recommended is null)
         {
-            Text = recommended is not null ? "Runs AI enhancement on this PC."
-                : profile.TotalRamBytes is null ? "Runs AI enhancement on this PC. This PC's memory could not be read."
-                : "Runs AI enhancement on this PC. This PC has too little memory for a local model.",
-            Foreground = AppTheme.Brush(AppTheme.TextSecondary),
-            TextWrapping = TextWrapping.Wrap,
-        });
-        foreach (var entry in LocalModelCatalog.All)
-        {
-            rows.Children.Add(BuildRow(store, engine, installedChanged, entry, entry.Tier == recommended,
-                LocalModelRecommendation.FloorNote(entry.Tier, profile)));
+            rows.Children.Add(Caption(profile.TotalRamBytes is null
+                ? "This PC's memory could not be read."
+                : "This PC has too little memory for a local model.", AppTheme.WarningText));
         }
-        return AppTheme.CreateCard(rows);
+
+        var ordered = LocalModelCatalog.All.OrderBy(e => e.Tier == recommended ? 0 : 1).ToList();
+        for (var i = 0; i < ordered.Count; i++)
+        {
+            var entry = ordered[i];
+            if (recommended is not null && i == 1)
+                rows.Children.Add(Caption("Other models", AppTheme.SubtleText));
+            rows.Children.Add(BuildRow(store, engine, changed, entry, entry.Tier == recommended,
+                LocalModelRecommendation.FloorNote(entry.Tier, profile), isSelected, select));
+        }
+        return rows;
     }
 
-    private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action? installedChanged,
-        LocalModelEntry entry, bool isRecommended, string? floorNote)
+    private static TextBlock Caption(string text, Windows.UI.Color color) => new()
     {
-        var title = new TextBlock { FontWeight = FontWeights.SemiBold, Foreground = AppTheme.Brush(AppTheme.TextPrimary) };
+        Text = text,
+        FontSize = 12,
+        Foreground = AppTheme.Brush(color),
+        TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(0, 6, 0, 0),
+    };
+
+    private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action? changed,
+        LocalModelEntry entry, bool isRecommended, string? floorNote,
+        Func<string, bool> isSelected, Action<string> select)
+    {
+        var title = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = AppTheme.Brush(AppTheme.TextPrimary) };
         title.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = $"{entry.DisplayName}  " });
         title.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
         {
@@ -56,27 +74,52 @@ internal static class LocalModelsSection
         {
             title.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
             {
-                Text = "  Recommended",
+                Text = "  Best for this PC",
                 Foreground = AppTheme.Brush(AppTheme.AccentGreen),
             });
         }
 
-        var text = new StackPanel { Spacing = 2 };
+        var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(title);
-        text.Children.Add(new TextBlock { Text = entry.Note, Foreground = AppTheme.Brush(AppTheme.TextSecondary), TextWrapping = TextWrapping.Wrap });
+        text.Children.Add(new TextBlock
+        {
+            Text = $"Accuracy {ModelRatings.Stars(entry.Accuracy)} · Speed {ModelRatings.Stars(entry.Speed)}",
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.DimText),
+        });
         if (floorNote is not null)
         {
-            text.Children.Add(new TextBlock { Text = floorNote, Foreground = AppTheme.Brush(AppTheme.WarningText), TextWrapping = TextWrapping.Wrap });
+            text.Children.Add(new TextBlock { Text = floorNote, FontSize = 12, Foreground = AppTheme.Brush(AppTheme.WarningText), TextWrapping = TextWrapping.Wrap });
         }
-        var status = new TextBlock { Foreground = AppTheme.Brush(AppTheme.FailureText), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+        var status = new TextBlock { FontSize = 12, Foreground = AppTheme.Brush(AppTheme.FailureText), TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         var progress = new ProgressBar { Minimum = 0, Maximum = 1, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 4, 0, 0) };
         text.Children.Add(progress);
         text.Children.Add(status);
 
         var download = AppTheme.CreateActionToggleButton("Download", "Cancel");
+        var selectBtn = AppTheme.CreateCompactButton("Select");
+        selectBtn.MinWidth = 80;
+        var active = new Border
+        {
+            Background = AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88)),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(10, 4, 10, 4),
+            MinWidth = 80,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock
+            {
+                Text = "Active",
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+                HorizontalAlignment = HorizontalAlignment.Center,
+            },
+        };
         var delete = AppTheme.CreateCompactButton("Delete", isDanger: true);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         buttons.Children.Add(download.Element);
+        buttons.Children.Add(selectBtn);
+        buttons.Children.Add(active);
         buttons.Children.Add(delete);
 
         // The running download lives in the store, not here: the page rebuilds its rows, and a
@@ -85,7 +128,10 @@ internal static class LocalModelsSection
         void Render()
         {
             var installed = store.IsInstalled(entry.Id);
+            var chosen = installed && isSelected(entry.Id);
             download.Element.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+            selectBtn.Visibility = installed && !chosen ? Visibility.Visible : Visibility.Collapsed;
+            active.Visibility = chosen ? Visibility.Visible : Visibility.Collapsed;
             delete.Visibility = installed ? Visibility.Visible : Visibility.Collapsed;
         }
 
@@ -115,7 +161,7 @@ internal static class LocalModelsSection
                 {
                     // LAI-4: the first-use check runs now, not on the first dictation.
                     engine?.StartFirstUseCheck(entry.Id);
-                    installedChanged?.Invoke();
+                    changed?.Invoke();
                 }
             }
             catch (OperationCanceledException) when (attempt.IsCancellationRequested)
@@ -158,6 +204,12 @@ internal static class LocalModelsSection
             Watch(store.StartDownload(entry.Id));
         };
 
+        selectBtn.Tapped += (_, _) =>
+        {
+            select(entry.Id);
+            Render();
+        };
+
         delete.Tapped += async (_, _) =>
         {
             var dialog = new ContentDialog
@@ -179,7 +231,7 @@ internal static class LocalModelsSection
                 : await Task.Run(() => engine.DeleteModelAsync(entry.Id, () => store.Delete(entry.Id)));
             ShowStatus(gone ? null : "Couldn't delete — the file is in use.");
             Render();
-            installedChanged?.Invoke();
+            changed?.Invoke();
         };
 
         Render();
@@ -193,7 +245,14 @@ internal static class LocalModelsSection
         Grid.SetColumn(buttons, 1);
         grid.Children.Add(text);
         grid.Children.Add(buttons);
-        return grid;
+        // The Models page's row separator.
+        return new Border
+        {
+            BorderBrush = AppTheme.Brush(AppTheme.CardBorderColor),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(0, 8, 0, 4),
+            Child = grid,
+        };
     }
 
     /// <summary>Decimal gigabytes with one decimal ("2.7 GB"), what download sizes are quoted in.</summary>

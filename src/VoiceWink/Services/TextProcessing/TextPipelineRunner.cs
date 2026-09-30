@@ -43,7 +43,7 @@ public sealed class TextPipelineRunner
     /// REQUESTED one (<c>en</c>, <c>nl</c>, <c>auto</c>…), never the effective one the engine was
     /// handed: Parakeet auto-detects only, so its effective language is <c>auto</c> for every
     /// attempt, which would re-apply the English list to a German recording. Null when the
-    /// caller has none. Only the filler stage reads it (<see cref="FillerWordManager.AppliesTo"/>);
+    /// caller has none. Only the filler stage reads it (<see cref="FillerWordManager.EffectiveWords"/>);
     /// null and <c>auto</c> both mean "unknown, apply".</param>
     public string Run(string rawText, string? language = null)
     {

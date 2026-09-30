@@ -3296,6 +3296,16 @@ public sealed class OnboardingPage : Page
             App.Services.GetRequiredService<Services.System.AutostartRegistrationService>()
                 .Apply(_settings.GetBool(AppDefaults.LaunchAtLogin, true));
 
+            // A new install starts on VoiceWink Engine when no provider was chosen here (owner,
+            // 2026-09-30). Only a FIRST finish: a relaunched wizard already has the completion key.
+            if (AiProviderDefaultSeed.ForNewInstall(
+                    !_settings.Contains(AppDefaults.HasCompletedOnboarding),
+                    _settings.Contains(AppDefaults.AiProvider),
+                    Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered) is { } seeded)
+            {
+                _settings.SetString(AppDefaults.AiProvider, seeded.ToString());
+            }
+
             _settings.SetBool(AppDefaults.HasCompletedOnboarding, true);
             OnboardingCompleted?.Invoke();
         };

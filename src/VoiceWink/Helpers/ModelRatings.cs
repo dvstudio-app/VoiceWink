@@ -779,7 +779,7 @@ internal static class ModelRatings
         return !string.IsNullOrEmpty(model) && ByModel.TryGetValue(model, out var rating) ? rating : null;
     }
 
-    private static string Stars(int filled) => new string('★', filled) + new string('☆', 5 - filled);
+    internal static string Stars(int filled) => new string('★', filled) + new string('☆', 5 - filled);
 
     /// <summary>The Models-page row subtitle. Format is unchanged from the hand-written version
     /// — TRN-3 moved where the stars come from, not how they look.

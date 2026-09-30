@@ -14,7 +14,12 @@ namespace VoiceWink.Services.AIEnhancement;
 public static class AIProviderDisplay
 {
     public const string LocalServerLabel = "Local server";
-    public const string OnThisPcLabel = "On this PC";
+    public const string OnThisPcLabel = "VoiceWink Engine";
+
+    /// <summary>What <see cref="AIProvider.OnThisPc"/> was called until 2026-09-30. Settings, history
+    /// labels and logs store the member name, so nothing persisted carries it; it still parses so a
+    /// label read from anywhere older resolves instead of failing.</summary>
+    internal const string LegacyOnThisPcLabel = "On this PC";
 
     public static string Label(AIProvider provider)
         => provider switch
@@ -31,7 +36,8 @@ public static class AIProviderDisplay
             provider = AIProvider.LocalServer;
             return true;
         }
-        if (string.Equals(label, OnThisPcLabel, StringComparison.Ordinal))
+        if (string.Equals(label, OnThisPcLabel, StringComparison.Ordinal)
+            || string.Equals(label, LegacyOnThisPcLabel, StringComparison.Ordinal))
         {
             provider = AIProvider.OnThisPc;
             return true;

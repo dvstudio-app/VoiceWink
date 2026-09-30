@@ -63,10 +63,12 @@ public partial class EnhancementViewModel : ObservableObject
     private CancellationTokenSource? _fetchImageCts; // cancel stale image model fetches
     private const string MaskedKeyPlaceholder = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
 
-    /// <summary>Every provider a combo offers — "On this PC" only where
-    /// <see cref="Services.AIEnhancement.LocalEngine.OnThisPcAvailability"/> offers it.</summary>
-    public static AIProvider[] AvailableProviders => Enum.GetValues<AIProvider>()
-        .Where(p => p != AIProvider.OnThisPc || Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered)
+    /// <summary>Every provider a combo offers, in the order it shows them — VoiceWink Engine
+    /// ("On this PC") first where <see cref="Services.AIEnhancement.LocalEngine.OnThisPcAvailability"/>
+    /// offers it, then Local server, then the cloud providers in enum order
+    /// (<see cref="Helpers.ProviderListLayout"/> groups them).</summary>
+    public static AIProvider[] AvailableProviders => Helpers.ProviderListLayout.Ordered(Enum.GetValues<AIProvider>()
+        .Where(p => p != AIProvider.OnThisPc || Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered))
         .ToArray();
 
     /// <summary>
