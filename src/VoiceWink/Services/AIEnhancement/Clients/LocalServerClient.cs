@@ -41,7 +41,31 @@ internal sealed class LocalServerClient
         _config = config;
     }
 
-    public Task<string> EnhanceAsync(string systemPrompt, string userText, CancellationToken ct)
+    /// <summary>
+    /// One automatic retry on a server error (HTTP 5xx). The incident (2026-09-29): a graphics
+    /// driver update mid-session killed Ollama's model process, the next dictation got HTTP 500
+    /// ("connection forcibly closed"), and Ollama starts a fresh model process on the next request.
+    /// Safe to repeat because the server is the user's own — nothing is billed. Once only, inside the
+    /// caller's deadline; a refused connection, a 4xx and a malformed reply are not retried.
+    /// </summary>
+    public async Task<string> EnhanceAsync(string systemPrompt, string userText, CancellationToken ct)
+    {
+        try
+        {
+            return await EnhanceOnceAsync(systemPrompt, userText, ct).ConfigureAwait(false);
+        }
+        // Caught UNCONDITIONALLY, cancellation checked inside: a stop-to-skip or supersede that lands
+        // with the 5xx must surface as the cancellation it is, never as "AI enhancement failed".
+        catch (ProviderApiException ex) when ((int?)ex.StatusCode is >= 500 and <= 599)
+        {
+            ct.ThrowIfCancellationRequested();
+            Logger.Warning("Local server answered HTTP {Status} - retrying once", (int)ex.StatusCode!);
+        }
+        ct.ThrowIfCancellationRequested();
+        return await EnhanceOnceAsync(systemPrompt, userText, ct).ConfigureAwait(false);
+    }
+
+    private Task<string> EnhanceOnceAsync(string systemPrompt, string userText, CancellationToken ct)
         => _config.LocalApi == LocalServerApi.Ollama
             ? OllamaChatAsync(systemPrompt, userText, ct)
             // The OpenAI-compatible body is the generic one OpenAICompatibleClient already builds

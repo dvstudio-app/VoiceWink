@@ -9,6 +9,33 @@ namespace VoiceWink.Helpers;
 /// </summary>
 internal static class NativeInterop
 {
+    // --- Physical memory (LAI-3 local-model tier recommendation) ---
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    /// <summary>Installed RAM in KiB, from the firmware tables — the round figure a PC is sold with
+    /// (16 GB reads 16,777,216 KiB), where <see cref="GlobalMemoryStatusEx"/> reports what Windows can
+    /// use, a little less.</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetPhysicallyInstalledSystemMemory(out ulong totalMemoryInKilobytes);
+
     // --- Final-path resolution (ENH-6 reference-image trust boundary) ---
     // GetFinalPathNameByHandle resolves every reparse point (junction/symlink) in the
     // OPENED handle's path, so containment can be verified against what the kernel

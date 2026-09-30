@@ -25,6 +25,8 @@
     # The certificate's COMMON NAME, decoded from DER and compared whole-value by the post-pack
     # signing gate (check-pack-signatures, since 2026-09-02) - vpk leaves this validly signed
     # file intact, so the pack must carry exactly this signer and exactly the Sha256 below.
+    # src/VoiceWink/Services/AIEnhancement/LocalEngine/LlamaServerPayload.cs pins the Sha256 below a
+    # second time (the llama-server spawn gate's copy); a parity test fails when the two differ.
     # SignerOrg above is what the pre-pack gate matches against the display subject; the two are
     # equal for LunarG today and the gates must not silently depend on that, hence both keys.
     SignerCommonName = 'LunarG, Inc.'

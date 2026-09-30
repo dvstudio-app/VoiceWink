@@ -44,7 +44,7 @@ public class CustomPrompt
 
     /// <summary>
     /// When true, the transcription is sent to an image generation API instead of text enhancement.
-    /// The generated image is placed on the clipboard and pasted.
+    /// The generated image is copied to the clipboard (never pasted).
     /// </summary>
     public bool IsImageGeneration { get; set; }
 

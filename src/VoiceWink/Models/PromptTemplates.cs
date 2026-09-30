@@ -159,7 +159,7 @@ public static class PromptTemplates
         Title = "Generate Image",
         PromptText = "Generate an image based on the user's description.",
         Icon = "E8B9",    // photo
-        Description = "Generates an image from your voice description and pastes it",
+        Description = "Generates an image from your voice description and copies it to the clipboard",
         DefaultTriggerWords = ["generate an image", "create an image", "generate image", "create image"],
         IsImageGeneration = true,
         AskImageSize = true

@@ -69,7 +69,13 @@ internal readonly record struct GpuSelfTestRecord(GpuSelfTestOutcome Outcome, st
 /// own marker instance already reads the fresh state.</para>
 ///
 /// <para>Failures read as "not warmed" / "no verdict" and writes are best-effort — a marker that
-/// cannot be written costs one redundant warm-up next launch, never capability. The file lives
+/// cannot be written costs one redundant warm-up next launch, never capability. A TRANSIENT
+/// file-system fault (a sharing violation or access denial — an on-access scanner briefly holding
+/// the file just written) is retried a few times before either gives up (<see cref="TransientFileRetry"/>),
+/// and a write whose read of the EXISTING file faults gives up rather than persisting a fresh
+/// state: that read standing in for "no file" would have erased the other engine's verdict,
+/// including a CPU pin (2026-09-29 — found when a re-arm write was silently dropped in a test run
+/// on the owner's laptop, ~1 run in 50 at the time, never captured again in ~450). The file lives
 /// beside settings.json and deliberately outside it: warm-up and self-test state are per-machine
 /// cache bookkeeping about THIS driver, not a user preference, so they must not ride settings
 /// export/import or reset.</para>
@@ -134,6 +140,13 @@ internal sealed class GpuWarmupMarker
     /// launch thread, strictly before the warm-up's instance exists or any warm-up task is
     /// queued — so the two instances never write concurrently; the lock stays per instance.</summary>
     private readonly object _writeLock = new();
+
+    /// <summary>The wait before retry <c>n</c> (1-based) of a transient fault (see the class doc;
+    /// <see cref="TransientFileRetry"/>). A test seam: production sleeps; a test uses it to release
+    /// a lock it holds, which makes the retry path deterministic. A file that stays unreadable but
+    /// replaceable (a deny-read ACL) refuses every write rather than being overwritten fresh: the
+    /// next launch re-warms, as for any unwritable marker.</summary>
+    internal Action<int> Backoff { get; init; } = TransientFileRetry.DefaultBackoff;
 
     /// <param name="driverSignature">TRN-63: the live display driver signature
     /// (<see cref="DisplayDriverSignature.Read"/>), or null when it could not be read — null
@@ -363,14 +376,40 @@ internal sealed class GpuWarmupMarker
     {
         try
         {
-            if (!File.Exists(_path)) return null;
-            return global::System.Text.Json.JsonSerializer.Deserialize<State>(File.ReadAllText(_path));
+            return RetryTransient(ReadRawOrThrow);
         }
         catch
         {
             return null;
         }
     }
+
+    /// <summary>One read attempt: null when there is no file or its content does not parse (a
+    /// torn or hand-edited file resets, by design), but a file-system fault THROWS — the write
+    /// path must tell "nothing to keep" from "could not look" (see the class doc).</summary>
+    private State? ReadRawOrThrow()
+    {
+        if (!File.Exists(_path)) return null;
+        string text;
+        try
+        {
+            text = File.ReadAllText(_path);
+        }
+        catch (FileNotFoundException)
+        {
+            return null; // removed since the check: there is nothing to keep
+        }
+        try
+        {
+            return global::System.Text.Json.JsonSerializer.Deserialize<State>(text);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private T RetryTransient<T>(Func<T> attempt) => TransientFileRetry.Run(attempt, Backoff);
 
     /// <summary>TRN-63: both signatures known and different. A null on either side is "nothing
     /// known" and never a change — the direction that keeps a persisted verdict. The persisted
@@ -398,9 +437,12 @@ internal sealed class GpuWarmupMarker
 
     private State Fresh() => new() { AppVersion = _appVersion, DriverSignature = _driverSignature };
 
-    private State Read()
+    private State Read() => Current(ReadRaw());
+
+    /// <summary>The state this instance honours: <paramref name="state"/> when it was written by
+    /// this app version under the same driver, a fresh one otherwise.</summary>
+    private State Current(State? state)
     {
-        var state = ReadRaw();
         if (state is null || !string.Equals(state.AppVersion, _appVersion, StringComparison.Ordinal))
         {
             // A different app version's warm-ups and verdicts do not count — see the class doc.
@@ -424,21 +466,28 @@ internal sealed class GpuWarmupMarker
         {
             lock (_writeLock)
             {
-                var state = Read();
-                state.AppVersion = _appVersion;
-                // TRN-63: a readable signature is always persisted; an unreadable one (null)
-                // leaves the file's signature alone rather than erasing what a later, readable
-                // start would compare against — within the same app version: a version reset
-                // (Read returned Fresh) has already discarded everything the signature protected.
-                if (_driverSignature is not null) state.DriverSignature = _driverSignature;
-                mutate(state);
-                // Write-then-move so a kill mid-write cannot leave a torn file that discards a
-                // previously recorded flag (torn JSON reads as "nothing warmed, no verdict").
-                var tmp = _path + ".tmp";
-                File.WriteAllText(tmp, global::System.Text.Json.JsonSerializer.Serialize(state));
-                File.Move(tmp, _path, overwrite: true);
+                // The whole read-modify-write is the retried unit: every attempt re-reads, so a
+                // retry never persists a state read before the fault.
+                return RetryTransient(() =>
+                {
+                    // ReadRawOrThrow, never ReadRaw: a read that FAULTED must abandon the write —
+                    // treating it as "no file" would persist a fresh state over the real one.
+                    var state = Current(ReadRawOrThrow());
+                    state.AppVersion = _appVersion;
+                    // TRN-63: a readable signature is always persisted; an unreadable one (null)
+                    // leaves the file's signature alone rather than erasing what a later, readable
+                    // start would compare against — within the same app version: a version reset
+                    // (Current returned Fresh) has already discarded everything the signature protected.
+                    if (_driverSignature is not null) state.DriverSignature = _driverSignature;
+                    mutate(state);
+                    // Write-then-move so a kill mid-write cannot leave a torn file that discards a
+                    // previously recorded flag (torn JSON reads as "nothing warmed, no verdict").
+                    var tmp = _path + ".tmp";
+                    File.WriteAllText(tmp, global::System.Text.Json.JsonSerializer.Serialize(state));
+                    File.Move(tmp, _path, overwrite: true);
+                    return true;
+                });
             }
-            return true;
         }
         catch
         {

@@ -23,11 +23,6 @@ internal enum PasteAttemptOutcome
     /// tabs, so hwnd/pid/tid checks all pass). Content kept on clipboard.</summary>
     FocusMovedInTarget,
     SendInputFailed,
-    /// <summary>IMG-BG: the caller's proceed gate tripped mid-sequence — a recording
-    /// started while the background image job's paste was between its clipboard write
-    /// and Ctrl+V. The image stays on the clipboard; forcing focus + injecting Ctrl+V
-    /// during the user's live dictation would be a wrong-window paste by construction.</summary>
-    AbortedByRecordingStart,
     /// <summary>PST-6, reduced by PST-16: Ctrl+V was dispatched but delivery could not be
     /// CONFIRMED — never presented as success (no Enter, no deferred clipboard restore).
     /// Text kept on clipboard (asserted postcondition).
@@ -88,7 +83,7 @@ internal static class PasteResultPresentation
     /// text") until the 2026-07-25 copy review — one situation, one sentence shape.</summary>
     public const string ClipboardFailedMessage = "Couldn't copy the text to the clipboard";
 
-    // Cause-first decline copy, shared by the text and image paste paths (ClipboardService).
+    // Cause-first decline copy for the text paste path (ClipboardService).
     // Invariants: cause first, then the one calm action; never the word "failed"/"error"
     // (declines are normal Windows behavior, not malfunctions); ≤ 55 chars — the pill's
     // truncation cap (MiniRecorderWindow / TruncateForMiniRecorder).
@@ -98,7 +93,6 @@ internal static class PasteResultPresentation
     public const string NoTextBoxMessage = "No text box focused — paste from clipboard with Ctrl+V";
     public const string FocusMovedMessage = "Focus moved — paste from clipboard with Ctrl+V";
     public const string KeystrokeBlockedMessage = "Keystroke blocked — paste from clipboard with Ctrl+V";
-    public const string RecordingStartedMessage = "Recording started — paste from clipboard with Ctrl+V";
     // PST-6 delivery decline (the check asserted the clipboard before this shows).
     // PST-16: the ONE delivery-decline string. It must never assert that the text is absent —
     // the readback lags, so a paste that landed can look missing, and "it didn't appear" would
@@ -879,10 +873,9 @@ internal static class NoEditableFocusGate
                     // the DOM-depth SetFocus, Win32 targets don't.
                     //
                     // PST-7: this arm deliberately does NOT recapture on any result,
-                    // including ElementUnavailable — preserving today's behaviour exactly,
-                    // because this function is SHARED with the image paste path (Codex plan
-                    // round 2: adding a recapture here would change image behaviour even
-                    // with probePostRestoreIdentity null).
+                    // including ElementUnavailable — preserving the behaviour it had while it
+                    // was shared with the image paste path, since removed (Codex plan round 2:
+                    // a recapture here is a behaviour change of its own, out of scope).
                     var matchDirect = restore.RestoreDirect();
                     var restoredOk = matchDirect == RestoreFocusResult.Success;
                     return new IdentityVerifiedRestoreResult(

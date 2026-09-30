@@ -29,6 +29,9 @@
 #   - scripts/check-vcredist-payload.ps1 (the fail-closed release gate) verifies
 #     the DLLs shipped in the publish/portable output match (SHA256 is the
 #     strong identity anchor; signer Org + PE machine are belt-and-suspenders).
+#   - src/VoiceWink/Services/AIEnhancement/LocalEngine/LlamaServerPayload.cs pins
+#     the msvcp140 / vcruntime140 / vcruntime140_1 hashes a second time (the
+#     llama-server spawn gate's copies); a parity test fails when the two differ.
 #
 # REFRESH CHECKLIST (when -CheckOnly reports a newer runtime, or a VC++ CVE lands)
 #   1. Update RedistVersion + the comment date below.

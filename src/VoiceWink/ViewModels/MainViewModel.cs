@@ -276,7 +276,6 @@ public partial class MainViewModel : ObservableObject
     /// contention and must never run on the recording-start hot path).
     /// </summary>
     private PasteTargetSnapshot? _pasteTargetSnapshot;
-    private static readonly TimeSpan ImagePasteFreshnessWindow = TimeSpan.FromSeconds(10);
     /// <summary>
     /// UIA element that had keyboard focus at recording-start (or redo-time).
     /// Captured so we can restore focus to the same DOM element before
@@ -1333,12 +1332,9 @@ public partial class MainViewModel : ObservableObject
     // ─────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Immutable dispatch snapshot for one background image generation. Target-window data and
-    /// the focus element are captured at dispatch because a new recording overwrites
-    /// <c>_targetWindowHandle</c>/<c>_targetWindowCapturedAtUtc</c>/<c>_pasteTargetSnapshot</c>
-    /// and steals the focus slot the moment the pipeline is idle again. The job OWNS
-    /// <paramref name="FocusedElement"/> (detached via <see cref="CapturedFocusSlot.TakeForHandoffAsync"/>)
-    /// and releases it itself; <paramref name="ReferenceLease"/> is the ENH-6e in-flight claim
+    /// Immutable dispatch snapshot for one background image generation. It carries no target
+    /// window and no focus element: a generated image is copied to the clipboard, never
+    /// pasted (owner, 2026-09-29). <paramref name="ReferenceLease"/> is the ENH-6e in-flight claim
     /// over the SOURCE reference files (generation read + failed-attempt re-read), job-body
     /// scoped — the fresh-copy claims made at persist time transfer to the pending
     /// presentation instead.
@@ -1365,13 +1361,9 @@ public partial class MainViewModel : ObservableObject
         bool WasPushToTalk,
         bool IsNewGeneration,
         // IMG-3: how many versions this job generates (pre-clamped at dispatch via
-        // ImageBatchPolicy.ClampCount). Count > 1 ships FocusedElement = null — a batch
-        // never pastes, so no cross-process RCW is held through it.
+        // ImageBatchPolicy.ClampCount). No target window or focus element rides the job:
+        // a generated image goes to the clipboard only, never pasted (owner, 2026-09-29).
         int Count,
-        IntPtr TargetWindow,
-        DateTime TargetCapturedAtUtc,
-        PasteTargetSnapshot? TargetSnapshot,
-        Helpers.UiaFocusBridge.IUIAutomationElement? FocusedElement,
         IDisposable? ReferenceLease);
 
     /// <summary>
@@ -1787,26 +1779,25 @@ public partial class MainViewModel : ObservableObject
                 persistFailedItemAsync: (_, ex) =>
                     WriteFailedImageRowAsync(req, SanitizeReferencesAfterFailure(req.References, ex)),
                 persistFailedMarkerAsync: ex => PersistFailedImageMarkerAsync(req, ex),
-                pasteAsync: async () =>
+                copyAsync: async () =>
                 {
-                    // Clipboard/paste LAST, immediately before the presentation is queued
-                    // (Codex diff review round 1): nothing can overwrite the clipboard
-                    // between this write and the "Image on clipboard" announcement except
-                    // a genuinely-later user action. N=1 only — a batch never pastes.
-                    var imagePaste = await PasteImageWithFocusRestoreAsync(
-                        lastGeneration!.ImageBytes, req.TargetWindow, req.FocusedElement,
-                        req.TargetCapturedAtUtc, req.TargetSnapshot);
-                    return ResolveImagePasteRedoPresentation(imagePaste);
+                    // Clipboard LAST, immediately before the presentation is queued (Codex
+                    // diff review round 1): nothing can overwrite the clipboard between this
+                    // write and the "Image on clipboard" announcement except a genuinely-later
+                    // user action. N=1 only — a batch never touches the clipboard. Never
+                    // pasted (owner, 2026-09-29): the image is copied and the user pastes it.
+                    var copied = await CopyImageToClipboardOnlyAsync(lastGeneration!.ImageBytes);
+                    return ResolveImageCopyPresentation(copied);
                 },
-                composeAndQueueAsync: (result, marker, pasteDerived, terminalRearm, claims) =>
+                composeAndQueueAsync: (result, marker, copyDerived, terminalRearm, claims) =>
                 {
                     var composition = ComposeBatchCompletion(
                         result.Reason, result.Completed, req.Count,
                         req.Text, req.Prompt, req.ResolvedProvider, req.ResolvedModel,
                         req.References, req.TranscriptionModelName, req.Language,
-                        req.TargetWindow, req.WasPushToTalk, req.IsNewGeneration,
+                        req.WasPushToTalk, req.IsNewGeneration,
                         lastCommitted, result.Failure,
-                        marker?.MarkerRowId, marker?.RearmSelections, terminalRearm, pasteDerived);
+                        marker?.MarkerRowId, marker?.RearmSelections, terminalRearm, copyDerived);
                     QueueImageCompletionPresentation(new PendingImageCompletion
                     {
                         Epoch = _presentationEpoch,
@@ -1841,13 +1832,9 @@ public partial class MainViewModel : ObservableObject
         }
         finally
         {
-            // The job owns the handed-off RCW (TakeForHandoffAsync detached it from the slot;
-            // null for a batch — see the dispatch sites); the paste path only borrows. Release
-            // through the bridge worker, never inline. The reference lease is deliberately NOT
-            // touched here: it joined the executor's claims list at entry and lives or dies
-            // with that single owner (Codex round 3 — a second alias double-disposes).
-            if (req.FocusedElement != null)
-                Helpers.UiaFocusBridge.EnqueueRelease(req.FocusedElement);
+            // Nothing to release here: no focus element rides the job, and the reference lease
+            // joined the executor's claims list at entry and lives or dies with that single
+            // owner (Codex round 3 — a second alias double-disposes).
         }
     }
 
@@ -2757,7 +2744,7 @@ public partial class MainViewModel : ObservableObject
 
         // IMG-BG: one image job at a time (owner decision 2026-07-16). Refuse the IMAGE-
         // flavored picker while a job runs — text redo is never job-gated. Check-then-recheck:
-        // DispatchImageRedoAsync re-reserves at dispatch, so a job starting while the dialog
+        // DispatchImageRedo re-reserves at dispatch, so a job starting while the dialog
         // sits open is still refused there.
         if (ctx.WasImageGeneration && _imageJob.IsRunning)
         {
@@ -2881,7 +2868,7 @@ public partial class MainViewModel : ObservableObject
         // F19 refusal above. Text redo continues below, unchanged and never job-gated.
         if (ctx.WasImageGeneration)
         {
-            await DispatchImageRedoAsync(ctx, modelId, providerOverride);
+            DispatchImageRedo(ctx, modelId, providerOverride);
             return;
         }
 
@@ -2934,8 +2921,8 @@ public partial class MainViewModel : ObservableObject
             // THE RULE: "Done" means delivery is CERTAIN — the paste landed. Every outcome
             // that only reached the clipboard keeps naming the destination ("Text copied" in
             // the no-target branch below, "Image on clipboard"), because there the wording is
-            // the user's only hint that a manual Ctrl+V is still needed. So exactly the two
-            // Pasted arms say "Done" — this one and ResolveImagePasteRedoPresentation's.
+            // the user's only hint that a manual Ctrl+V is still needed. So exactly one arm
+            // says "Done" — this one (a generated image is never pasted, so it never does).
             //
             // Keep this, the plain-success branch, and the ResolvePostPasteRedoPresentation
             // default in step.
@@ -3184,12 +3171,12 @@ public partial class MainViewModel : ObservableObject
     /// IMG-BG: dispatch an image redo/regenerate/new-image to the background job. Order is
     /// load-bearing (Codex plan round 2): RESERVE first — a refusal leaves the armed redo and
     /// the focus slot untouched — then transfer resources (in-flight lease BEFORE
-    /// ClearRedoState releases the armed claims, gapless ENH-6e handoff; focus element via
-    /// slot handoff), then Start. The job's own CTS replaces the old `_transcriptionCts`
+    /// ClearRedoState releases the armed claims, gapless ENH-6e handoff; any redo focus
+    /// capture released owner-scoped — an image is never pasted), then Start. The job's own CTS replaces the old `_transcriptionCts`
     /// reset — a subsequent recording can no longer cancel/dispose the token under a running
     /// generation.
     /// </summary>
-    private async Task DispatchImageRedoAsync(RedoContext ctx, string modelId, AIProvider? providerOverride)
+    private void DispatchImageRedo(RedoContext ctx, string modelId, AIProvider? providerOverride)
     {
         var reservation = _imageJob.TryReserve();
         if (reservation == null)
@@ -3209,27 +3196,18 @@ public partial class MainViewModel : ObservableObject
                 reservation))
             return;
 
-        Helpers.UiaFocusBridge.IUIAutomationElement? focusedElement = null;
         IDisposable? referenceLease = null;
         try
         {
             referenceLease = _referencePersistence.BeginInFlightLiveReferences(PathsOf(ctx.References));
             ClearRedoState();
 
-            var redoTargetWindow = ResolveRedoTargetWindow(ctx.TargetWindow, _targetWindowHandle);
             // IMG-3: the dialog wrote its confirmed count onto the context
             // (PreviousImageCount — dialog-authoritative, like References).
             var count = Helpers.ImageBatchPolicy.ClampCount(ctx.PreviousImageCount ?? 1);
-            if (count == 1)
-            {
-                focusedElement = await _focusSlot.TakeForHandoffAsync();
-            }
-            else
-            {
-                // A batch never pastes — release the redo capture owner-scoped instead
-                // of carrying a cross-process RCW through a multi-minute batch.
-                ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
-            }
+            // A generated image is never pasted, so no focus element rides the job — release
+            // any redo capture owner-scoped (a newer owner's capture is untouched).
+            ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
 
             // Prompt snapshot + the dispatch-time route — see the voice dispatch twin. The
             // picker's modelId is nonblank by construction; ResolvedProvider mirrors the old
@@ -3253,13 +3231,6 @@ public partial class MainViewModel : ObservableObject
                 WasPushToTalk: ctx.WasPushToTalk,
                 IsNewGeneration: ctx.IsNewGeneration,
                 Count: count,
-                TargetWindow: redoTargetWindow,
-                // Freshness stamps NOW (mirrors the old pre-generation refresh) so a FAST
-                // regenerate can still auto-paste; slow generations degrade to clipboard-only
-                // through the same 10 s window as always.
-                TargetCapturedAtUtc: redoTargetWindow != IntPtr.Zero ? DateTime.UtcNow : DateTime.MinValue,
-                TargetSnapshot: global::System.Threading.Volatile.Read(ref _pasteTargetSnapshot),
-                FocusedElement: focusedElement,
                 ReferenceLease: referenceLease);
 
             reservation.Start(jobCt => RunImageGenerationJobAsync(request, jobCt));
@@ -3270,8 +3241,6 @@ public partial class MainViewModel : ObservableObject
             // Preparation failed — free the slot + every transferred resource (plan rule).
             reservation.Dispose();
             referenceLease?.Dispose();
-            if (focusedElement != null)
-                Helpers.UiaFocusBridge.EnqueueRelease(focusedElement);
             Logger.Error(ex, "Image redo dispatch failed");
             EmitMiniRecorderError("Image redo failed", MiniRecorderTone.Error);
         }
@@ -6691,26 +6660,12 @@ public partial class MainViewModel : ObservableObject
     // CapturedFocusOwner moved to Helpers/CapturedFocusSlot.cs with the slot extraction.
 
     /// <summary>
-    /// Image paste/copy outcome. Benign clipboard-only fallback (target not fresh —
-    /// the DESIGNED initial-recording path) is a SUCCESS because the generated image is
-    /// still available to the user. <see cref="Declined"/> is different: a paste was
-    /// ATTEMPTED at a fresh target and refused (e.g. no editable focus), so the image is
-    /// on the clipboard but "something happened" — an attention-timed error redo.
+    /// Whether a generated image reached the clipboard. A generated image is copied, never
+    /// pasted into the target window (owner, 2026-09-29) — the user pastes it themselves.
     /// </summary>
-    // Public (like StopTapAction) so the pure ResolveImagePasteRedoPresentation rows can
-    // pass it as a [Theory] parameter — an internal type can't parameterize a public test.
-    public enum ImagePasteResult { Failed, CopiedToClipboard, Pasted, Declined }
-
-    /// <summary>
-    /// The result of an image paste attempt plus, for <see cref="ImagePasteResult.Declined"/>,
-    /// the actionable message to surface on the redo pill. The message is carried here
-    /// (captured before the fail-soft metrics/history writes and consumed after) so it
-    /// survives those writes — the image counterpart of the text
-    /// <c>clipboardFallbackMessage</c> guarantee.
-    /// </summary>
-    public readonly record struct ImagePasteOutcome(ImagePasteResult Result, string? DeclineMessage = null);
-
-    internal enum ImagePasteFreshnessDecision { Fresh, NoTarget, NoCapture, Stale, ForegroundMismatch }
+    // Public (like StopTapAction) so the pure ResolveImageCopyPresentation rows can pass it as
+    // a [Theory] parameter — an internal type can't parameterize a public test.
+    public enum ImageCopyResult { Failed, CopiedToClipboard }
 
     /// <summary>
     /// PILL-3: the pill status + tone for a text paste outcome that ends in a redo pill.
@@ -6730,157 +6685,38 @@ public partial class MainViewModel : ObservableObject
                fallbackTone);
 
     /// <summary>
-    /// PILL-3: the pill status + tone for an image paste outcome that ends in a redo pill.
-    /// Pasted and the benign clipboard-only fallback are Successes; a
-    /// <see cref="ImagePasteResult.Declined"/> paste surfaces its actionable message as an
-    /// amber Warning (the image IS on the clipboard); <see cref="ImagePasteResult.Failed"/>
-    /// (clipboard set failed — the image is NOT available) is a red Error. All four values
-    /// have explicit arms on purpose — Failed must never ride a default (Codex final check);
-    /// the discard arm only covers out-of-range enum values. Pure — shared by initial
+    /// The pill status + tone for a single-image run's clipboard copy. On the clipboard is a
+    /// Success; <see cref="ImageCopyResult.Failed"/> (the image is NOT available) is a red
+    /// Error. Both values have explicit arms — Failed must never ride a default (Codex final
+    /// check); the discard arm only covers out-of-range enum values. Pure — shared by initial
     /// generation and redo/regenerate.
     /// </summary>
-    internal static (string StatusText, MiniRecorderTone Tone) ResolveImagePasteRedoPresentation(ImagePasteOutcome outcome)
-        => outcome.Result switch
+    internal static (string StatusText, MiniRecorderTone Tone) ResolveImageCopyPresentation(ImageCopyResult result)
+        => result switch
         {
-            ImagePasteResult.Pasted => ("Done", MiniRecorderTone.Success),
-            ImagePasteResult.CopiedToClipboard => ("Image on clipboard", MiniRecorderTone.Success),
-            ImagePasteResult.Declined => (
-                outcome.DeclineMessage ?? "Image ready — paste from clipboard with Ctrl+V",
-                MiniRecorderTone.Warning),
-            ImagePasteResult.Failed => ("Couldn't copy the image to the clipboard", MiniRecorderTone.Error),
-            _ => ("Image on clipboard", MiniRecorderTone.Success),
+            ImageCopyResult.CopiedToClipboard => ("Image on clipboard", MiniRecorderTone.Success),
+            ImageCopyResult.Failed => ("Couldn't copy the image to the clipboard", MiniRecorderTone.Error),
+            _ => ("Couldn't copy the image to the clipboard", MiniRecorderTone.Error),
         };
 
     /// <summary>
-    /// Paste a generated image only when the captured target is still fresh and foreground;
-    /// otherwise copy it to the clipboard. Image clipboard contents are intentionally left in place.
-    /// <para>IMG-BG: runs inside the background job body, so every target datum arrives AS A
-    /// PARAMETER captured at dispatch — never read from the live VM fields, which the next
-    /// recording overwrites (<c>_targetWindowHandle</c>/<c>_targetWindowCapturedAtUtc</c>/
-    /// <c>_pasteTargetSnapshot</c>, wrong-window paste). A pipeline that is no longer Idle at
-    /// paste time degrades to clipboard-only: the user is mid-recording, and stealing
-    /// foreground for an auto-paste (plus fighting the recording pill for
-    /// <c>IsMiniRecorderVisible</c>) would be worse than the designed clipboard posture.</para>
+    /// Copies a generated image to the clipboard (under the clipboard's write lease). IMG-BG:
+    /// runs inside the background job body, whatever the recording pipeline is doing — the
+    /// write lease serializes it with a text paste, and only the completion PRESENTATION waits
+    /// for Idle.
     /// </summary>
-    private async Task<ImagePasteOutcome> PasteImageWithFocusRestoreAsync(
-        byte[] imageBytes, IntPtr targetWindow, object? focusedElement,
-        DateTime targetCapturedAtUtc, PasteTargetSnapshot? targetSnapshot)
-    {
-        if (targetWindow == IntPtr.Zero || !IsImagePasteTargetFresh(targetWindow, targetCapturedAtUtc))
-            return new ImagePasteOutcome(await CopyImageToClipboardOnlyAsync(imageBytes));
-
-        if (RecordingState != RecordingState.Idle)
-        {
-            Logger.Information("Image auto-paste skipped: recording pipeline is {State}", RecordingState);
-            return new ImagePasteOutcome(await CopyImageToClipboardOnlyAsync(imageBytes));
-        }
-
-        Logger.Information("Image auto-paste: target fresh, attempting paste");
-        IsMiniRecorderVisible = false;
-        await Task.Delay(100);
-
-        // Re-check after the delay AND hand the paste a mid-sequence fence: a recording can
-        // start during the ~1.5 s of foreground/UIA gates, and its target may be the SAME
-        // window — foreground checks can't see that (Codex diff review round 1).
-        if (RecordingState != RecordingState.Idle)
-        {
-            Logger.Information("Image auto-paste skipped: recording started during the pre-paste delay");
-            return new ImagePasteOutcome(await CopyImageToClipboardOnlyAsync(imageBytes));
-        }
-
-        PasteResult imageResult;
-        using (_hotkeyService.BeginSuppressPromptActions())
-        {
-            // The gate runs inside ClipboardService's ConfigureAwait(false) continuations —
-            // off the UI thread — so it reads the VOLATILE busy mirror, never RecordingState
-            // (non-volatile field, UI-thread writer).
-            imageResult = await _clipboard.PasteImageAtCursorAsync(imageBytes, targetWindow, focusedElement,
-                targetSnapshot, proceedGate: () => !IsRecordingPipelineBusy);
-        }
-
-        if (imageResult.Succeeded)
-            return new ImagePasteOutcome(ImagePasteResult.Pasted);
-
-        if (imageResult.Outcome != PasteAttemptOutcome.ClipboardSetFailed)
-        {
-            // Every post-clipboard failure (NoEditableFocused, target gone/elevated,
-            // foreground loss, SendInput) leaves the image ALREADY on the clipboard —
-            // don't set it a second time. Carry the actionable message on the outcome
-            // (PILL-3: the redo pill owns it as an error-styled attention surface — no
-            // immediate ShowMiniRecorderError that would flash then be replaced).
-            Logger.Warning("Image paste declined ({Outcome}); generated image remains on the clipboard for manual retry",
-                imageResult.Outcome);
-            return new ImagePasteOutcome(ImagePasteResult.Declined, imageResult.UserMessage);
-        }
-
-        Logger.Warning("Image clipboard set failed; retrying clipboard-only copy");
-        var fallbackResult = await CopyImageToClipboardOnlyAsync(imageBytes);
-        if (fallbackResult == ImagePasteResult.Failed)
-            IsMiniRecorderVisible = true;
-        return new ImagePasteOutcome(fallbackResult);
-    }
-
-    private async Task<ImagePasteResult> CopyImageToClipboardOnlyAsync(byte[] imageBytes)
+    private async Task<ImageCopyResult> CopyImageToClipboardOnlyAsync(byte[] imageBytes)
     {
         return await _clipboard.SetClipboardImageAsync(imageBytes)
-            ? ImagePasteResult.CopiedToClipboard
-            : ImagePasteResult.Failed;
-    }
-
-    private static bool IsImagePasteTargetFresh(IntPtr targetWindow, DateTime targetCapturedAtUtc)
-    {
-        var nowUtc = DateTime.UtcNow;
-        var foreground = targetWindow == IntPtr.Zero ? IntPtr.Zero : NativeInterop.GetForegroundWindow();
-        var decision = EvaluateImagePasteFreshness(
-            targetCapturedAtUtc,
-            nowUtc,
-            targetWindow,
-            foreground,
-            ImagePasteFreshnessWindow);
-
-        switch (decision)
-        {
-            case ImagePasteFreshnessDecision.Fresh:
-                return true;
-            case ImagePasteFreshnessDecision.Stale:
-                Logger.Information(
-                    "Image auto-paste skipped: target capture is stale ({Elapsed:F1}s, limit {Limit:F1}s)",
-                    (nowUtc - targetCapturedAtUtc).TotalSeconds, ImagePasteFreshnessWindow.TotalSeconds);
-                return false;
-            case ImagePasteFreshnessDecision.ForegroundMismatch:
-                Logger.Information(
-                    "Image auto-paste skipped: foreground moved from target 0x{Target:X} to 0x{Foreground:X}",
-                    targetWindow, foreground);
-                return false;
-            default:
-                return false;
-        }
-    }
-
-    internal static ImagePasteFreshnessDecision EvaluateImagePasteFreshness(
-        DateTime capturedAtUtc,
-        DateTime nowUtc,
-        IntPtr targetWindow,
-        IntPtr foregroundWindow,
-        TimeSpan freshnessWindow)
-    {
-        if (targetWindow == IntPtr.Zero)
-            return ImagePasteFreshnessDecision.NoTarget;
-        if (capturedAtUtc == DateTime.MinValue)
-            return ImagePasteFreshnessDecision.NoCapture;
-        if (nowUtc - capturedAtUtc > freshnessWindow)
-            return ImagePasteFreshnessDecision.Stale;
-        if (foregroundWindow != targetWindow)
-            return ImagePasteFreshnessDecision.ForegroundMismatch;
-
-        return ImagePasteFreshnessDecision.Fresh;
+            ? ImageCopyResult.CopiedToClipboard
+            : ImageCopyResult.Failed;
     }
 
     /// <summary>
     /// Handle the image-generation branch of StopAndTranscribeAsync (IMG-BG, 2026-07-16).
     /// Shows the AskImageSize picker in-pipeline (the user's own interactive moment), then
-    /// RESERVES the single background job slot, captures the dispatch snapshot (focus handoff,
-    /// reference lease, target triple by value), and starts the detached job — the pipeline
+    /// RESERVES the single background job slot, captures the dispatch snapshot (the prompt clone,
+    /// the route and the reference lease, by value), and starts the detached job — the pipeline
     /// returns to Idle immediately, so the hotkey records again while the image generates.
     /// Returns true when handled (dispatched, or picker-cancelled); false ONLY on a REFUSAL
     /// (a job already running / exclusive maintenance / lost the reservation race) — the
@@ -6998,13 +6834,9 @@ public partial class MainViewModel : ObservableObject
             return false;
         }
 
-        // Dispatch snapshot — BY VALUE. The live VM fields (_targetWindowHandle /
-        // _targetWindowCapturedAtUtc / _pasteTargetSnapshot) belong to the NEXT recording
-        // the moment the pipeline is Idle again; the focus handoff detaches the slot so
-        // that recording's BeginForRecording finds it empty (no steal, no double-release).
-        // The in-flight lease keeps the dialog-picked source references alive for the
-        // generation read + a possible failed-attempt re-read (ENH-6c/6e).
-        Helpers.UiaFocusBridge.IUIAutomationElement? focusedElement = null;
+        // Dispatch snapshot — BY VALUE. The in-flight lease keeps the dialog-picked source
+        // references alive for the generation read + a possible failed-attempt re-read
+        // (ENH-6c/6e).
         IDisposable? referenceLease = null;
         try
         {
@@ -7016,7 +6848,7 @@ public partial class MainViewModel : ObservableObject
             ct.ThrowIfCancellationRequested();
 
             // Resolve the ONE (provider, model) route and GATE it — still before ANY resource
-            // transfer, so a refusal costs nothing to unwind: no focus handoff, no reference lease,
+            // transfer, so a refusal costs nothing to unwind: no focus release, no reference lease,
             // no provider call, no charge. Resolving here also means the request below consumes this
             // value instead of re-resolving (one source of truth).
             var promptSnapshot = prompt.Clone();
@@ -7025,21 +6857,15 @@ public partial class MainViewModel : ObservableObject
             if (!GateImageModelOrRefuse(imageModel, resolvedProvider, reservation))
                 return true; // handled: an image prompt must NOT fall through and paste as plain dictation
 
-            if (count == 1)
-            {
-                focusedElement = await _focusSlot.TakeForHandoffAsync();
-            }
-            else
-            {
-                // IMG-3: a batch never pastes, so no focus element rides the job — the
-                // recording's capture is released owner-scoped (handles a still-pending
-                // capture without materializing it; a newer owner's capture is untouched).
-                ReleaseCapturedFocusedElement(CapturedFocusOwner.Recording);
-            }
-            // A Stop click during the handoff await cancelled the pipeline — a paid cloud
-            // request must not start after the user said stop (Codex diff review round 2).
-            // The catch below releases the reservation + transferred resources, and the
-            // outer OCE handler presents the normal "Cancelled" teardown.
+            // A generated image is never pasted (owner, 2026-09-29), so no focus element rides
+            // the job — the recording's capture is released owner-scoped (handles a
+            // still-pending capture without materializing it; a newer owner's capture is
+            // untouched).
+            ReleaseCapturedFocusedElement(CapturedFocusOwner.Recording);
+            // A Stop click during preparation cancelled the pipeline — a paid cloud request
+            // must not start after the user said stop (Codex diff review round 2). The catch
+            // below releases the reservation + transferred resources, and the outer OCE
+            // handler presents the normal "Cancelled" teardown.
             ct.ThrowIfCancellationRequested();
             referenceLease = _referencePersistence.BeginInFlightLiveReferences(PathsOf(references));
             // promptSnapshot / resolvedProvider / imageModel were resolved and gated ABOVE, before
@@ -7057,10 +6883,6 @@ public partial class MainViewModel : ObservableObject
                 WasPushToTalk: wasPushToTalk,
                 IsNewGeneration: false,
                 Count: count,
-                TargetWindow: _targetWindowHandle,
-                TargetCapturedAtUtc: _targetWindowCapturedAtUtc,
-                TargetSnapshot: global::System.Threading.Volatile.Read(ref _pasteTargetSnapshot),
-                FocusedElement: focusedElement,
                 ReferenceLease: referenceLease);
 
             // Pipeline exit state BEFORE Start (Codex diff review round 2): a PRE-CANCELLED
@@ -7083,8 +6905,6 @@ public partial class MainViewModel : ObservableObject
             // nothing stranded). After a successful Start the job body owns them instead.
             reservation.Dispose();
             referenceLease?.Dispose();
-            if (focusedElement != null)
-                Helpers.UiaFocusBridge.EnqueueRelease(focusedElement);
             throw;
         }
 
@@ -7373,16 +7193,16 @@ public partial class MainViewModel : ObservableObject
         // carry the ORIGINAL transcription's language, and a static method cannot read it from
         // instance state. Null for a text-first chain with no transcription behind it.
         string? transcriptionLanguage,
-        IntPtr targetWindow, bool wasPushToTalk, bool isNewGeneration,
+        bool wasPushToTalk, bool isNewGeneration,
         LastCommittedItem? lastCommitted, Exception? failure,
         int? failedMarkerRowId, IReadOnlyList<ReferenceImageSelection>? failedMarkerRearm,
         IReadOnlyList<ReferenceImageSelection>? terminalPersistRearm,
-        (string Status, MiniRecorderTone Tone)? pasteDerived)
+        (string Status, MiniRecorderTone Tone)? copyDerived)
     {
         var (status, tone) = reason switch
         {
-            Helpers.ImageBatchRunner.BatchStop.Completed when total == 1 => pasteDerived
-                ?? throw new ArgumentNullException(nameof(pasteDerived), "N=1 success composes from the paste outcome"),
+            Helpers.ImageBatchRunner.BatchStop.Completed when total == 1 => copyDerived
+                ?? throw new ArgumentNullException(nameof(copyDerived), "N=1 success composes from the clipboard copy"),
             Helpers.ImageBatchRunner.BatchStop.Completed
                 => (Helpers.ImageBatchPolicy.SuccessStatus(total)!, MiniRecorderTone.Success),
             Helpers.ImageBatchRunner.BatchStop.ProviderFailure
@@ -7428,7 +7248,9 @@ public partial class MainViewModel : ObservableObject
                 EnhancedText: isCompleted ? Models.Entities.TranscriptionRecord.ImageGeneratedMarker : null,
                 Prompt: prompt,
                 WasImageGeneration: true,
-                TargetWindow: targetWindow,
+                // An image redo never pastes, so it carries no target window (what the History
+                // and IMG-1 entry points already pass) — and the picker captures no focus for it.
+                TargetWindow: IntPtr.Zero,
                 WasPushToTalk: wasPushToTalk,
                 TranscriptionModelName: transcriptionModelName,
                 TranscriptionLanguage: transcriptionLanguage,

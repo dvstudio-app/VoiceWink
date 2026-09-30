@@ -63,10 +63,37 @@ public partial class EnhancementViewModel : ObservableObject
     private CancellationTokenSource? _fetchImageCts; // cancel stale image model fetches
     private const string MaskedKeyPlaceholder = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
 
-    public static AIProvider[] AvailableProviders => Enum.GetValues<AIProvider>();
+    /// <summary>Every provider a combo offers — "On this PC" only where
+    /// <see cref="Services.AIEnhancement.LocalEngine.OnThisPcAvailability"/> offers it.</summary>
+    public static AIProvider[] AvailableProviders => Enum.GetValues<AIProvider>()
+        .Where(p => p != AIProvider.OnThisPc || Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered)
+        .ToArray();
 
-    public EnhancementViewModel(AIEnhancementService enhancement, ApiKeyManager apiKeys, Services.System.SettingsService settings)
+    /// <summary>
+    /// <see cref="AvailableProviders"/> plus <paramref name="stored"/> when it is not offered here
+    /// (settings from a build that offers it, read by one that does not). A provider combo must be able to SHOW the stored
+    /// value: a combo that cannot select it reads as "nothing chosen", and the two dialogs then saved
+    /// or pre-selected a different provider — moving a prompt's text from "On this PC" to a cloud one.
+    /// </summary>
+    public static AIProvider[] ProvidersIncluding(AIProvider stored)
     {
+        var offered = AvailableProviders;
+        return Array.IndexOf(offered, stored) >= 0 ? offered : [.. offered, stored];
+    }
+
+    /// <summary>LAI-3: the local AI model store the page's "Local AI models" card renders; null in
+    /// tests that construct the view model without it.</summary>
+    internal Services.AIEnhancement.LocalEngine.LocalModelStore? LocalModels { get; }
+
+    /// <summary>LAI-4: the engine host the models card hands a finished download or a delete to.</summary>
+    internal Services.AIEnhancement.LocalEngine.OnThisPcEngine? OnThisPc { get; }
+
+    public EnhancementViewModel(AIEnhancementService enhancement, ApiKeyManager apiKeys, Services.System.SettingsService settings,
+        Services.AIEnhancement.LocalEngine.LocalModelStore? localModels = null,
+        Services.AIEnhancement.LocalEngine.OnThisPcEngine? onThisPc = null)
+    {
+        LocalModels = localModels;
+        OnThisPc = onThisPc;
         _enhancement = enhancement;
         _apiKeys = apiKeys;
         _settings = settings;
@@ -209,11 +236,14 @@ public partial class EnhancementViewModel : ObservableObject
         LoadApiKey();
         LoadLocalServerSettings();
         OnPropertyChanged(nameof(IsLocalServerSelected));
+        OnPropertyChanged(nameof(IsOnThisPcSelected));
 
         // Restore the last-used model for this provider, or clear if it cannot run
         _suppressModelSync = true;
         SelectedModel = usable ? _enhancement.SelectedModel : "";
         _suppressModelSync = false;
+        // LAI-4: a model downloaded or deleted while another provider was selected.
+        HealOnThisPcSelection();
 
         // Fetch text models for the new provider. The loading flag is reset here
         // because a stale in-flight fetch may no longer clear it (its finally is
@@ -228,6 +258,37 @@ public partial class EnhancementViewModel : ObservableObject
 
     /// <summary>True while the text provider is the user's own AI server.</summary>
     public bool IsLocalServerSelected => SelectedProvider == AIProvider.LocalServer;
+
+    /// <summary>LAI-4: true while the text provider is the bundled engine.</summary>
+    public bool IsOnThisPcSelected => SelectedProvider == AIProvider.OnThisPc;
+
+    /// <summary>
+    /// LAI-4: a model was downloaded or deleted — the "On this PC" list is the installed models, so
+    /// it is re-read (no request is made). A selection whose model is gone moves to the first
+    /// installed one — or clears, so the next dictation says "No AI model selected" instead of
+    /// naming a model that is gone; a first download is selected for the user.
+    /// </summary>
+    internal void RefreshOnThisPcModels()
+    {
+        // The options dialog binds a cached list; an install or delete makes it stale whichever
+        // provider is selected right now.
+        _enhancement.InvalidateModelLists(AIProvider.OnThisPc);
+        if (!IsOnThisPcSelected)
+            return;
+        HealOnThisPcSelection();
+        _ = FetchModelsAsync();
+    }
+
+    /// <summary>While "On this PC" is selected, the model selection always names an INSTALLED model
+    /// (the first one when the stored id is empty or gone), or nothing.</summary>
+    private void HealOnThisPcSelection()
+    {
+        if (!IsOnThisPcSelected || OnThisPc is not { } engine)
+            return;
+        var installed = engine.InstalledModelIds();
+        if (string.IsNullOrEmpty(SelectedModel) || !installed.Contains(SelectedModel))
+            SelectedModel = installed.Count > 0 ? installed[0] : "";
+    }
 
     /// <summary>
     /// The server type the card shows. Picking one stores it at once together with that type's

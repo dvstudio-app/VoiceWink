@@ -77,7 +77,7 @@ public static class AIPrompts
     /// cleaned as a command: small local models refused or answered exactly that shape. Measured on
     /// the laptop bench (<c>bench/README.md</c>, "Envelope A/B"): <c>qwen3.5:4b</c> 9 → 23 of 30
     /// clean on the two refusing shapes, with no refusal short enough to slip under
-    /// <c>Helpers/CleanupOutputGuard</c>. A reworded user-turn preamble was tested with it and
+    /// <c>Helpers/LocalOutputGuard</c>. A reworded user-turn preamble was tested with it and
     /// REJECTED: alone it made refusals worse and shorter (1 of 30 under the guard line), and
     /// together with the example it produced 2 such short refusals.</para>
     ///

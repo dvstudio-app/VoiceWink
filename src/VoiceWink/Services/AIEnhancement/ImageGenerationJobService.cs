@@ -31,7 +31,7 @@ public enum ImageGenerationJobPhase
     /// awaits the per-commit signal armed by <see cref="ImageGenerationJobService.TryBeginCommit"/>
     /// with no cap, then applies a FRESH generation bound to whatever cancellable work
     /// remains (IMG-4b; the latch makes a NEW commit impossible, so that wait covers exactly
-    /// one persistence). N=1 deliberately keeps its whole tail (persist + paste + composition)
+    /// one persistence). N=1 deliberately keeps its whole tail (persist + clipboard copy + composition)
     /// inside this phase until the body ends — shutdown waits that tail out, today's behavior.
     /// Only the user's explicit second Quit click abandons a commit.</summary>
     Committing,
@@ -161,7 +161,7 @@ public sealed class ImageGenerationJobService
     /// the call site. Only THEN does the <paramref name="generationBound"/> start, fresh,
     /// for the residual cancellable drain (cancellation lands in ms; the bound is a safety
     /// net). For N=1 the commit signal completes at slot release, so the commit wait is the
-    /// whole persist+paste tail — today's behavior, deliberately kept.
+    /// whole persist+copy tail — today's behavior, deliberately kept.
     /// Returns true when fully drained, false when the bound expired while still cancellable.
     /// </summary>
     public async Task<bool> ShutdownAsync(TimeSpan generationBound)

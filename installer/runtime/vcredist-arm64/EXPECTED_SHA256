@@ -1,0 +1,13 @@
+# SHA256 pin for vc_redist.arm64.exe - the provenance anchor for the two
+# app-local ARM64 Microsoft Visual C++ runtime DLLs in this folder.
+#
+# Version: 14.44.35211.0 (matches RedistVersion in MANIFEST.psd1 in this folder).
+#
+# Source: https://aka.ms/vs/17/release/vc_redist.arm64.exe
+#         (Microsoft CDN; Authenticode-signed CN=Microsoft Corporation).
+#
+# Computed: 2026-09-30 from a verified download against the URL above.
+#
+# Format and refresh procedure: installer/runtime/vcredist/EXPECTED_SHA256, with
+# scripts/fetch-vcredist.ps1 -Arch arm64.
+5139E1440C3A20B92153A4DB561C069A0175AAF76C276C3E5B6F56099EDCF4B0

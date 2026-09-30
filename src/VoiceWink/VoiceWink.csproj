@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.102.398</Version>
-    <AssemblyVersion>1.102.398.0</AssemblyVersion>
-    <FileVersion>1.102.398.0</FileVersion>
+    <Version>1.103.399</Version>
+    <AssemblyVersion>1.103.399.0</AssemblyVersion>
+    <FileVersion>1.103.399.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
@@ -478,6 +478,64 @@
     <Content Include="..\..\installer\runtime\parakeet\parakeet-server.exe"
              Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\parakeet\parakeet-server.exe')">
       <Link>runtimes\win-x64\parakeet-server.exe</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
+    <!-- llama.cpp's llama-server (the local LLM engine) in its OWN directory,
+         runtimes\win-x64\llama\ - never beside Whisper's ggml-*-whisper.dll natives in
+         runtimes\win-x64\, because ggml's backend loader scans the exe directory AND the
+         current directory for ggml-<name>*.dll and would map whatever it finds there.
+         The file set, its hashes and the reasoning live in
+         installer/runtime/llama/MANIFEST.psd1; the wildcard is safe because
+         scripts/check-vcredist-payload.ps1 step 4c fail-closes the publish on any extra or
+         missing PE in that directory. Beside them, a copy of the pinned Vulkan loader
+         (ggml-vulkan.dll imports vulkan-1.dll) and the three VC++ DLLs the closure imports:
+         a spawned child resolves imports from ITS OWN directory first, the same reason the
+         rows above place parakeet-server.exe beside its DLLs. vcomp140 is not imported
+         (libomp.dll replaces it) and is deliberately not copied. -->
+    <Content Include="..\..\installer\runtime\llama\*.dll;..\..\installer\runtime\llama\*.exe">
+      <Link>runtimes\win-x64\llama\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vulkan-loader\vulkan-1.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vulkan-loader\vulkan-1.dll')">
+      <Link>runtimes\win-x64\llama\vulkan-1.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140.dll')">
+      <Link>runtimes\win-x64\llama\vcruntime140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140_1.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140_1.dll')">
+      <Link>runtimes\win-x64\llama\vcruntime140_1.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\msvcp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\msvcp140.dll')">
+      <Link>runtimes\win-x64\llama\msvcp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- The NATIVE ARM64 llama-server, in runtimes\win-arm64\llama\: the x64 app starts it as a
+         child when the OS is ARM64 (an x64 process may create an ARM64 child), because the
+         emulated x64 payload above is 3-5x slower there. Same build, its own pinned file set
+         (installer/runtime/llama-arm64/MANIFEST.psd1), its own directory for the same ggml
+         loader reason, and ARM64 copies of the two VC++ DLLs its closure imports
+         (installer/runtime/vcredist-arm64/). scripts/check-vcredist-payload.ps1 step 4d
+         fail-closes the publish on any extra, missing or wrong-architecture PE there. -->
+    <Content Include="..\..\installer\runtime\llama-arm64\*.dll;..\..\installer\runtime\llama-arm64\*.exe">
+      <Link>runtimes\win-arm64\llama\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist-arm64\vcruntime140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist-arm64\vcruntime140.dll')">
+      <Link>runtimes\win-arm64\llama\vcruntime140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist-arm64\msvcp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist-arm64\msvcp140.dll')">
+      <Link>runtimes\win-arm64\llama\msvcp140.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>

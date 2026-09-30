@@ -122,6 +122,9 @@ internal static class TextModelDefaults
         // LAI-1: the user's own server carries whatever models THEY installed; there is no id
         // VoiceWink could suggest that the server is known to have. Nothing is pre-selected.
         AIProvider.LocalServer => null,
+        // LAI-4: the Standard catalog model (LocalModelCatalog.Standard.Id, pinned equal by
+        // TextModelDefaultsTests) - pre-selected only when it is installed, like every entry here.
+        AIProvider.OnThisPc => "qwen3.5-4b-q4km",
         _ => null,
     };
 }

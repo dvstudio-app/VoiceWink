@@ -341,7 +341,8 @@ public sealed class GdprExportService
               "   not included — re-export with the \"Include recordings, images, problem\n" +
               "   reports and logs\" option to add them.)\n") +
         "\n" +
-        "Not included: downloaded speech models (Models/) — these are a re-downloadable cache,\n" +
+        "Not included: downloaded speech and AI-enhancement models (Models/) — these are a\n" +
+        "re-downloadable cache,\n" +
         "not personal data.\n\n" +
         "Re-import: history, vocabulary, and word replacements can be imported into a fresh\n" +
         "VoiceWink install; API keys and the license key must be re-entered.\n";

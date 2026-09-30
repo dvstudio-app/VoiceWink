@@ -260,9 +260,10 @@ public sealed class HotkeyService : IDisposable
     /// <summary>
     /// When positive, prompt/paste-last hotkey keys pass through unsuppressed and don't fire
     /// events. Held during paste operations so programmatic Ctrl+V isn't caught by the hook.
-    /// A refcount, not a bool (IMG-BG, 2026-07-16): a background image job's paste can overlap
-    /// a live dictation's paste, and with a plain bool the first scope to end un-suppressed the
-    /// hook mid-way through the other's injected keystrokes.
+    /// A refcount, not a bool (IMG-BG, 2026-07-16): two paste scopes can overlap (a background
+    /// image job's paste could, until images became clipboard-only on 2026-09-29), and with a
+    /// plain bool the first scope to end un-suppressed the hook mid-way through the other's
+    /// injected keystrokes.
     /// </summary>
     private int _suppressPromptActions;
 

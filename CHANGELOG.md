@@ -17,6 +17,13 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.103.399] - 2026-09-30
+
+- AI enhancement can run on this PC: choose "On this PC" as the provider and download a model. No API key needed.
+- When the local speech engine or your local AI server fails, for example after a graphics driver update, VoiceWink retries once by itself.
+- A generated image is always copied to the clipboard and never pasted for you; paste it with Ctrl+V.
+- Edits to the Generate Image prompt's title, text or trigger words are reset once.
+
 ## [1.102.398] - 2026-09-28
 
 - Redo with another model now uses the whole dictation, not only its first paragraph.

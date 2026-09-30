@@ -433,7 +433,7 @@ public sealed class AudioTranscribePage : Page
         if (string.IsNullOrEmpty(text)) return;
 
         // Claimed BEFORE the first await: SetClipboardAsync can wait on the clipboard write lease
-        // (a background image paste holds it), and a transcription started meanwhile owns the
+        // (a background image copy holds it), and a transcription started meanwhile owns the
         // status line and the button — a copy that resumes after that must not stamp its verdict
         // on a result it was never clicked for (Codex diff r2).
         var generation = ++_copyFeedbackGeneration;

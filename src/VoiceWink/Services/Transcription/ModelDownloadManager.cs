@@ -115,6 +115,17 @@ public sealed class ModelDownloadManager
                modelsDirectory, catalog: null) { }
 
     /// <summary>
+    /// LAI-3: a second manager over ANOTHER root and catalog — the local AI-enhancement models under
+    /// <c>Models\llm\</c>. Same download, verification and commit protocol, production timings; no
+    /// auxiliary bundles (the Parakeet legacy descriptor belongs to the speech manager), so neither
+    /// manager ever enumerates or deletes the other's models.
+    /// </summary>
+    internal static ModelDownloadManager ForCatalog(
+        IHttpClientFactory httpFactory, string modelsDirectory, IReadOnlyList<TranscriptionModelInfo> catalog)
+        => new(httpFactory, DefaultMaxDownloadAttempts, DefaultStallTimeout, DefaultRetryBackoff,
+               modelsDirectory, catalog, auxiliaryBundles: []);
+
+    /// <summary>
     /// Test seam: lets download retry/resume tests use a small attempt count and ms-scale timers
     /// instead of waiting real seconds. Production always uses the public ctor's defaults.
     ///

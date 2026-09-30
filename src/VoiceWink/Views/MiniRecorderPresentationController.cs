@@ -276,7 +276,7 @@ internal sealed class MiniRecorderPresentationController : IDisposable
             // genuine arm stays FromFallback=false forever, so an armed retry would have covered
             // "Generating image…" and its Stop for the whole job (Codex diff r1 blocker 1). Reachable:
             // a dictation fails and arms the retry, then the user starts New Image / Iterate / History
-            // Redo — DispatchImageRedoAsync reserves the job BEFORE ClearRedoState, and ClearRedoState
+            // Redo — DispatchImageRedo reserves the job BEFORE ClearRedoState, and ClearRedoState
             // is redo-only, so the retry is still armed when the job pill appears.
             // ANY affordance present at job start predates it (PILL-6, owner UAT 2026-08-17 §23.1
             // Fail: "the retry amber warning stays, generating image only appears when the amber

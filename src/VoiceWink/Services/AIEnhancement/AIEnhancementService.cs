@@ -1128,6 +1128,7 @@ public sealed class AIEnhancementService
         try
         {
             var config = BuildConfig(model, providerOverride, prompt.ReasoningOverride);
+            config.LocalRequest = new Helpers.LocalRequestHints(Helpers.LocalPromptClassifier.Classify(prompt), transcribedText);
             // Trace moved after BuildConfig (ENH-8) so the entry can carry the RESOLVED
             // reasoning directive; a BuildConfig throw (rare) now skips the entry.
             Helpers.PromptTraceLog.WriteSections(Helpers.PromptTraceOp.TextEnhancement,
@@ -1155,7 +1156,7 @@ public sealed class AIEnhancementService
             // the machine/user boundary inside TextPipelineRunner, so nothing here needs it.
             if (string.IsNullOrWhiteSpace(filtered))
                 return transcribedText;
-            ThrowIfAnswerShaped(providerOverride ?? SelectedProvider, prompt, transcribedText, filtered);
+            ThrowIfOutputRefused(providerOverride ?? SelectedProvider, prompt, transcribedText, filtered);
             return filtered;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1301,8 +1302,8 @@ public sealed class AIEnhancementService
     /// Connection REFUSED only (a SocketException underneath): a TLS failure, the offline pre-flight
     /// and a mid-response reset are other facts with their own text.
     /// </summary>
-    private bool IsLocalServerRefused(AIProvider provider, Exception ex)
-        => !RequiresApiKey(provider)
+    private static bool IsLocalServerRefused(AIProvider provider, Exception ex)
+        => provider == AIProvider.LocalServer
            && ex is HttpRequestException
            {
                StatusCode: null,
@@ -1327,12 +1328,18 @@ public sealed class AIEnhancementService
     /// forget on the thread pool: it never delays the recording, never throws, and at most one runs
     /// at a time. Only when enhancement is on, the text provider is Local server, the server type is
     /// Ollama and a model is chosen; a prompt that routes to Local server through an override is not
-    /// preloaded.
+    /// preloaded. LAI-4: when the text provider is On this PC, the bundled engine is prepared
+    /// instead (<see cref="StartOnThisPcPrepare"/>).
     /// </summary>
     public void StartLocalServerPreload()
     {
         try
         {
+            if (IsEnabled && SelectedProvider == AIProvider.OnThisPc)
+            {
+                StartOnThisPcPrepare();
+                return;
+            }
             if (!IsEnabled || SelectedProvider != AIProvider.LocalServer)
                 return;
             var model = SelectedModel;
@@ -1354,6 +1361,38 @@ public sealed class AIEnhancementService
         {
             Logger.Debug("Local server preload not started: {ErrorType}", ex.GetType().Name);
         }
+    }
+
+    /// <summary>
+    /// LAI-4: at recording start, load the "On this PC" model and prefill the active prompt's system
+    /// message into the engine's prompt cache (the vocabulary block sits late in the envelope, so the
+    /// dictation's own prompt shares everything before it). The engine is single-flight and never
+    /// throws; the prompt read runs off the recording path.
+    /// </summary>
+    private void StartOnThisPcPrepare()
+    {
+        if (_providers.Get(AIProvider.OnThisPc) is not Providers.OnThisPcDescriptor onThisPc)
+            return;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                // The ACTIVE prompt decides: one that routes to another provider loads nothing, and
+                // one with its own local model loads that model.
+                var prompt = GetActivePrompt() ?? PredefinedPrompts.Default;
+                if (prompt.IsImageGeneration
+                    || (ParseProviderOverride(prompt.ProviderOverride) ?? SelectedProvider) != AIProvider.OnThisPc)
+                    return;
+                var model = ResolveModelForPrompt(prompt);
+                if (string.IsNullOrWhiteSpace(model))
+                    return;
+                onThisPc.Prepare(model, AIPrompts.BuildSystemPrompt(prompt.PromptText, vocabularyTerms: null));
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("On this PC prepare not started: {ErrorType}", ex.GetType().Name);
+            }
+        });
     }
 
     internal async Task PreloadLocalServerAsync(string model)
@@ -2223,21 +2262,25 @@ public sealed class AIEnhancementService
     }
 
     /// <summary>
-    /// LAI-9: refuse a Local server cleanup reply shaped like an answer (<see cref="Helpers.CleanupOutputGuard"/>).
-    /// Thrown inside both enhance methods' <c>try</c>, so it rides their Warning branch and
-    /// MainViewModel's existing fallback: the raw transcript pastes, History stores the
-    /// <c>[Enhancement failed]</c> marker, and the pill names the reason. Logs word counts only —
-    /// never the reply, which can echo the dictation.
+    /// LAI-9 + LAI-4: refuse a LOCAL model's reply whose length says it did something other than the
+    /// prompt asked (<see cref="Helpers.LocalOutputGuard"/>). Thrown inside both enhance methods'
+    /// <c>try</c>, so it rides their Warning branch and MainViewModel's existing fallback: the raw
+    /// transcript pastes, History stores the <c>[Enhancement failed]</c> marker, and the pill names
+    /// the reason. Logs the class and word counts only — never the reply, which can echo the dictation.
     /// </summary>
-    private static void ThrowIfAnswerShaped(AIProvider provider, CustomPrompt prompt, string input, string output)
+    private static void ThrowIfOutputRefused(AIProvider provider, CustomPrompt prompt, string input, string output)
     {
-        if (!Helpers.CleanupOutputGuard.Applies(provider, prompt)
-            || !Helpers.CleanupOutputGuard.LooksLikeAnswer(input, output))
+        if (!Helpers.LocalOutputGuard.Applies(provider))
             return;
-        Logger.Warning("AI enhancement failed: the Local server reply to the cleanup prompt grew from {InputWords} to {OutputWords} words "
-            + "(limit 1.5 × input + 8), so the model answered or refused the dictation instead of cleaning it; the transcription was used unchanged",
-            Helpers.CleanupOutputGuard.CountWords(input), Helpers.CleanupOutputGuard.CountWords(output));
-        throw new InvalidOperationException(Helpers.CleanupOutputGuard.RefusedReason);
+        var promptClass = Helpers.LocalPromptClassifier.Classify(prompt);
+        var verdict = Helpers.LocalOutputGuard.Check(promptClass, input, output);
+        if (verdict == Helpers.LocalOutputVerdict.Pass)
+            return;
+        Logger.Warning("AI enhancement failed: the {Provider} reply to a {PromptClass} prompt {Verdict} from {InputWords} to {OutputWords} words, "
+            + "so the model did something other than the prompt asked; the transcription was used unchanged",
+            provider, promptClass, verdict == Helpers.LocalOutputVerdict.Grew ? "grew" : "shrank",
+            Helpers.LocalOutputGuard.CountWords(input), Helpers.LocalOutputGuard.CountWords(output));
+        throw new InvalidOperationException(Helpers.LocalOutputGuard.RefusedReason);
     }
 
     /// <summary>
@@ -2275,6 +2318,7 @@ public sealed class AIEnhancementService
         try
         {
             var config = BuildConfig(modelId, provider, prompt.ReasoningOverride);
+            config.LocalRequest = new Helpers.LocalRequestHints(Helpers.LocalPromptClassifier.Classify(prompt), transcribedText);
             // Same trace-after-config ordering as EnhanceAsync (ENH-8).
             Helpers.PromptTraceLog.WriteSections(Helpers.PromptTraceOp.TextEnhancement,
                 new Helpers.TraceMeta(Provider: provider.ToString(), Model: modelId),
@@ -2300,7 +2344,7 @@ public sealed class AIEnhancementService
             // the machine/user boundary inside TextPipelineRunner, so nothing here needs it.
             if (string.IsNullOrWhiteSpace(filtered))
                 return transcribedText;
-            ThrowIfAnswerShaped(provider, prompt, transcribedText, filtered);
+            ThrowIfOutputRefused(provider, prompt, transcribedText, filtered);
             return filtered;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -349,6 +349,10 @@ public sealed class DataErasureService
             // re-warm a fresh start should get (self-review, regression lens).
             Path.Combine(root, "gpu-warmup.json"),
             Path.Combine(root, "gpu-warmup.json.tmp"),
+            // LAI-2: the llama-server GPU self-test verdicts - app-owned RootDir state like the
+            // warm-up marker above.
+            Path.Combine(root, "llama-gpu-check.json"),
+            Path.Combine(root, "llama-gpu-check.json.tmp"),
         };
 
         if (Directory.Exists(root))

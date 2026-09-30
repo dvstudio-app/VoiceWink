@@ -260,16 +260,16 @@ internal sealed class CapturedFocusSlot
     }
 
     /// <summary>
-    /// Resolve and DETACH the current capture for a background-job handoff (IMG-BG,
-    /// 2026-07-16): awaits the pending capture under the <see cref="ResolveAsync"/> bound,
-    /// then empties the slot (owner None, nothing pending or materialized) and returns the
-    /// raw element WITHOUT releasing it. Ownership transfers entirely to the caller, which
-    /// must route the element to <see cref="UiaFocusBridge.EnqueueRelease"/> when done.
-    /// The background image job outlives the pipeline's return to Idle, and the next
-    /// recording's <see cref="BeginForRecording"/> starts with an unconditional
-    /// <see cref="Release"/> — after a handoff it finds an empty slot, so it can neither
-    /// destroy the job's element nor double-release it (the pipeline's own owner-scoped
-    /// release in its finally no-ops the same way).
+    /// Resolve and DETACH the current capture for a handoff that outlives the pipeline:
+    /// awaits the pending capture under the <see cref="ResolveAsync"/> bound, then empties
+    /// the slot (owner None, nothing pending or materialized) and returns the raw element
+    /// WITHOUT releasing it. Ownership transfers entirely to the caller, which must route the
+    /// element to <see cref="UiaFocusBridge.EnqueueRelease"/> when done. Its caller is PST-11's
+    /// redo retention (the IMG-BG image job used it until 2026-09-29, when generated images
+    /// became clipboard-only). The next recording's <see cref="BeginForRecording"/> starts with
+    /// an unconditional <see cref="Release"/> — after a handoff it finds an empty slot, so it
+    /// can neither destroy the holder's element nor double-release it (the pipeline's own
+    /// owner-scoped release in its finally no-ops the same way).
     /// </summary>
     public async Task<UiaFocusBridge.IUIAutomationElement?> TakeForHandoffAsync()
     {

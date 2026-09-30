@@ -20,8 +20,9 @@ namespace VoiceWink.Services.Http;
 /// one automatic retry lives at the OPERATION level (<c>TranscriptionConnectRetry</c>),
 /// where re-invoking <c>TranscribeAsync</c> yields a fresh stream by construction —
 /// which is exactly what a handler-level retry cannot do.</item>
-/// <item><c>local-ai</c> (LAI-1) — the user's own AI server: 2 min Timeout, NO retry,
-/// connect-bounded + translated, no proxy, no redirects.</item>
+/// <item><c>local-ai</c> (LAI-1) — the user's own AI server: 2 min Timeout, NO retry
+/// handler, connect-bounded + translated, no proxy, no redirects. Its one retry — once, on an
+/// HTTP 5xx — lives in <c>LocalServerClient.EnhanceAsync</c>, not in this pipeline.</item>
 /// <item><c>downloads</c> — 10 min Timeout, untouched: ModelDownloadManager owns its
 /// bounded-retry + HTTP-Range-resume + stall machinery.</item>
 /// <item><c>licensing</c> — 30 s Timeout, retry handler attached but disabled
@@ -42,6 +43,9 @@ internal static class VoiceWinkHttpClients
 
     /// <summary>LAI-1: the named client for a user-run AI server (see its registration).</summary>
     internal const string LocalAi = "local-ai";
+
+    /// <summary>LAI-2: the named client for the bundled llama-server (see its registration).</summary>
+    internal const string LlamaLocal = "llama-local";
 
     internal static void Register(IServiceCollection services)
     {
@@ -107,6 +111,11 @@ internal static class VoiceWinkHttpClients
         // transcription) structurally cannot retry it. No proxy and no redirects: localhost
         // must never route through an egress proxy or follow a redirect off the loopback.
         services.AddHttpClient("parakeet-local", c => c.Timeout = TimeSpan.FromMinutes(5))
+            .UseSocketsHttpHandler((h, _) => { h.UseProxy = false; h.AllowAutoRedirect = false; });
+        // LAI-2: the bundled llama-server on loopback - the parakeet-local row's reasoning,
+        // unchanged: no retry (a local failure is a process event), no translator, no proxy, no
+        // redirects. Callers bound each request themselves (health probe, self-test).
+        services.AddHttpClient(LlamaLocal, c => c.Timeout = TimeSpan.FromMinutes(5))
             .UseSocketsHttpHandler((h, _) => { h.UseProxy = false; h.AllowAutoRedirect = false; });
         // LAI-1: the user's own AI server (Ollama, LM Studio, any OpenAI-compatible endpoint).
         // NO RetryingHandler: a slow local completion is a model at work, not a flaky WAN call,

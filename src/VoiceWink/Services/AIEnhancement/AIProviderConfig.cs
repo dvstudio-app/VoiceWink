@@ -107,6 +107,13 @@ public class AIProviderConfig
     /// </summary>
     internal ImageBatchCallContext? BatchContext { get; set; }
 
+    /// <summary>
+    /// LAI-4: what the local engine needs to size one enhancement — the prompt's class and the
+    /// source transcript whose tokens set the output cap. Set by <c>AIEnhancementService</c> on the
+    /// enhancement paths only; null everywhere else (model fetches, image calls).
+    /// </summary>
+    internal Helpers.LocalRequestHints? LocalRequest { get; set; }
+
     public string GetBaseUrl()
     {
         // User-configured base URL takes priority (supports Azure OpenAI, proxies, self-hosted)
@@ -135,6 +142,9 @@ public class AIProviderConfig
             AIProvider.Cerebras => "https://api.cerebras.ai/v1",
             // LAI-1: nothing stored → the default address of the API the user picked.
             AIProvider.LocalServer => LocalServerEndpoints.EffectiveBaseUrl(LocalApi, null),
+            // LAI-4: loopback, so the offline pre-flight lets it through; never used for a request —
+            // the live port and key come from the engine's lease at request time.
+            AIProvider.OnThisPc => "http://127.0.0.1/",
             _ => ""
         };
     }

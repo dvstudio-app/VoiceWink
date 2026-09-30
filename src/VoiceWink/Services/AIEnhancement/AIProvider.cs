@@ -29,5 +29,12 @@ public enum AIProvider
     /// image generation, and its model list is the server's own. Shown to the user as
     /// "Local server" (<c>AIProviderDisplay</c>); persisted by this member NAME like the rest.
     /// </summary>
-    LocalServer
+    LocalServer,
+
+    /// <summary>
+    /// LAI-4: the model VoiceWink downloaded, run by the bundled llama-server on this PC. No API
+    /// key, no image generation, no address; the endpoint and the per-child key come from the
+    /// engine at request time and are never stored. Shown as "On this PC".
+    /// </summary>
+    OnThisPc
 }

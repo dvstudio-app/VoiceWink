@@ -231,7 +231,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
 
     public Task<string> TranscribeAsync(string audioFilePath, string? language = null,
         Models.TranscriptionHints? hints = null, bool diarize = false, CancellationToken ct = default)
-        => TranscribeCoreAsync(audioFilePath, noSpeechSuspected: false, ct);
+        => TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: false, ct);
 
     /// <summary>AUD-36: the gate-blocked entry (<see cref="INoSpeechAwareTranscriber"/>) — the same
     /// decode, with emptiness read as the audio's answer: the TRN-50 CPU re-decode is withheld
@@ -241,7 +241,52 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
     /// mis-judged reaches the paste.</summary>
     public Task<string> TranscribeSuspectedNoSpeechAsync(
         string audioFilePath, string? language, Models.TranscriptionHints? hints, CancellationToken ct)
-        => TranscribeCoreAsync(audioFilePath, noSpeechSuspected: true, ct);
+        => TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: true, ct);
+
+    /// <summary>
+    /// One automatic engine restart. A pcpp whole-call failure has already retired the leased
+    /// generation by the time it surfaces here, so a second call acquires a FRESH child — what the
+    /// user's Retry did by hand. The incident (2026-09-29): a graphics driver update mid-session left
+    /// the resident server answering 500 to the next dictation; the manual Retry decoded fine on a
+    /// new child. Safe to repeat because the recording is a local file and nothing left the machine.
+    /// Once only, never after cancellation, and never when the backend says a retry cannot succeed
+    /// (latched, no sherpa fallback) — there the first failure's "Restart VoiceWink" copy stands.
+    /// Each attempt is charged to the consecutive-failure tripwire, so an engine that fails both
+    /// times is two strikes, not one — which is why only <see cref="IsEngineFault"/> classes retry.
+    /// </summary>
+    private async Task<string> TranscribeRestartingEngineOnceAsync(
+        string audioFilePath, bool noSpeechSuspected, CancellationToken ct)
+    {
+        try
+        {
+            return await TranscribeCoreAsync(audioFilePath, noSpeechSuspected, ct).ConfigureAwait(false);
+        }
+        // Caught UNCONDITIONALLY, cancellation checked inside — never a `when (!ct.IsCancellationRequested)`
+        // filter, which would let the engine failure escape a user who had just cancelled and show them
+        // a failure pill (the NET-1 rule, TranscriptionConnectRetry).
+        catch (InvalidOperationException ex) when (ex.InnerException is PcppDecodeException decode
+                                                   && IsEngineFault(decode.FailureClass))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (_pcppBackend!.RetryRequiresAppRestart()) throw;
+            Logger.Warning("Parakeet engine failed ({FailureClass}) - restarting it and transcribing the recording once more",
+                decode.FailureClass);
+        }
+        ct.ThrowIfCancellationRequested();
+        return await TranscribeCoreAsync(audioFilePath, noSpeechSuspected, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The failure classes a fresh child can cure: the connection broke (<c>transport</c>) or the
+    /// server answered 5xx. A 4xx, an oversized or malformed reply (<c>oversize</c>, <c>contract</c>)
+    /// and anything unnamed are properties of the request or the build, so a second attempt would fail
+    /// the same way and only spend a tripwire strike.
+    /// </summary>
+    internal static bool IsEngineFault(string failureClass)
+        => failureClass == "transport"
+           || (failureClass.StartsWith("status-", StringComparison.Ordinal)
+               && int.TryParse(failureClass.AsSpan("status-".Length), out var status)
+               && status is >= 500 and <= 599);
 
     private async Task<string> TranscribeCoreAsync(string audioFilePath, bool noSpeechSuspected, CancellationToken ct)
     {

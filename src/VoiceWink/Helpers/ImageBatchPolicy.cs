@@ -46,13 +46,10 @@ internal static class ImageBatchPolicy
     internal static string? BatchProgressText(int settled, int total)
         => total <= 1 ? null : $"{settled} of {total} images generated…";
 
-    /// <summary>Only a single-image run pastes; a batch is a comparison workflow whose
-    /// output surface is History (owner decision 2 — pasting an arbitrary version would
-    /// contradict choosing afterwards).</summary>
-    internal static bool ShouldPaste(int total) => total == 1;
-
-    /// <summary>Batch success copy. Null at N=1 — the caller keeps today's paste-derived
-    /// presentation ("Done"/"Image on clipboard"/decline).</summary>
+    /// <summary>Batch success copy. Null at N=1 — the caller presents the clipboard copy's
+    /// own outcome ("Image on clipboard" / the copy failure). Only a single-image run
+    /// touches the clipboard; a batch is a comparison workflow whose output surface is
+    /// History (owner decision 2). No run ever pastes (owner, 2026-09-29).</summary>
     internal static string? SuccessStatus(int total)
         => total <= 1 ? null : $"{total} images generated";
 
@@ -93,10 +90,11 @@ internal static class ImageBatchPolicy
     /// </summary>
     internal enum BatchTerminalAction
     {
-        /// <summary>N=1 success: today's paste tail, then present its derived status.</summary>
-        PasteThenPresent,
+        /// <summary>N=1 success: copy the image to the clipboard, then present the copy's
+        /// outcome.</summary>
+        CopyThenPresent,
 
-        /// <summary>N&gt;1 success: no paste — present the batch success copy.</summary>
+        /// <summary>N&gt;1 success: no clipboard write — present the batch success copy.</summary>
         PresentBatchSuccess,
 
         /// <summary>N=1 provider failure: write the failed-marker row (its own commit
@@ -127,14 +125,14 @@ internal static class ImageBatchPolicy
     /// <summary>
     /// Map a batch result onto its terminal action. Unknown/future stop reasons fall to
     /// <see cref="BatchTerminalAction.Silent"/> — an unmapped value must never reach a
-    /// paste or a presentation (the MiniRecorderStopRouting default-arm rule).
+    /// clipboard write or a presentation (the MiniRecorderStopRouting default-arm rule).
     /// </summary>
     internal static BatchTerminalAction DecideBatchTerminal(
         ImageBatchRunner.BatchStop reason, int completed, int total, bool shutdownRequested)
         => reason switch
         {
             ImageBatchRunner.BatchStop.Completed => total == 1
-                ? BatchTerminalAction.PasteThenPresent
+                ? BatchTerminalAction.CopyThenPresent
                 : BatchTerminalAction.PresentBatchSuccess,
             // IMG-4c: only N=1 still writes its marker at the terminal step; a batch's
             // failure rows were committed inline, one per failed version. The batch arm

@@ -107,6 +107,7 @@ public partial class App : Application, Services.IAppLifetime
     // whole coordinator (EnsureModels side effect included) at process exit. Null in every
     // flag-off build AND when startup never reached the stash.
     private Services.Transcription.IParakeetPcppBackend? _pcppBackend;
+    private Services.AIEnhancement.LocalEngine.OnThisPcEngine? _onThisPcEngine;
     // UPD-1b background poll + UPD-3b sidebar dot + UPD-4b auto-install, all behind the LGL-1 gate.
     // The handler/subscription bookkeeping that used to live here as five fields moved into the
     // coordinator (UPD-4b) — see StartGatedRuntimeServices.
@@ -699,7 +700,9 @@ public partial class App : Application, Services.IAppLifetime
             modelDownloadProbe: () =>
             {
                 IServiceProvider? sp = Services;
-                return sp?.GetService<ModelDownloadManager>()?.IsDownloading == true;
+                // LAI-3: speech models OR local AI models - either download blocks update-apply and erasure.
+                return sp?.GetService<ModelDownloadManager>()?.IsDownloading == true
+                    || sp?.GetService<global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore>()?.IsDownloading == true;
             },
             pasteRestoreProbe: () =>
             {
@@ -824,6 +827,18 @@ public partial class App : Application, Services.IAppLifetime
         // path.
         services.AddSingleton(sp => new ModelDownloadManager(
             sp.GetRequiredService<IHttpClientFactory>(), Helpers.AppPaths.EnsureModels()));
+        // LAI-3: the local AI models, in their own folder under Models (erased with it, excluded
+        // from the export with it), through a second manager over their own catalog.
+        services.AddSingleton(sp => new global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore(
+            sp.GetRequiredService<IHttpClientFactory>(),
+            Path.Combine(Helpers.AppPaths.EnsureModels(), global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore.FolderName),
+            IsExclusiveMaintenanceActive));
+        // LAI-4: the "On this PC" engine host — the bundled llama-server's one owner. The GPU toggle
+        // sets its launch mode at start, like both speech engines (a flip applies at next start).
+        services.AddSingleton(sp => new global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine(
+            sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore>(),
+            sp.GetRequiredService<IHttpClientFactory>(),
+            gpuAccelerationEnabled ? global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Auto : global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Cpu));
         // Local-runtime seam: every local model goes through LocalModelPreparer, which is the ONE
         // authority on which engine serves a model name — the five call sites that used to reach
         // WhisperTranscriptionService directly now ask the preparer instead.
@@ -946,22 +961,27 @@ public partial class App : Application, Services.IAppLifetime
             // cancel per build, issued here directly because no coordinator exists to issue it.
             quiesceLocalEngines: async () =>
             {
+                // LAI-4: the llama child holds a file under Models\llm. Both engines are quiesced —
+                // never short-circuited — and the verdicts ANDed.
+                var onThisPc = sp.GetService<global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine>();
+                var llamaStopped = onThisPc is null || await onThisPc.TryShutdownForErasureAsync().ConfigureAwait(false);
                 var pcpp = sp.GetService<IParakeetPcppBackend>();
-                if (pcpp is not null) return await pcpp.TryQuiesceForErasureAsync().ConfigureAwait(false);
+                if (pcpp is not null) return await pcpp.TryQuiesceForErasureAsync().ConfigureAwait(false) & llamaStopped;
                 GpuWarmup.Instance.Cancel(GpuWarmupCancelReason.DataErasure);
                 if (!await GpuWarmup.Instance.WaitForWhisperQuiesceAsync(GpuWarmup.QuiesceConfirmBudget).ConfigureAwait(false))
                 {
                     Log.Warning("erasure: the Whisper GPU self-test did not end within {Seconds:F0}s of cancellation - its marker write may land after the delete pass",
                         GpuWarmup.QuiesceConfirmBudget.TotalSeconds);
                 }
-                return true; // nothing in this build holds a file under Models — the hook's verdict is about held files
+                return llamaStopped; // Parakeet holds nothing under Models in this build; the llama child may
             }));
 
         // Changelog / What's-new dialog (REL-4)
         services.AddSingleton<Services.Support.ChangelogParser>();
 
         // AI Enhancement
-        services.AddSingleton(AIProviderRegistry.CreateDefault());
+        services.AddSingleton(sp => AIProviderRegistry.CreateDefault(
+            sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine>()));
         services.AddSingleton<AIEnhancementService>();
         // IMG-BG: single-slot coordinator for the background image generation job.
         services.AddSingleton<Services.AIEnhancement.ImageGenerationJobService>();
@@ -1452,7 +1472,7 @@ public partial class App : Application, Services.IAppLifetime
                     // it seeded from the context, re-validated per item, and the user
                     // may have added/removed some. Image contexts only; text contexts
                     // never carry references. IMG-3: the confirmed Versions count rides
-                    // the same way (DispatchImageRedoAsync clamps + consumes it).
+                    // the same way (DispatchImageRedo clamps + consumes it).
                     if (isImageGeneration)
                         ctx = ctx with { References = selection.References, PreviousImageCount = selection.Count };
 
@@ -2515,6 +2535,7 @@ public partial class App : Application, Services.IAppLifetime
         // unlock, and cleanup sites all use the field, per the no-new-service-locator rule.
         _standingCaptureService = Services.GetRequiredService<VoiceWink.Services.Audio.StandingCaptureService>();
         _pcppBackend = Services.GetService<Services.Transcription.IParakeetPcppBackend>();
+        _onThisPcEngine = Services.GetService<Services.AIEnhancement.LocalEngine.OnThisPcEngine>();
 
         // TRN-49: kick the Parakeet GPU warm-up — HERE, behind the LGL-1 gate, because it spawns
         // a ~1 GB child and reads 900 MB of model (configuration happened in the ctor's
@@ -3302,8 +3323,13 @@ public partial class App : Application, Services.IAppLifetime
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
 
-        // Populate providers: image-capable only for image generation, all for text
-        var providers = Enum.GetValues<AIProvider>()
+        // Pre-select: previously-used provider if available, else current selection
+        var defaultProvider = capturedContext.PreviousProvider
+            ?? (isImageGeneration ? enhancement.SelectedImageProvider : enhancement.SelectedProvider);
+
+        // Populate providers: image-capable only for image generation, all for text. The default is
+        // always listed (LAI-4): were it missing, index 0 - a cloud provider - would be pre-selected.
+        var providers = EnhancementViewModel.ProvidersIncluding(defaultProvider)
             .Where(p => !isImageGeneration || enhancement.IsImageCapableProvider(p))
             .ToList();
         if (providers.Count == 0)
@@ -3314,9 +3340,6 @@ public partial class App : Application, Services.IAppLifetime
         foreach (var p in providers)
             providerCombo.Items.Add(AIProviderDisplay.Label(p)); // every read parses it back via AIProviderDisplay.TryParse
 
-        // Pre-select: previously-used provider if available, else current selection
-        var defaultProvider = capturedContext.PreviousProvider
-            ?? (isImageGeneration ? enhancement.SelectedImageProvider : enhancement.SelectedProvider);
         var currentProviderIdx = providers.IndexOf(defaultProvider);
         providerCombo.SelectedIndex = currentProviderIdx >= 0 ? currentProviderIdx : 0;
 
@@ -5110,6 +5133,12 @@ public partial class App : Application, Services.IAppLifetime
             _pcppBackend?.ShutdownAsync().GetAwaiter().GetResult();
         }
         catch (Exception ex) { Log.Debug(ex, "parakeet-server shutdown failed during cleanup"); }
+        // LAI-4: the llama child, bounded the same way (its gate wait is ParakeetServerPolicy's).
+        try
+        {
+            _onThisPcEngine?.ShutdownAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception ex) { Log.Debug(ex, "llama-server shutdown failed during cleanup"); }
 
         // REL-12: deterministically settle failure-retained retry audio on normal exit
         // (armed slot + any unconfirmed pending deletes — the ledger tracks them all).

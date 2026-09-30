@@ -28,7 +28,7 @@ public sealed class ClipboardService
     // live dictation's text paste, and an unserialized interleaving could stomp the other
     // writer's payload mid-sequence (set → gates → Ctrl+V spans ~1.5 s). Acquired ONLY in the
     // public entry points (SetClipboardAsync / SetClipboardImageAsync / PasteAtCursorAsync /
-    // PasteImageAtCursorAsync / the deferred restore / AcquireWriteLeaseAsync) — the
+    // the deferred restore / AcquireWriteLeaseAsync) — the
     // *CoreUnderLease members are lock-free by name so nested calls can never re-enter the
     // non-reentrant semaphore. Always WaitAsync, never Wait: the UI thread must not block on a
     // holder that may itself need the UI dispatcher to finish.
@@ -452,192 +452,6 @@ public sealed class ClipboardService
     }
 
     /// <summary>
-    /// Paste an image at cursor. Sets clipboard to the image and sends Ctrl+V.
-    /// Unlike text paste, the clipboard is NOT restored afterward — the generated image
-    /// remains on the clipboard so the user can paste it again (Ctrl+V).
-    /// </summary>
-    /// <param name="focusedElement">
-    /// Optional UIA-element reference borrowed from <c>MainViewModel</c>. When present,
-    /// DOM-element focus is restored immediately before <c>SendCtrlV</c>, mirroring
-    /// <see cref="PasteAtCursorAsync(string, IntPtr, object?)"/>.
-    /// </param>
-    /// <param name="proceedGate">
-    /// IMG-BG: optional caller fence re-checked mid-sequence (after the clipboard write and
-    /// immediately before Ctrl+V). Returns false to abort — the background job's paste spans
-    /// ~1.5 s of gates, long enough for the user to start a recording; injecting Ctrl+V then
-    /// would paste into their live dictation target. The image stays on the clipboard.
-    /// </param>
-    internal async Task<PasteResult> PasteImageAtCursorAsync(byte[] imageBytes, IntPtr targetWindow = default, object? focusedElement = null, PasteTargetSnapshot? targetSnapshot = null, Func<bool>? proceedGate = null)
-    {
-        Logger.Information("Pasting image at cursor ({Size} bytes), target=0x{Target:X}", imageBytes.Length, targetWindow);
-
-        // Write lease held across set → gates → Ctrl+V: a concurrent text paste replacing the
-        // clipboard mid-sequence would make this Ctrl+V paste the WRONG payload (IMG-BG).
-        await _writeLease.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            return await PasteImageCoreUnderLeaseAsync(imageBytes, targetWindow, focusedElement, targetSnapshot, proceedGate).ConfigureAwait(false);
-        }
-        finally
-        {
-            _writeLease.Release();
-        }
-    }
-
-    private async Task<PasteResult> PasteImageCoreUnderLeaseAsync(byte[] imageBytes, IntPtr targetWindow, object? focusedElement, PasteTargetSnapshot? targetSnapshot, Func<bool>? proceedGate)
-    {
-        if (!await SetClipboardImageCoreUnderLeaseAsync(imageBytes).ConfigureAwait(false))
-        {
-            Logger.Error("Failed to set clipboard image for paste");
-            return PasteResult.Fail(PasteAttemptOutcome.ClipboardSetFailed);
-        }
-
-        if (proceedGate is { } gateAfterSet && !gateAfterSet())
-        {
-            Logger.Information("Image paste aborted before target work — recording started; image left on clipboard");
-            return PasteResult.Fail(PasteAttemptOutcome.AbortedByRecordingStart, PasteResultPresentation.RecordingStartedMessage);
-        }
-
-        // Same liveness/identity + UIPI gates as the text path (the caller's freshness
-        // gate — EvaluateImagePasteFreshness — has already run and stays authoritative;
-        // these only protect the activation below). Failures degrade to the image
-        // flow's clipboard-only posture — the image is ALREADY on the clipboard here.
-        var validity = ValidateTargetSnapshot(targetSnapshot, targetWindow);
-        if (validity is PasteTargetValidity.Gone or PasteTargetValidity.Recycled)
-        {
-            Logger.Warning("Image paste target 0x{Target:X} is {Validity}; image left on clipboard for manual retry", targetWindow, validity);
-            return PasteResult.Fail(PasteAttemptOutcome.TargetGone, PasteResultPresentation.WindowClosedMessage);
-        }
-        if (targetWindow != IntPtr.Zero && targetSnapshot != null && targetSnapshot.Hwnd == targetWindow
-            && ElevationGate.ShouldSkipElevatedTarget(NativeInterop.TryGetProcessElevation(targetSnapshot.Pid), SelfElevated.Value))
-        {
-            Logger.Warning("Image paste target 0x{Target:X} is elevated (UIPI); image left on clipboard for manual retry", targetWindow);
-            return PasteResult.Fail(PasteAttemptOutcome.TargetElevated, PasteResultPresentation.ElevatedMessage);
-        }
-
-        var (acquired, _) = await EnsureTargetForegroundAsync(targetWindow, targetSnapshot, "image paste (initial)").ConfigureAwait(false);
-        if (!acquired)
-        {
-            Logger.Warning(
-                "Target window 0x{Target:X} did not regain focus before image paste; image left on clipboard for manual retry",
-                targetWindow);
-            return PasteResult.Fail(PasteAttemptOutcome.ForegroundAcquireFailed, PasteResultPresentation.NotInFrontMessage);
-        }
-
-        // Route resolved ONCE — reused by the UIA step and the NoEditableFocused gate.
-        // Out-of-process WebView2 targets (new Teams): skip the UIA focus step — same rationale
-        // as PasteAtCursorAsync (UIA SetFocus there only touches the host tree and can blur the box).
-        var route = ResolvePasteRoute(targetWindow);
-        if (route.Route == Helpers.PasteFocusRoute.Route.SkipUiaOopWebView2)
-            Logger.Information("Image paste route: skipping UIA focus restore (out-of-process WebView2 target)");
-
-        // PST-2b: authoritative gate BEFORE the restore — same evidence-destruction
-        // rationale as the text path (no pre-paste diagnostic capture exists on the image
-        // path, so this overload performs its own bounded capture). A block skips the
-        // restore and maps to clipboard-only in the caller.
-        //
-        // PST-8: image BEHAVIOUR is deliberately unchanged — ONE shared memoized probe (so
-        // the probe count matches the pre-PST-8 path exactly) and NO opaque-hybrid
-        // suppression. The measured evidence is text-specific, and this path has no reusable
-        // pre-paste native-focus snapshot to fingerprint from.
-        var imageCapturedProbe = MemoizeCapturedProbe(focusedElement);
-        var preRestoreStage = await NoEditableFocusGate.RunPreRestoreStageAsync(
-            route.Route == Helpers.PasteFocusRoute.Route.SkipUiaOopWebView2,
-            () => ShouldBlockNoEditableFocusedAsync(targetWindow, route, "image paste (pre-restore)"),
-            () => TryRestoreUiaFocus(focusedElement),
-            BuildCapturedElementRescue(focusedElement, imageCapturedProbe),
-            BuildIdentityVerifiedRestore(focusedElement, imageCapturedProbe)).ConfigureAwait(false);
-        if (preRestoreStage.Blocked)
-        {
-            if (preRestoreStage.Block == Helpers.PreRestoreBlock.FocusMovedInTarget)
-                Logger.Warning(
-                    "image paste: focus moved to a different element inside target 0x{Target:X} (same window, e.g. another tab) and could not be restored — blocking Ctrl+V, image kept on clipboard",
-                    targetWindow);
-            return MapPreRestoreBlock(preRestoreStage.Block);
-        }
-        if (preRestoreStage.UsedRescue)
-            Logger.Information("image paste: captured-element rescue succeeded — restored recording-start editable, identity-bound drift net armed");
-
-        // Re-verify foreground after the UIA work (it can take up to ~1s with the recapture
-        // fallback) so a focus drift during it doesn't redirect Ctrl+V into the wrong app.
-        if (targetWindow != IntPtr.Zero && NativeInterop.GetForegroundWindow() != targetWindow
-            && !await RecoverTargetForegroundOnceAsync(targetWindow, targetSnapshot, "image paste (post-UIA)").ConfigureAwait(false))
-        {
-            Logger.Warning(
-                "Target window 0x{Target:X} lost foreground during focus restore before image paste; image left on clipboard for manual retry",
-                targetWindow);
-            return PasteResult.Fail(PasteAttemptOutcome.LostForegroundPostUia, PasteResultPresentation.NotInFrontMessage);
-        }
-
-        // PST-2b drift net (see the text path): catches only a suspicious shape that
-        // appeared during the restore/drift-recovery window. MUST run when the pre-restore
-        // gate passed/failed open, and MUST stay before the final safety checks below (its
-        // bounded waits must not open a gap between validation and SendInput). The caller
-        // maps this to clipboard-only WITHOUT re-setting the clipboard (the image is
-        // already there).
-        if (targetWindow != IntPtr.Zero
-            && await ShouldBlockNoEditableFocusedAsync(targetWindow, route, "image paste (post-restore)", rescueStage: preRestoreStage).ConfigureAwait(false))
-        {
-            return PasteResult.Fail(
-                PasteAttemptOutcome.NoEditableFocused,
-                PasteResultPresentation.NoTextBoxMessage);
-        }
-
-        // Await modifier release BEFORE the final gates. An app switch while a modifier
-        // is held must decline the paste, just as a switch during the earlier UIA work does.
-        // Image delivery keeps its existing identity behavior: no extra UIA reads here.
-        var sequence = await Helpers.PreSendIdentityCoordinator.RunPreWaitedSequenceAsync(
-            prepare: BuildModifierReleasePrefixAsync,
-            guardApplicable: false,
-            priorIdentity: null,
-            usableBaselineIdentity: static () => null,
-            probeIdentity: static () => null,
-            logOutcome: static _ => { },
-            blockedResult: static () => PasteResult.Fail(PasteAttemptOutcome.FocusMovedInTarget, PasteResultPresentation.FocusMovedMessage),
-            checkFallbackBaseline: static () => null,
-            checkTargetAlive: () =>
-            {
-                if (ValidateTargetSnapshot(targetSnapshot, targetWindow)
-                    is not (PasteTargetValidity.Gone or PasteTargetValidity.Recycled))
-                    return null;
-                Logger.Warning("Image paste target 0x{Target:X} vanished/recycled before the send; image left on clipboard", targetWindow);
-                return PasteResult.Fail(PasteAttemptOutcome.TargetGone, PasteResultPresentation.WindowClosedMessage);
-            },
-            checkForeground: () =>
-            {
-                if (targetWindow == IntPtr.Zero || NativeInterop.GetForegroundWindow() == targetWindow)
-                    return null;
-                Logger.Warning("Image paste target 0x{Target:X} lost foreground before the send; image left on clipboard", targetWindow);
-                return PasteResult.Fail(PasteAttemptOutcome.LostForegroundPostUia, PasteResultPresentation.NotInFrontMessage);
-            },
-            checkProceed: () =>
-            {
-                if (proceedGate is null || proceedGate())
-                    return null;
-                Logger.Information("Image paste aborted before Ctrl+V — recording started; image left on clipboard");
-                return PasteResult.Fail(PasteAttemptOutcome.AbortedByRecordingStart, PasteResultPresentation.RecordingStartedMessage);
-            },
-            send: prefix => SendCtrlVWithPrefix(prefix),
-            sendFailedResult: () =>
-            {
-                // Preserve the existing image failure classification if recording started
-                // during the failed send itself; successful sends do not re-read the gate.
-                if (proceedGate is { } gateAfterSendAttempt && !gateAfterSendAttempt())
-                {
-                    Logger.Information("Image paste aborted during send — recording started; image left on clipboard");
-                    return PasteResult.Fail(PasteAttemptOutcome.AbortedByRecordingStart, PasteResultPresentation.RecordingStartedMessage);
-                }
-                Logger.Warning("Failed to send Ctrl+V for image paste; image left on clipboard for manual retry");
-                return PasteResult.Fail(PasteAttemptOutcome.SendInputFailed, PasteResultPresentation.KeystrokeBlockedMessage);
-            }).ConfigureAwait(false);
-        if (sequence.Failure is { } failure)
-            return failure;
-
-        Logger.Debug("Image pasted — clipboard kept (no restore) so user can re-paste");
-        return PasteResult.Success();
-    }
-
-    /// <summary>
     /// Restore DOM-element focus inside the (now-foreground) target before SendCtrlV.
     /// Returns true when a live DOM editable is believed focused. On a stale captured element
     /// (SetFocus → UIA_E_ELEMENTNOTAVAILABLE 0x80040201), falls back to re-capturing whatever
@@ -920,7 +734,7 @@ public sealed class ClipboardService
     /// <summary>
     /// Paste text at cursor.
     /// Saves clipboard → sets text → sends Ctrl+V → restores original clipboard after delay.
-    /// Clipboard restore only applies to text paste, not image paste (images stay on clipboard for re-use).
+    /// A generated image is never pasted — it is only copied to the clipboard, and never restored over.
     /// </summary>
     /// <param name="focusedElement">
     /// Optional UIA-element reference (typed <c>object</c> here so this service does not
@@ -964,7 +778,8 @@ public sealed class ClipboardService
         var probeAttempt = probeSink ?? new ClipboardProbeAttempt();
         var ownsEmit = probeSink is null;
 
-        // Write lease held across capture → set → gates → Ctrl+V (see PasteImageAtCursorAsync).
+        // Write lease held across capture → set → gates → Ctrl+V: a concurrent writer replacing the
+        // clipboard mid-sequence would make this Ctrl+V paste the WRONG payload (IMG-BG).
         await _writeLease.WaitAsync().ConfigureAwait(false);
         try
         {

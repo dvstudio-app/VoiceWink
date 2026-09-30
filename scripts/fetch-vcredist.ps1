@@ -25,11 +25,20 @@
 #   pwsh scripts/fetch-vcredist.ps1                 # re-extract + verify vs MANIFEST.psd1
 #   pwsh scripts/fetch-vcredist.ps1 -Regenerate     # re-extract + PRINT manifest values
 #
+# -Arch arm64 does the same for the TWO ARM64 DLLs (msvcp140 / vcruntime140) that ship beside the
+# native ARM64 llama-server (runtimes\win-arm64\llama\): vc_redist.arm64.exe, one MSI
+# (VC_Runtime_arm64.msi), its own folder installer/runtime/vcredist-arm64/ with its own
+# MANIFEST.psd1 + EXPECTED_SHA256. Every mode and message below applies to the selected -Arch.
+#
 # Prereq for extraction modes (NOT -CheckOnly): WiX v5 on PATH —
 #   dotnet tool install --global wix --version 5.0.2
 
 [CmdletBinding()]
 param(
+    # Which redistributable: x64 (the four DLLs beside whisper.dll) or arm64 (the two beside the
+    # native ARM64 llama-server).
+    [ValidateSet('x64', 'arm64')]
+    [string]$Arch = 'x64',
     # Bundle SHA256 pin. Defaults to installer/runtime/vcredist/EXPECTED_SHA256.
     [string]$ExpectedSha256 = "",
     # Drift check only: download the CURRENT upstream redist, compare its SHA256
@@ -46,14 +55,26 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-$outDir = Join-Path $repoRoot "installer\runtime\vcredist"
+# Per-architecture shape. The MSI names were read from each bundle with `wix burn extract`
+# (x64: two MSIs, 2026-06-02; arm64: ONE MSI, 2026-09-30).
+$archConfig = @{
+    x64   = @{ Dir = 'vcredist';       Bundle = 'vc_redist.x64.exe';   Scratch = 'vw-vcredist-fetch'
+               Dlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'vcomp140.dll')
+               Msis = @('vc_runtimeMinimum_x64.msi', 'vc_runtimeAdditional_x64.msi') }
+    arm64 = @{ Dir = 'vcredist-arm64'; Bundle = 'vc_redist.arm64.exe'; Scratch = 'vw-vcredist-fetch-arm64'
+               Dlls = @('vcruntime140.dll', 'msvcp140.dll')
+               Msis = @('VC_Runtime_arm64.msi') }
+}[$Arch]
+$bundleName = [string]$archConfig.Bundle
+$relDir = "installer/runtime/$($archConfig.Dir)"
+$outDir = Join-Path $repoRoot "installer\runtime\$($archConfig.Dir)"
 $shaFile = Join-Path $outDir "EXPECTED_SHA256"
 $manifestPath = Join-Path $outDir "MANIFEST.psd1"
-$url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+$url = "https://aka.ms/vs/17/release/$bundleName"
 
-# The four DLLs we ship, and which MSI each comes from (informational; both MSIs
-# are unpacked into one administrative image, so we just collect by name).
-$TargetDlls = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'vcomp140.dll')
+# The DLLs we ship for this architecture (the MSIs are unpacked into one administrative image,
+# so we just collect by name).
+$TargetDlls = @($archConfig.Dlls)
 
 # --- default the SHA pin from EXPECTED_SHA256 (same convention as fetch-winapp-runtime.ps1) ---
 if (-not $ExpectedSha256) {
@@ -65,7 +86,7 @@ if (-not $ExpectedSha256) {
                 throw "SHA pin file exists but contains no valid 64-character hex SHA256 (got '$candidate'). Fix or delete $shaFile."
             }
             $ExpectedSha256 = $candidate
-            Write-Host "Using pinned bundle SHA256 from installer/runtime/vcredist/EXPECTED_SHA256"
+            Write-Host "Using pinned bundle SHA256 from $relDir/EXPECTED_SHA256"
         }
         elseif (-not $Regenerate) {
             throw "SHA pin file $shaFile exists but is empty / comment-only. Add the bundle SHA256 (or run -Regenerate to compute fresh values)."
@@ -77,10 +98,10 @@ if (-not $ExpectedSha256) {
 }
 
 # --- download the bundle into a scratch dir (kept OUT of the tracked outDir) ---
-$scratch = Join-Path ([IO.Path]::GetTempPath()) "vw-vcredist-fetch"
+$scratch = Join-Path ([IO.Path]::GetTempPath()) ([string]$archConfig.Scratch)
 if ($Force -and (Test-Path -LiteralPath $scratch)) { Remove-Item -Recurse -Force -LiteralPath $scratch }
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
-$bundle = Join-Path $scratch "vc_redist.x64.exe"
+$bundle = Join-Path $scratch $bundleName
 
 # -CheckOnly is the servicing/CVE drift probe, so it must NEVER trust a cached
 # bundle (a stale cache would falsely report "up to date" while a newer redist is
@@ -92,7 +113,7 @@ else {
     if ($CheckOnly -and (Test-Path -LiteralPath $bundle)) {
         Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
     }
-    Write-Host "Downloading vc_redist.x64.exe from $url ..."
+    Write-Host "Downloading $bundleName from $url ..."
     try {
         Invoke-WebRequest -Uri $url -OutFile $bundle -UseBasicParsing
     }
@@ -119,9 +140,9 @@ if ($CheckOnly) {
         Write-Host "NEWER REDIST AVAILABLE." -ForegroundColor Yellow
         Write-Host ("  pinned   : $ExpectedSha256")
         Write-Host ("  upstream : $bundleSha  (version $bundleVer)")
-        Write-Host "  To adopt it, follow the refresh checklist in installer/runtime/vcredist/MANIFEST.psd1:"
+        Write-Host "  To adopt it, follow the refresh checklist in $relDir/MANIFEST.psd1 (pass -Arch $Arch):"
         Write-Host "    1. update EXPECTED_SHA256 to the upstream hash + bump the comment,"
-        Write-Host "    2. run: pwsh scripts/fetch-vcredist.ps1 -Regenerate,"
+        Write-Host "    2. run: pwsh scripts/fetch-vcredist.ps1 -Regenerate -Arch $Arch,"
         Write-Host "    3. paste the printed values into MANIFEST.psd1, commit DLLs + pins together."
     }
     exit 0
@@ -144,11 +165,11 @@ if ($ExpectedSha256 -and ($bundleSha -ne $ExpectedSha256)) {
 # bundle.
 $bundleSig = Get-AuthenticodeSignature -LiteralPath $bundle
 if ($bundleSig.Status -ne 'Valid') {
-    throw "vc_redist.x64.exe Authenticode status is '$($bundleSig.Status)', expected 'Valid'. Refusing to extract."
+    throw "$bundleName Authenticode status is '$($bundleSig.Status)', expected 'Valid'. Refusing to extract."
 }
 if ($null -eq $bundleSig.SignerCertificate -or $bundleSig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
     $sigSubj = if ($bundleSig.SignerCertificate) { $bundleSig.SignerCertificate.Subject } else { '<none>' }
-    throw "vc_redist.x64.exe signer is not Microsoft Corporation (got: $sigSubj). Refusing to extract."
+    throw "$bundleName signer is not Microsoft Corporation (got: $sigSubj). Refusing to extract."
 }
 Write-Host "Bundle Authenticode: Valid, signed by Microsoft Corporation."
 
@@ -181,16 +202,17 @@ Write-Host "Extracting Burn bundle (wix burn extract)..."
 & wix burn extract $bundle -o $extractDir -oba (Join-Path $scratch "burn-ba") | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "wix burn extract failed (exit $LASTEXITCODE)." }
 
-$msiMin = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'vc_runtimeMinimum_x64.msi' -File | Select-Object -First 1
-$msiAdd = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'vc_runtimeAdditional_x64.msi' -File | Select-Object -First 1
-if (-not $msiMin) { throw "vc_runtimeMinimum_x64.msi not found after extract — redist bundle shape may have changed." }
-if (-not $msiAdd) { throw "vc_runtimeAdditional_x64.msi not found after extract — redist bundle shape may have changed." }
+$msis = foreach ($msiName in $archConfig.Msis) {
+    $found = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter $msiName -File | Select-Object -First 1
+    if (-not $found) { throw "$msiName not found after extract — redist bundle shape may have changed." }
+    $found.FullName
+}
 
 # --- step 2: msiexec /a (administrative image unpack — no elevation, no install) ---
 $adminImg = Join-Path $scratch "admin-install"
 if (Test-Path -LiteralPath $adminImg) { Remove-Item -Recurse -Force -LiteralPath $adminImg }
 New-Item -ItemType Directory -Force -Path $adminImg | Out-Null
-foreach ($msi in @($msiMin.FullName, $msiAdd.FullName)) {
+foreach ($msi in @($msis)) {
     $msiLog = Join-Path $scratch ("msi-" + (Split-Path $msi -Leaf) + ".log")
     Write-Host ("msiexec administrative-image unpack: " + (Split-Path $msi -Leaf))
     $p = Start-Process msiexec -ArgumentList @('/a', $msi, '/qn', "TARGETDIR=$adminImg", '/L*v', $msiLog) -Wait -PassThru
@@ -217,7 +239,7 @@ $collected | ForEach-Object { "   {0,-22} v{1}  {2}" -f $_.Name, $_.FileVersion,
 # --- step 4: verify vs manifest, OR (in -Regenerate) print fresh manifest values ---
 if ($Regenerate) {
     Write-Host ""
-    Write-Host "=== -Regenerate: paste these into installer/runtime/vcredist/MANIFEST.psd1 ===" -ForegroundColor Cyan
+    Write-Host "=== -Regenerate: paste these into $relDir/MANIFEST.psd1 ===" -ForegroundColor Cyan
     Write-Host ("    RedistVersion = '{0}'" -f $bundleVer)
     Write-Host "    Dlls = @("
     foreach ($c in $collected) {

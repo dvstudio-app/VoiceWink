@@ -119,14 +119,13 @@ internal static class PreSendIdentityCoordinator
         Func<PasteResult?> checkTargetAlive,
         Func<PasteResult?> checkForeground,
         Func<NativeInterop.INPUT[], bool> send,
-        Func<PasteResult> sendFailedResult,
-        Func<PasteResult?>? checkProceed = null)
+        Func<PasteResult> sendFailedResult)
     {
         var modifierPrefix = await prepare().ConfigureAwait(false);
         return RunPreWaitedTail(
             modifierPrefix, guardApplicable, priorIdentity, usableBaselineIdentity,
             probeIdentity, logOutcome, blockedResult, checkFallbackBaseline,
-            checkTargetAlive, checkForeground, send, sendFailedResult, checkProceed);
+            checkTargetAlive, checkForeground, send, sendFailedResult);
     }
 
     /// <summary>NON-ASYNC by design — see <see cref="RunPreWaitedSequenceAsync"/>. Every
@@ -143,8 +142,7 @@ internal static class PreSendIdentityCoordinator
         Func<PasteResult?> checkTargetAlive,
         Func<PasteResult?> checkForeground,
         Func<NativeInterop.INPUT[], bool> send,
-        Func<PasteResult> sendFailedResult,
-        Func<PasteResult?>? checkProceed)
+        Func<PasteResult> sendFailedResult)
     {
         var identity = Resolve(guardApplicable, priorIdentity, usableBaselineIdentity, probeIdentity);
         logOutcome(identity);
@@ -157,8 +155,6 @@ internal static class PreSendIdentityCoordinator
             return new PreSendSequenceResult(PreSendSequenceStage.TargetLost, targetFail, identity);
         if (checkForeground() is { } foregroundFail)
             return new PreSendSequenceResult(PreSendSequenceStage.ForegroundLost, foregroundFail, identity);
-        if (checkProceed?.Invoke() is { } proceedFail)
-            return new PreSendSequenceResult(PreSendSequenceStage.ProceedDeclined, proceedFail, identity);
         if (!send(modifierPrefix))
             return new PreSendSequenceResult(PreSendSequenceStage.SendFailed, sendFailedResult(), identity);
 
@@ -166,20 +162,17 @@ internal static class PreSendIdentityCoordinator
     }
 }
 
-/// <summary>Which stage of the pre-waited sequence settled the attempt. The six failure
+/// <summary>Which stage of the pre-waited sequence settled the attempt. The five failure
 /// stages preserve their caller-supplied results. Ordinary outcomes are:
 /// Blocked → FocusMovedInTarget, FallbackBaselineUnusable → NoEditableFocused,
 /// TargetLost → TargetGone, ForegroundLost → LostForegroundPostUia,
-/// ProceedDeclined → AbortedByRecordingStart (image), SendFailed → SendInputFailed.</summary>
-/// <remarks>The image SendFailed callback preserves its late recording-gate classification:
-/// an incomplete send coinciding with a new recording reports AbortedByRecordingStart.</remarks>
+/// SendFailed → SendInputFailed.</summary>
 internal enum PreSendSequenceStage
 {
     Blocked,
     FallbackBaselineUnusable,
     TargetLost,
     ForegroundLost,
-    ProceedDeclined,
     SendFailed,
     Dispatched
 }

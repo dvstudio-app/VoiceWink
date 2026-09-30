@@ -29,10 +29,14 @@ public sealed class AIProviderRegistry
         => _byProvider.TryGetValue(provider, out var descriptor) && descriptor.SupportsImageGeneration;
 
     /// <summary>
-    /// Build the standard production registry with every supported provider (seven cloud + the LAI-1 Local server).
-    /// Used by DI registration and by tests that need a working registry.
+    /// Build the standard registry with every supported provider (seven cloud, the LAI-1 Local server
+    /// and the LAI-4 "On this PC" engine). Tests use this engine-less form: "On this PC" keeps a
+    /// descriptor and refuses every call.
     /// </summary>
-    public static AIProviderRegistry CreateDefault() => new(new IAIProviderDescriptor[]
+    public static AIProviderRegistry CreateDefault() => CreateDefault(onThisPc: null);
+
+    /// <summary>The production registry: <paramref name="onThisPc"/> is the DI engine host.</summary>
+    internal static AIProviderRegistry CreateDefault(LocalEngine.OnThisPcEngine? onThisPc) => new(new IAIProviderDescriptor[]
     {
         new AnthropicDescriptor(),
         new OpenAIStyleDescriptor(AIProvider.OpenAI, supportsImageGeneration: true),
@@ -57,6 +61,7 @@ public sealed class AIProviderRegistry
         new OpenAIStyleDescriptor(AIProvider.OpenRouter, supportsImageGeneration: true),
         new OpenAIStyleDescriptor(AIProvider.Cerebras, supportsImageGeneration: false),
         new LocalServerDescriptor(),
+        new OnThisPcDescriptor(onThisPc),
     });
 
     /// <summary>LAI-1: false for a provider that works without a stored API key.</summary>

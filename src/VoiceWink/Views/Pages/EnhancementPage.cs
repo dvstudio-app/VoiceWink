@@ -20,6 +20,8 @@ using VoiceWink.Services.System; // SettingsService (still used; Codex's unused-
 using VoiceWink.ViewModels;
 using VoiceWink.Views.Dialogs;
 
+using VoiceWink.Services.AIEnhancement.LocalEngine;
+
 namespace VoiceWink.Views.Pages;
 
 /// <summary>
@@ -217,9 +219,25 @@ public sealed class EnhancementPage : Page
                 header,
                 enableToggle,
                 providerSection,
-                promptsSection
             }
         };
+        // LAI-3/LAI-4: the local AI models — shown while "On this PC" is the text provider, the one
+        // provider that uses them. A download or delete refreshes that provider's model list.
+        if (OnThisPcAvailability.IsOffered && _viewModel.LocalModels is { } localModels)
+        {
+            var localModelsCard = LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
+                _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels);
+            localModelsCard.Visibility = _viewModel.IsOnThisPcSelected ? Visibility.Visible : Visibility.Collapsed;
+            PropertyChangedEventHandler localModelsVisibilityHandler = (_, e) =>
+            {
+                if (e.PropertyName == nameof(EnhancementViewModel.IsOnThisPcSelected))
+                    DispatcherQueue.TryEnqueue(() => localModelsCard.Visibility =
+                        _viewModel.IsOnThisPcSelected ? Visibility.Visible : Visibility.Collapsed);
+            };
+            RegisterViewModelSubscription(localModelsVisibilityHandler);
+            root.Children.Add(localModelsCard);
+        }
+        root.Children.Add(promptsSection);
 
         AppTheme.SetPageScrollContent(this, root);
 
@@ -253,7 +271,7 @@ public sealed class EnhancementPage : Page
             var combo = new ComboBox { Width = 280, HorizontalAlignment = HorizontalAlignment.Left };
             AppTheme.AllowParentScroll(combo);
             var registry = App.Services.GetRequiredService<AIProviderRegistry>();
-            foreach (var p in EnhancementViewModel.AvailableProviders)
+            foreach (var p in EnhancementViewModel.ProvidersIncluding(initial))
             {
                 if (!imageOnly || registry.SupportsImageGeneration(p))
                     combo.Items.Add(AIProviderDisplay.Label(p));
@@ -642,6 +660,23 @@ public sealed class EnhancementPage : Page
         // flood both dropdowns at once.
         var (showAllCheck, showAllWarning) = BuildShowAllModelsRow(
             () => _viewModel.ShowAllModels, v => _viewModel.ShowAllModels = v);
+        // LAI-4: "On this PC" has no key and a fixed catalog — no key row, no show-all escape hatch.
+        void ApplyOnThisPcRows()
+        {
+            var keyRows = _viewModel.IsOnThisPcSelected ? Visibility.Collapsed : Visibility.Visible;
+            apiKeyLabel.Visibility = keyRows;
+            saveBtnRow.Visibility = keyRows;
+            showAllCheck.Visibility = keyRows;
+            showAllWarning.Visibility = !_viewModel.IsOnThisPcSelected && _viewModel.ShowAllModels
+                ? Visibility.Visible : Visibility.Collapsed;
+        }
+        ApplyOnThisPcRows();
+        PropertyChangedEventHandler onThisPcRowsHandler = (_, e) =>
+        {
+            if (e.PropertyName == nameof(EnhancementViewModel.IsOnThisPcSelected))
+                DispatcherQueue.TryEnqueue(ApplyOnThisPcRows);
+        };
+        RegisterViewModelSubscription(onThisPcRowsHandler);
         var (showAllImageCheck, showAllImageWarning) = BuildShowAllModelsRow(
             () => _viewModel.ShowAllImageModels, v => _viewModel.ShowAllImageModels = v);
 
@@ -1929,12 +1964,17 @@ public sealed class EnhancementPage : Page
             providerCombo.Items.Add(defaultProviderLabel);
             // Items are DISPLAY labels (LAI-1: "Local server"); every read below converts back through
             // AIProviderDisplay.TryParse, and the stored override stays the member name.
-            foreach (var p in EnhancementViewModel.AvailableProviders)
+            // A saved override is always listed, offered here or not: a combo that cannot show it
+            // would save as "(Default)" and move this prompt to the global provider.
+            var hasSavedOverride = Enum.TryParse<AIProvider>(prompt.ProviderOverride, out var savedOverride)
+                                   && !string.IsNullOrEmpty(prompt.ProviderOverride);
+            foreach (var p in hasSavedOverride
+                         ? EnhancementViewModel.ProvidersIncluding(savedOverride)
+                         : EnhancementViewModel.AvailableProviders)
                 providerCombo.Items.Add(AIProviderDisplay.Label(p));
 
             // Pre-select from saved override
-            if (!string.IsNullOrEmpty(prompt.ProviderOverride)
-                && Enum.TryParse<AIProvider>(prompt.ProviderOverride, out var savedOverride))
+            if (hasSavedOverride)
             {
                 providerCombo.SelectedItem = AIProviderDisplay.Label(savedOverride);
             }

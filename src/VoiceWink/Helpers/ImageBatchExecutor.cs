@@ -40,7 +40,7 @@ internal sealed record ItemFailureRowPersist(
 /// batch loop, decides the terminal action, executes its side effects, and hands the
 /// SINGLE ownership list of disposables to the one compose-and-queue site. Extracted
 /// from the job body so the seam tests execute THIS composition — exactly-one queue,
-/// claim transfer XOR disposal on every exit, no paste at N&gt;1 — instead of trusting
+/// claim transfer XOR disposal on every exit, no clipboard write at N&gt;1 — instead of trusting
 /// private <c>MainViewModel</c> wiring (Codex round 5).
 ///
 /// <para><b>Ownership:</b> the claims list is seeded with the request's reference lease
@@ -68,7 +68,7 @@ internal static class ImageBatchExecutor
         Action<int> reportProgress,
         Func<bool> isShutdownRequested,
         Func<Exception, Task<MarkerPersist>> persistFailedMarkerAsync,
-        Func<Task<(string Status, MiniRecorderTone Tone)>> pasteAsync,
+        Func<Task<(string Status, MiniRecorderTone Tone)>> copyAsync,
         Func<ImageBatchRunner.BatchResult, MarkerPersist?, (string Status, MiniRecorderTone Tone)?,
             IReadOnlyList<ReferenceImageSelection>?, List<IDisposable>, Task> composeAndQueueAsync,
         Action<int, int> presentBareCancel,
@@ -119,11 +119,11 @@ internal static class ImageBatchExecutor
                 result.Reason, result.Completed, count, isShutdownRequested());
             switch (action)
             {
-                case ImageBatchPolicy.BatchTerminalAction.PasteThenPresent:
-                    // Clipboard/paste immediately before the presentation queue — the
+                case ImageBatchPolicy.BatchTerminalAction.CopyThenPresent:
+                    // Clipboard copy immediately before the presentation queue — the
                     // IMG-BG write-then-announce ordering, unchanged for N=1.
-                    var pasteDerived = await pasteAsync();
-                    await composeAndQueueAsync(result, null, pasteDerived, lastTerminalRearm, claims);
+                    var copyDerived = await copyAsync();
+                    await composeAndQueueAsync(result, null, copyDerived, lastTerminalRearm, claims);
                     transferred = true;
                     break;
 

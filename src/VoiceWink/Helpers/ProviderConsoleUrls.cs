@@ -47,6 +47,8 @@ internal static class ProviderConsoleUrls
         AIProvider.Cerebras => "https://cloud.cerebras.ai/",
         // LAI-1: no vendor console — the key, if any, is one the user set on their own server.
         AIProvider.LocalServer => null,
+        // LAI-4: keyless and nothing to manage outside the app.
+        AIProvider.OnThisPc => null,
         _ => null,
     };
 
