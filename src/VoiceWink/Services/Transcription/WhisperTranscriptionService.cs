@@ -213,7 +213,10 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
     /// Construct a <see cref="WhisperProcessor"/> from an already-loaded factory.
     /// Extracted so both the full-reload and prompt-only paths share identical builder configuration.
     /// </summary>
-    private static WhisperProcessor BuildProcessor(WhisperFactory factory, string lang, string? prompt, string modelPath)
+    /// <param name="trace">TRN-75: false for the GPU self-test's throwaway English processor and the
+    /// auto processor rebuilt after it — neither is a configuration a dictation decodes with that
+    /// the load's own entry has not already traced.</param>
+    private static WhisperProcessor BuildProcessor(WhisperFactory factory, string lang, string? prompt, string modelPath, bool trace = true)
     {
         // Decode configuration lives in Helpers/WhisperDecodeSettings — one reviewable place that
         // says what we send whisper.cpp and what we deliberately leave at its default. Read here,
@@ -233,10 +236,10 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
         {
             builder = builder.WithTemperature(t);
         }
-        if (!IsAutoLanguage(lang))
-        {
-            builder = builder.WithLanguage(lang);
-        }
+        // TRN-75: ALWAYS set the language. Left unset, whisper.net keeps whisper.cpp's default "en",
+        // so "auto" decoded every recording as English. "auto" makes whisper.cpp detect, then
+        // transcribe in the detected language (Helpers/WhisperLanguageParameter has the evidence).
+        builder = builder.WithLanguage(Helpers.WhisperLanguageParameter.For(lang));
         if (!string.IsNullOrWhiteSpace(prompt))
         {
             builder = builder.WithPrompt(prompt);
@@ -255,6 +258,8 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
         // 2026-07-26, was "bias prompt"). Keyterm providers keep "keyterms": a
         // discriminative keyterm list is not a prompt, and those labels mirror THEIR
         // wire field names.
+        if (trace)
+        {
         Helpers.PromptTraceLog.Write(Helpers.PromptTraceOp.LocalWhisperTranscription,
             new Helpers.TraceMeta(Provider: "LocalWhisper",
                 Model: Path.GetFileNameWithoutExtension(modelPath)),
@@ -270,6 +275,7 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
                 ? tt.ToString(global::System.Globalization.CultureInfo.InvariantCulture)
                 : "(whisper.cpp default)"),
             ("prompt", prompt));
+        }
         return builder.Build();
     }
 
@@ -293,7 +299,9 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
     /// GPU self-test — the caller judges the returned words (<c>GpuSelfTestVerdict</c>), but only
     /// when that language is auto or English: the processor is built <c>WithLanguage</c> at load,
     /// so a Dutch-pinned one decodes the English clip AS Dutch by construction and a low recall
-    /// there proves the pin, never the GPU (Kimi diff r1 Blocker). The language is captured under
+    /// there proves the pin, never the GPU (Kimi diff r1 Blocker). An auto processor decodes the
+    /// clip pinned to English and reports "en" (TRN-75: auto now detects, and a misdetected clip
+    /// would prove nothing about the GPU either). The language is captured under
     /// the model lock, beside the processor it describes, so a concurrent
     /// <see cref="SetLanguageAsync"/> cannot misreport it. Without a clip the caller passes two
     /// seconds of silence and the decode is the TRN-49 warm-up unchanged. Null means nothing was
@@ -319,17 +327,89 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
                 return null;
             }
             var language = _language; // the language THIS processor was built with (same lock)
+            // TRN-75: an auto processor now DETECTS the language, and the golden clip is English.
+            // The self-test keeps decoding it as English on purpose: a misdetected short clip
+            // would score a low recall and persist a GPU FAIL on a healthy card, and detection
+            // would add a pass the speed floor never measured. It decodes on a SEPARATE English
+            // processor built from the same factory, never by switching the auto processor's
+            // language: a cancelled enumeration returns before whisper.net's native worker does,
+            // and that worker still reads the language string a ChangeLanguage would free
+            // (Codex diff r1). A processor frees its native strings only in Dispose, and
+            // DisposeAsync first takes the processing semaphore the worker holds for the whole
+            // native call — so a processor's strings can never be freed under its own worker.
+            // The swap runs AFTER onDecodeStarting so the TRN-64 watchdog covers it too (an idle
+            // processor disposes and a builder builds in well under a millisecond's share of the
+            // floor; the samples are not measurably moved).
+            var pinForSelfTest = Helpers.WhisperLanguageParameter.IsAuto(language);
+            WhisperProcessor? selfTestProcessor = null;
             onDecodeStarting?.Invoke();
-            var text = new global::System.Text.StringBuilder();
-            await foreach (var segment in _processor.ProcessAsync(samples, ct).ConfigureAwait(false))
+            try
             {
-                text.Append(segment.Text);
+                if (pinForSelfTest)
+                {
+                    var autoProcessor = _processor;
+                    _processor = null;
+                    // NOT cancellable (Codex + Kimi, TRN-75 r2): a worker orphaned by an earlier
+                    // cancelled dictation may still be inside native code on this processor, and
+                    // the factory it uses must outlive it. Abandoning this dispose would let a later
+                    // LoadModelCoreAsync / SetLanguageAsync / Dispose free the factory under that
+                    // worker. Awaited under the model lock, like every pre-TRN-75 processor dispose.
+                    await autoProcessor.DisposeAsync().ConfigureAwait(false);
+                    selfTestProcessor = BuildProcessor(_factory!, Helpers.WhisperLanguageParameter.SelfTestLanguage,
+                        _prompt, _loadedModelPath ?? string.Empty, trace: false);
+                    language = Helpers.WhisperLanguageParameter.SelfTestLanguage;
+                }
+                var decoder = selfTestProcessor ?? _processor!;
+                var text = new global::System.Text.StringBuilder();
+                await foreach (var segment in decoder.ProcessAsync(samples, ct).ConfigureAwait(false))
+                {
+                    text.Append(segment.Text);
+                }
+                return (text.ToString(), language);
             }
-            return (text.ToString(), language);
+            finally
+            {
+                if (pinForSelfTest)
+                {
+                    await RestoreAutoProcessorAfterSelfTestAsync(selfTestProcessor).ConfigureAwait(false);
+                }
+            }
         }
         finally
         {
             _modelLock.Release();
+        }
+    }
+
+    /// <summary>TRN-75: the second half of the self-test's English decode — drain and dispose the
+    /// throwaway processor, then rebuild the auto processor from the same factory. Caller holds the
+    /// model lock. A rebuild that throws is logged and leaves <c>_processor</c> null, which the next
+    /// prepare heals (<see cref="LoadModelCoreAsync"/> rebuilds a missing processor from the loaded
+    /// factory) and a decode without one refuses with "No Whisper model loaded"; it never masks the
+    /// decode's own outcome.</summary>
+    private async Task RestoreAutoProcessorAfterSelfTestAsync(WhisperProcessor? selfTestProcessor)
+    {
+        try
+        {
+            if (selfTestProcessor is not null)
+            {
+                // UNBOUNDED, under the model lock (Codex + Kimi, TRN-75 r2): DisposeAsync waits for
+                // a cancelled decode's native worker to exit, and the shared factory must outlive
+                // that worker — a bounded wait that moved on let a model switch, language reload
+                // or shutdown free the factory under it. A wedged worker therefore keeps the lock,
+                // the same as every pre-TRN-75 processor dispose; the TRN-64 watchdog refuses
+                // decodes outside the lock and shutdown already bounds its own lock wait.
+                await selfTestProcessor.DisposeAsync().ConfigureAwait(false);
+            }
+            if (_factory is not null)
+            {
+                _processor = BuildProcessor(_factory, _language, _prompt, _loadedModelPath ?? string.Empty, trace: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Whisper: could not restore the auto-detect processor after the GPU self-test ({ExceptionType}) - the next prepare rebuilds it (TRN-75)",
+                ex.GetType().Name);
         }
     }
 
@@ -647,7 +727,7 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
     }
 
     private static bool IsAutoLanguage(string language)
-        => language.Equals(AutoLanguage, StringComparison.OrdinalIgnoreCase);
+        => Helpers.WhisperLanguageParameter.IsAuto(language);
 
     public async ValueTask DisposeAsync()
     {

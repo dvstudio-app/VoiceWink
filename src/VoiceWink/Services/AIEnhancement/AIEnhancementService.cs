@@ -1284,7 +1284,9 @@ public sealed class AIEnhancementService
         deadlineCts.CancelAfter(config.Provider == AIProvider.LocalServer ? _localServerEnhancementTimeout : _enhancementTimeout);
         try
         {
-            return await CallProviderAsync(config, systemPrompt, userText, deadlineCts.Token).ConfigureAwait(false);
+            return await Helpers.OperationTiming.TimeEnhancementAsync(
+                config.Provider.ToString(), config.ModelName, userText.Length,
+                () => CallProviderAsync(config, systemPrompt, userText, deadlineCts.Token), ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -1540,8 +1542,9 @@ public sealed class AIEnhancementService
             ("quality", effective.Quality ?? "auto"),
             ("references", referencesDescription));
 
-        var bytes = await descriptor.GenerateImageAsync(
-            _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality, referenceImages, ct).ConfigureAwait(false);
+        var bytes = await Helpers.OperationTiming.TimeImageAsync(imageProvider.ToString(), model,
+            () => descriptor.GenerateImageAsync(
+                _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality, referenceImages, ct), ct).ConfigureAwait(false);
         return ClassifyGeneratedImage(bytes, referenceImages, effective);
     }
 
@@ -2454,8 +2457,9 @@ public sealed class AIEnhancementService
             ("quality", effective.Quality ?? "auto"),
             ("references", referencesDescription));
 
-        var bytes = await descriptor.GenerateImageAsync(
-            _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality, referenceImages, ct).ConfigureAwait(false);
+        var bytes = await Helpers.OperationTiming.TimeImageAsync(imageProvider.ToString(), modelId,
+            () => descriptor.GenerateImageAsync(
+                _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality, referenceImages, ct), ct).ConfigureAwait(false);
         return ClassifyGeneratedImage(bytes, referenceImages, effective);
     }
 }

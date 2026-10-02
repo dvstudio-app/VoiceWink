@@ -15,6 +15,20 @@ public sealed class AudioDeviceManager : IDisposable
 {
     private static ILogger Logger => Log.ForContext<AudioDeviceManager>();
 
+    /// <summary>
+    /// AUD-19 (2026-10-02): the Windows default ROLE that "System default" follows — the default
+    /// marked in the Microphone list AND the device a recording opens, so the two can never disagree.
+    /// <para><b>Console, not Communications.</b> Windows keeps a separate default per role. The Sound
+    /// settings page sets the Console default; the Communications
+    /// default is set only on the legacy Recording tab, and Windows can move it to a Bluetooth headset
+    /// on its own when one connects. Until this change both sites read Communications, so a user who
+    /// switched their default back to the built-in microphone in Sound settings kept recording from
+    /// the headset, and the Settings line still named it (field case: support mail 2026-09-30, the
+    /// headset in use before and after an app restart). Console is also what NAudio's device-less
+    /// <c>new WasapiCapture()</c> opens, the fallback both capture paths already used.</para>
+    /// </summary>
+    internal const Role SystemDefaultCaptureRole = Role.Console;
+
     private readonly Thread _staThread;
     private readonly BlockingCollection<Action> _workQueue = new();
     private readonly TaskCompletionSource _threadReady = new();
@@ -134,7 +148,7 @@ public sealed class AudioDeviceManager : IDisposable
 
                 try
                 {
-                    using var defaultDevice = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+                    using var defaultDevice = _enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, SystemDefaultCaptureRole);
                     var match = result.FirstOrDefault(d => d.Id == defaultDevice.ID);
                     if (match != null)
                         match.IsDefault = true;
@@ -293,7 +307,7 @@ public sealed class AudioDeviceManager : IDisposable
         {
             var sw = global::System.Diagnostics.Stopwatch.StartNew();
             using var enumerator = new MMDeviceEnumerator();
-            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
+            var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, SystemDefaultCaptureRole);
             sw.Stop();
             if (sw.ElapsedMilliseconds > 50)
                 Logger.Warning("GetSystemDefaultDevice took {Elapsed}ms (slow COM call)", sw.ElapsedMilliseconds);

@@ -1197,7 +1197,9 @@ public sealed class StandingCaptureService : IDisposable
         public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
         {
             if (flow != DataFlow.Capture) return;
-            if (role != Role.Console && role != Role.Communications) return;
+            // AUD-19: only the role "System default" follows. A Communications-only change (Windows
+            // moving that default to a Bluetooth headset on connect) changes nothing we record.
+            if (role != AudioDeviceManager.SystemDefaultCaptureRole) return;
             try { _owner.OnDefaultCaptureDeviceChanged(); }
             catch (Exception ex) { Logger.Debug(ex, "Default-device-change handling failed"); }
         }

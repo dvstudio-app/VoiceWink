@@ -73,20 +73,81 @@ internal static class ColdCapturePolicy
     /// existing <c>Paste target editability</c> and paste-failure log lines still
     /// record it, so a variant is discoverable without widening the trigger on
     /// speculation.</para>
+    /// <para>Since PST-17 the three non-focusability terms live in
+    /// <see cref="IsPatternlessContainer"/>; the predicate is unchanged.</para>
     /// </summary>
     public static bool ShouldReCapture(UiaElementShape? capturedShape)
     {
         if (capturedShape is not { } shape)
             return false;
 
-        // The editable-shaped term is not redundant against the two pattern terms: it is
-        // what excludes a pattern-less, non-focusable element that still reports ControlType
-        // Edit, which IsEditableShapedForCapturedRescue short-circuits to editable.
-        return !NoEditableFocusGate.IsEditableShapedForCapturedRescue(shape)
-               && !shape.IsKeyboardFocusable
-               && !shape.HasTextPattern
-               && !shape.HasValuePattern;
+        return IsPatternlessContainer(shape) && !shape.IsKeyboardFocusable;
     }
+
+    /// <summary>
+    /// The cold-tree container signature WITHOUT the focusability term: not editable-shaped
+    /// and exposing neither a text nor a value pattern. Shared by <see cref="ShouldReCapture"/>
+    /// (which adds "not focusable") and PST-17's <see cref="ShouldSkipRestoreForLiveEditable"/>
+    /// (which does not), so the two can never disagree about what a bare container is.
+    /// <para>The editable-shaped term is not redundant against the two pattern terms: it is
+    /// what excludes a pattern-less element that still reports ControlType Edit, which
+    /// <see cref="NoEditableFocusGate.IsEditableShapedForCapturedRescue"/> short-circuits to
+    /// editable. The pattern terms exclude <see cref="UiaElementShape.FromReads"/>' partial-read
+    /// fold, which sets <c>HasValuePattern: true</c>.</para>
+    /// </summary>
+    public static bool IsPatternlessContainer(UiaElementShape shape)
+        => !NoEditableFocusGate.IsEditableShapedForCapturedRescue(shape)
+           && !shape.HasTextPattern
+           && !shape.HasValuePattern;
+
+    /// <summary>
+    /// PST-17: is this LIVE element a writable Edit control? Edit ONLY (Codex plan round, B2):
+    /// a focusable ARIA Group or Document with a TextPattern can be a non-editable region that
+    /// ignores Ctrl+V, and the broad <see cref="NoEditableFocusGate.IsEditableShapedForCapturedRescue"/>
+    /// predicate is acceptable only for an element the user focused at recording start — which
+    /// a live element reached without any restore is not. The read-only term removes the
+    /// read-only Edit the editable short-circuit would admit, and with it the partial-read fold
+    /// (value=true, readOnly=true); the pattern term refuses an Edit exposing neither pattern.
+    /// </summary>
+    public static bool IsWritableEditControl(UiaElementShape shape)
+        => shape.ControlTypeId == NoEditableFocusGate.UiaEditControlTypeId
+           && !(shape.HasValuePattern && shape.ValueIsReadOnly)
+           && (shape.HasTextPattern || shape.HasValuePattern);
+
+    /// <summary>
+    /// PST-17: should the identity-verified restore SKIP focusing the captured element and let
+    /// the paste land in the live focused text box instead?
+    ///
+    /// <para><b>The defect.</b> First dictation into a fresh Edge page: the recording-start
+    /// capture hit the unhydrated tree and holds a FOCUSABLE bare Pane, so PST-13's re-capture
+    /// (which needs a non-focusable one) never fires. At paste time the live focus is the real
+    /// Edit; restoring focus to the Pane "succeeds" and leaves focus on a Text element, and
+    /// PST-4's guard then blocks — our own SetFocus moved focus out of the text box.</para>
+    ///
+    /// <para><b>Every term is load-bearing.</b> The captured element is a pattern-less
+    /// container — evidence of a cold tree, never of a text box the user chose; a capture with
+    /// patterns (a read-only Document, a contenteditable) keeps PST-4's guard, which is what
+    /// keeps PST-14's case a3 blocked. The live element is a writable Edit
+    /// (<see cref="IsWritableEditControl"/>) with a readable runtime id, because the skip binds
+    /// that id and the dispatch must re-prove it after the modifier wait. Chromium-only: the
+    /// cold-tree mechanism is Chromium's, and PST-8 records that a focusable Pane can be a
+    /// working focus proxy in other app families. Foreground: a SEPARATE native sample taken
+    /// after the live UIA probe — it does not prove which window supplied that element (the
+    /// probe reads no process id); what does is the post-wait identity re-proof the
+    /// <see cref="PreRestorePassKind.LiveEditableSkip"/> stage requires.</para>
+    /// </summary>
+    public static bool ShouldSkipRestoreForLiveEditable(
+        UiaElementShape? capturedShape,
+        UiaShapeWithIdentity? live,
+        bool targetIsChromium,
+        bool targetIsForeground)
+        => capturedShape is { } captured
+           && IsPatternlessContainer(captured)
+           && live is { } l
+           && l.RuntimeId is { Length: > 0 }
+           && IsWritableEditControl(l.Shape)
+           && targetIsChromium
+           && targetIsForeground;
 
     /// <summary>
     /// Is the pipeline still inside the RECORDING SESSION, i.e. may a cold-tree upgrade

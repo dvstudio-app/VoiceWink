@@ -147,13 +147,13 @@ internal static class GpuToggleAvailability
     /// nothing about the restart: a failed <c>ShowAsync</c> (fail-soft) and "Reset all settings",
     /// which is the accepted cost of the removal.</summary>
     public const string StandardDescription =
-        "Use your graphics card to speed up local transcription models when a compatible GPU is " +
+        "Use your graphics card to speed up built-in transcription models when a compatible GPU is " +
         "available.";
 
     /// <summary>The disabled row's copy — the reason IS the description. No restart sentence:
     /// nothing the user can do on this PC changes the outcome.</summary>
     public const string NoDriverDescription =
-        "No GPU driver with Vulkan support was found on this PC, so local models run on the CPU.";
+        "No GPU driver with Vulkan support was found on this PC, so built-in models run on the CPU.";
 
     /// <summary>Advisory for <see cref="VulkanSupport.PayloadIncomplete"/>: files are missing from
     /// VoiceWink's own Vulkan runtime directory (the AV-quarantine shape). A reinstall lays the
@@ -352,7 +352,7 @@ internal static class GpuToggleAvailability
         var whisperEffect = whisperPinApplied ? "" : " from the next start of VoiceWink";
         var effect = (selfTest.Parakeet.PinsCpu, selfTest.Whisper.PinsCpu) switch
         {
-            (true, true) => whisperPinApplied ? "local models run on the CPU" : "local models run on the CPU (Whisper from the next start of VoiceWink)",
+            (true, true) => whisperPinApplied ? "built-in models run on the CPU" : "built-in models run on the CPU (Whisper from the next start of VoiceWink)",
             (true, false) => "Parakeet runs on the CPU",
             _ => "Whisper runs on the CPU" + whisperEffect,
         };
@@ -363,7 +363,7 @@ internal static class GpuToggleAvailability
                       && (!selfTest.Whisper.PinsCpu || selfTest.Whisper.Outcome == GpuSelfTestOutcome.Slower);
         var subject = (selfTest.Parakeet.PinsCpu, selfTest.Whisper.PinsCpu) switch
         {
-            (true, true) => "local models",
+            (true, true) => "built-in models",
             (true, false) => "Parakeet",
             _ => "Whisper",
         };

@@ -3,11 +3,12 @@ using VoiceWink.Models.Enums;
 
 namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 
-/// <summary>The three tiers of the bundled engine's catalog, most capable last.</summary>
+/// <summary>The four tiers of the bundled engine's catalog, most capable last.</summary>
 internal enum LocalModelTier
 {
     Light,
     Standard,
+    Large,
     Best,
 }
 
@@ -24,9 +25,10 @@ internal sealed record LocalModelFile(
 /// its Accuracy / Speed stars (1-5, the Models page's scale).</summary>
 /// <remarks><b>Where the stars come from</b> (the local AI plan's bench, `30-claude-revised-plan.md`,
 /// one desktop, the owner's 40-case dictation corpus, the shipped envelope): Accuracy follows the
-/// pass score — Gemma 4 12B 40/40 (★5), Qwen3.5 4B 35/40 (★4), Qwen3.5 2B 28/40 (★3). Speed follows
+/// pass score — Gemma 4 12B 40/40 (★5), Qwen3.5 9B 37/40 (★5), Qwen3.5 4B 35/40 (★4), Qwen3.5 2B 28/40 (★3). Speed follows
 /// the measured cleanup times, relative to one another — the 2B about twice as fast as the 4B on the
-/// same CPU (★5 / ★4), the 12B two to five times slower than the 4B on the same graphics card (★3).
+/// same CPU (★5 / ★4), the 9B between the 4B and the 12B on a graphics card (★3), and the 12B two to
+/// five times slower than the 4B on the same graphics card (★2).
 /// A model or engine change re-runs the bench and revisits these. No language is named: the bench
 /// measured four, and the per-language line waits for more (owner decision 2026-09-30).</remarks>
 internal sealed record LocalModelEntry(
@@ -75,7 +77,7 @@ internal static class LocalModelCatalog
     internal const string MirrorBase = "https://models.voicewink.app/llm/";
 
     /// <summary>Qwen's licence file (Apache 2.0 with Alibaba Cloud's copyright line), identical
-    /// in the 2B and 4B repositories; mirrored once per model so each key names its source.</summary>
+    /// in the 2B, 4B and 9B repositories; mirrored once per model so each key names its source.</summary>
     private const long QwenLicenceBytes = 11_544;
     private const string QwenLicenceSha256 = "bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a";
 
@@ -121,12 +123,36 @@ internal static class LocalModelCatalog
             "https://huggingface.co/Qwen/Qwen3.5-4B/resolve/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a/LICENSE"),
         ValidatedOnLlamaBuild: LlamaServerPayload.Build);
 
+    /// <summary>Qwen3.5 9B (owner, 2026-10-01: in his own tests it cleaned dictations the 4B
+    /// failed). Bench, RTX 3080 desktop: 37/40 against the 4B's 35/40 and Gemma's 40/40, median
+    /// 0.35 s against 0.28 s and 0.83 s; laptop on Ollama: median 6.2 s, about twice the 4B.</summary>
+    internal static readonly LocalModelEntry Large = new(
+        Id: "qwen3.5-9b-q4km",
+        DisplayName: "Qwen3.5 9B",
+        Tier: LocalModelTier.Large,
+        Accuracy: 5,
+        Speed: 3,
+        Licence: "Apache-2.0",
+        Model: new LocalModelFile(
+            "Qwen3.5-9B-Q4_K_M.gguf",
+            MirrorBase + "unsloth-Qwen3.5-9B-GGUF/3885219b/Qwen3.5-9B-Q4_K_M.gguf",
+            5_680_522_464,
+            "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
+            "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"),
+        LicenceFile: new LocalModelFile(
+            "LICENSE",
+            MirrorBase + "Qwen-Qwen3.5-9B/c2022362/LICENSE",
+            QwenLicenceBytes,
+            QwenLicenceSha256,
+            "https://huggingface.co/Qwen/Qwen3.5-9B/resolve/c202236235762e1c871ad0ccb60c8ee5ba337b9a/LICENSE"),
+        ValidatedOnLlamaBuild: LlamaServerPayload.Build);
+
     internal static readonly LocalModelEntry Best = new(
         Id: "gemma-4-12b-qat",
         DisplayName: "Gemma 4 12B",
         Tier: LocalModelTier.Best,
         Accuracy: 5,
-        Speed: 3,
+        Speed: 2,
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
@@ -144,8 +170,8 @@ internal static class LocalModelCatalog
             "https://www.apache.org/licenses/LICENSE-2.0.txt"),
         ValidatedOnLlamaBuild: LlamaServerPayload.Build);
 
-    /// <summary>Display order: the default first, then the larger, then the smaller.</summary>
-    internal static readonly IReadOnlyList<LocalModelEntry> All = [Standard, Best, Light];
+    /// <summary>Display order: the default first, then the larger ones, then the smaller.</summary>
+    internal static readonly IReadOnlyList<LocalModelEntry> All = [Standard, Large, Best, Light];
 
     internal static LocalModelEntry? Find(string id)
         => All.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.Ordinal));

@@ -18,7 +18,7 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 /// transcript and marks History.</item>
 /// <item><b>First-use check before any dictation (Codex plan B1):</b> the first load of a model on
 /// this llama build + display driver runs the GPU self-test in the background; until it settles,
-/// a dictation for that model pastes raw at once ("Local AI getting ready") — even while a healthy
+/// a dictation for that model pastes raw at once ("AI enhancement warming up") — even while a healthy
 /// child exists, so no dictation reaches a GPU that has not passed.</item>
 /// <item><b>The check also picks the faster route:</b> after a Pass the same fixed request is timed
 /// once on the GPU and once on the CPU, and the model runs where it was faster on THIS PC
@@ -37,16 +37,17 @@ public sealed class OnThisPcEngine : IDisposable
     private static ILogger Logger => Log.ForContext<OnThisPcEngine>();
 
     // Pill copy: MainViewModel.ComposeFallbackFailureStatus reserves 26 UTF-16 units for a reason.
-    internal const string NotInstalledMessage = "Local model not installed";
-    internal const string GettingReadyMessage = "Local AI getting ready";
-    internal const string UnavailableMessage = "Local AI unavailable";
+    internal const string NotInstalledMessage = "AI model not installed";
+    internal const string GettingReadyMessage = "AI enhancement warming up";
+    internal const string UnavailableMessage = "AI enhancement unavailable";
     internal const string TooLongMessage = "Dictation too long";
-    internal const string StoppedMessage = "Local AI stopped";
+    internal const string StoppedMessage = "AI enhancement stopped";
 
     /// <summary>A resident child idle this long is retired, giving its RAM/VRAM back (the 4B held
-    /// +6.6 GB of commit idle on the laptop). Provisional until LAI-0 measures it; a reload is
-    /// 1.3–7 s and prepare-on-record hides most of it.</summary>
-    internal static readonly TimeSpan DefaultIdleUnload = TimeSpan.FromMinutes(5);
+    /// +6.6 GB of commit idle on the laptop). 30 minutes since 2026-10-01 (owner; 5 before) — the
+    /// Local server provider's Ollama <c>keep_alive</c> window, so a dictation after a coffee break
+    /// does not pay the 1.3–7 s reload; prepare-on-record hides most of a reload either way.</summary>
+    internal static readonly TimeSpan DefaultIdleUnload = TimeSpan.FromMinutes(30);
 
     /// <summary>Tokens the chat template adds around the system and user turns, beyond the texts'
     /// own tokens — the admission check's margin.</summary>
@@ -172,6 +173,36 @@ public sealed class OnThisPcEngine : IDisposable
         lock (_state)
         {
             return _warmups.ContainsKey(identity) || IsWarmupOwedLocked(identity);
+        }
+    }
+
+    /// <summary>The model's speed measured on this PC by its first-use check — the timed run of the
+    /// route it uses — or null when nothing was measured (no check yet, no GPU to check, a failed GPU)
+    /// or when the session runs on the processor and the measurement was the GPU's.</summary>
+    internal int? MeasuredSpeedMs(string modelId)
+    {
+        var entry = LocalModelCatalog.Find(modelId);
+        if (entry is null)
+            return null;
+        lock (_state)
+        {
+            var verdict = VerdictLocked(IdentityOf(entry));
+            if (_process.LaunchMode == LlamaLaunchMode.Cpu && verdict is { Route: LlamaRoute.Gpu })
+                return null;
+            return verdict is { Verdict: LlamaSelfTestVerdict.Pass, RouteMs: { } ms } ? ms : null;
+        }
+    }
+
+    /// <summary>The running first-use check's completion, or null when none is RUNNING (one merely
+    /// owed has nothing to wait on — answering a completed task there made the rows rebuild forever).</summary>
+    internal Task? WhenFirstUseCheckSettledAsync(string modelId)
+    {
+        var entry = LocalModelCatalog.Find(modelId);
+        if (entry is null)
+            return null;
+        lock (_state)
+        {
+            return _warmups.TryGetValue(IdentityOf(entry), out var running) ? running : null;
         }
     }
 
@@ -624,11 +655,13 @@ public sealed class OnThisPcEngine : IDisposable
             {
                 // Erasure closes this under the same lock: a verdict that settles after the file was
                 // deleted is dropped, never written back (Codex plan B2).
-                var entryNow = new LlamaGpuCheckStore.Entry(LlamaSelfTestVerdict.Pass, adapter, route);
+                var gpuMs = (int)gpu.Elapsed.TotalMilliseconds;
+                int? cpuMs = cpu is { Completed: true } done ? (int)done.Elapsed.TotalMilliseconds : null;
+                var entryNow = new LlamaGpuCheckStore.Entry(LlamaSelfTestVerdict.Pass, adapter, route,
+                    route == LlamaRoute.Cpu ? cpuMs : gpuMs);
                 if (!_closed)
                 {
-                    _checks.Record(identity, LlamaSelfTestVerdict.Pass, adapter, route,
-                        (int)gpu.Elapsed.TotalMilliseconds, cpu is { Completed: true } done ? (int)done.Elapsed.TotalMilliseconds : null);
+                    _checks.Record(identity, LlamaSelfTestVerdict.Pass, adapter, route, gpuMs, cpuMs);
                 }
                 _verdicts[identity] = entryNow;
             }

@@ -653,7 +653,8 @@ public sealed class EnhancementPage : Page
             localModelsHost.Children.Add(LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
                 id => string.Equals(_viewModel.SelectedModel, id, StringComparison.Ordinal),
                 id => _viewModel.SelectedModel = id,
-                _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels));
+                _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels,
+                () => DispatcherQueue.TryEnqueue(ApplyOnThisPcRows)));
         }
         void ApplyOnThisPcRows()
         {

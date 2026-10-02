@@ -115,7 +115,7 @@ public sealed class ModelsPage : Page
     private void BuildUI()
     {
         // ── Page header ───────────────────────────────────────────────
-        var header = AppTheme.CreatePageHeader("Models", "Select a local or cloud model for transcription.");
+        var header = AppTheme.CreatePageHeader("Models", "Select a built-in or cloud model for transcription.");
 
         // ── Default model info card ───────────────────────────────────
         var activeModelSection = AppTheme.CreateSectionHeader("Active Model");
@@ -123,7 +123,7 @@ public sealed class ModelsPage : Page
         var defaultModelCard = CreateDefaultModelCard();
 
         // ── Local Models section ──────────────────────────────────────
-        var localSection = AppTheme.CreateSectionHeader("Local Models");
+        var localSection = AppTheme.CreateSectionHeader("Built-in Models");
         // UI-11: the GPU acceleration row leads the section, above the rows whose speed stars it
         // governs — those are rendered per engine from LocalComputeSnapshot, so this is the one
         // page where the toggle's effect is visible.
@@ -1599,7 +1599,7 @@ public sealed class ModelsPage : Page
     /// uses, so every row and the Active Model card of one refresh share one reading
     /// (TRN-52, Codex diff r1 Blocker).</summary>
     internal static string GetModelDescription(string modelName, LocalComputeSnapshot compute) =>
-        ModelRatings.Describe(modelName, "Whisper model for local transcription.", compute);
+        ModelRatings.Describe(modelName, "Whisper model for built-in transcription.", compute);
 
     internal static string GetCloudModelDescription(string modelName) =>
         ModelRatings.Describe(modelName, "Cloud transcription model.");

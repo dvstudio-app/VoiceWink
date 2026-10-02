@@ -375,7 +375,7 @@ public sealed class AppModePage : Page
             foreach (var cloud in CloudModels.Models)
                 cloudModelCombo.Items.Add(new ComboBoxItem { Content = cloud.DisplayName, Tag = cloud.Name });
 
-            modelOverridePanel.Children.Add(CreateDialogLabel("Local Model"));
+            modelOverridePanel.Children.Add(CreateDialogLabel("Built-in Model"));
             modelOverridePanel.Children.Add(localModelCombo);
             modelOverridePanel.Children.Add(CreateDialogLabel("Cloud Model"));
             modelOverridePanel.Children.Add(cloudModelCombo);

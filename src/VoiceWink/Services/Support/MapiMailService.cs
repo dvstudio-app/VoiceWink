@@ -6,7 +6,8 @@ namespace VoiceWink.Services.Support;
 
 /// <summary>
 /// Opens the user's default mail client with a message pre-filled AND the report ZIP already
-/// attached, via Simple MAPI (<c>MAPISendMail</c>). A <c>mailto:</c> link cannot carry an
+/// attached, via Simple MAPI (<c>MAPISendMailW</c>, the ANSI <c>MAPISendMail</c> only when the client
+/// refuses Unicode — REL-40). A <c>mailto:</c> link cannot carry an
 /// attachment, so this is the standard Win32 way to hand a compose window + attachment to whatever
 /// MAPI client is the default (classic Outlook, Thunderbird, …). Returns <c>false</c> when no MAPI
 /// client is registered or the call fails, so the caller can fall back to a plain <c>mailto:</c>.
@@ -20,6 +21,11 @@ public static class MapiMailService
 
     private const int MAPI_LOGON_UI = 0x00000001;
     private const int MAPI_DIALOG = 0x00000008;
+    // REL-40: on the wide call only. Without it the MAPI stub converts to ANSI ITSELF for a client
+    // that has no Unicode entry point, so a "Unicode" success would not mean the client got Unicode
+    // and the encoding line would lie; with it that client answers MAPI_E_UNICODE_NOT_SUPPORTED and
+    // the send takes the ANSI retry, which then says so (Codex plan review, 2026-10-02).
+    internal const int MAPI_FORCE_UNICODE = 0x00040000;
     private const int MAPI_TO = 1;
     private const int SUCCESS_SUCCESS = 0;
     private const int MAPI_USER_ABORT = 1;
@@ -65,8 +71,9 @@ public static class MapiMailService
         24 => "MAPI_E_INVALID_EDITFIELDS",
         25 => "MAPI_E_INVALID_RECIPS",
         26 => "MAPI_E_NOT_SUPPORTED",
-        // 27 cannot come back from OUR call -- MAPISendMailW only, and this class P/Invokes the
-        // ANSI MAPISendMail -- but a name costs nothing and its absence would read as an oversight.
+        // 27 comes back from MAPISendMailW when the default client cannot take Unicode (REL-40):
+        // the send then retries once through the ANSI MAPISendMail, so this name reaches a log
+        // only as the reason for that retry.
         27 => "MAPI_E_UNICODE_NOT_SUPPORTED",
         // 28 IS THE ONE THIS CARD IS ABOUT (Codex diff r2, verified against the MAPISendMail
         // reference: "The specified attachment was too large. No message was sent."). The owner's
@@ -134,47 +141,54 @@ public static class MapiMailService
     }
 
     private static bool SendViaSimpleMapi(string recipientEmail, string subject, string body, string? attachmentPath)
+        => SendPreferringUnicode(recipientEmail, subject, body, attachmentPath, CallMapiSendMail);
+
+    /// <summary>
+    /// REL-40: which string encoding a Simple MAPI call carries. The ANSI <c>MAPISendMail</c>
+    /// converts every string to the system code page, so a description typed in a script that
+    /// code page lacks (Chinese on a Western-locale PC, the field case) reached the compose window
+    /// as a row of <c>?</c> — and the description is not in the bundle, so the text was lost.
+    /// </summary>
+    internal enum MapiEncoding { Unicode, Ansi }
+
+    /// <summary>One native Simple MAPI call over an already-built message block. Returns the MAPI
+    /// code; throws what the P/Invoke throws (<see cref="EntryPointNotFoundException"/> when the
+    /// stub has no <c>MAPISendMailW</c>). A seam so tests never reach <c>MAPI32.DLL</c>.</summary>
+    internal delegate int MapiNativeCall(MapiEncoding encoding, IntPtr message, int flags);
+
+    /// <summary>
+    /// REL-40: may the send retry through the ANSI call after a Unicode attempt? Only when the
+    /// Unicode call REFUSED before any compose window could exist — the client cannot take Unicode
+    /// (<c>MAPI_E_UNICODE_NOT_SUPPORTED</c>) or the stub lacks the export (<paramref name="result"/>
+    /// null). Every other code is final: success and user-abort mean a window was shown, and a real
+    /// failure (REL-29's add-in veto, 28's too-large) must not open a second attempt behind the
+    /// user's back — the caller already offers a retry for those.
+    /// </summary>
+    internal static bool ShouldRetryWithAnsi(MapiEncoding tried, int? result)
+        => tried == MapiEncoding.Unicode && (result is null || result == MAPI_E_UNICODE_NOT_SUPPORTED);
+
+    internal static bool SendPreferringUnicode(
+        string recipientEmail, string subject, string body, string? attachmentPath, MapiNativeCall call)
     {
-        var recipPtr = IntPtr.Zero;
-        var filePtr = IntPtr.Zero;
+        var encoding = MapiEncoding.Unicode;
         try
         {
-            var message = new MapiMessage
+            var result = SendOnce(encoding, recipientEmail, subject, body, attachmentPath, call);
+            if (ShouldRetryWithAnsi(encoding, result))
             {
-                subject = subject ?? string.Empty,
-                noteText = body ?? string.Empty,
-            };
-
-            // Single recipient.
-            var recip = new MapiRecipDesc
-            {
-                recipClass = MAPI_TO,
-                name = recipientEmail,
-                address = "SMTP:" + recipientEmail,
-            };
-            recipPtr = Marshal.AllocHGlobal(Marshal.SizeOf<MapiRecipDesc>());
-            Marshal.StructureToPtr(recip, recipPtr, false);
-            message.recipCount = 1;
-            message.recips = recipPtr;
-
-            // Optional single attachment (the redacted log ZIP).
-            if (!string.IsNullOrEmpty(attachmentPath) && File.Exists(attachmentPath))
-            {
-                var file = new MapiFileDesc
-                {
-                    position = -1, // not embedded at a specific point in the body
-                    path = attachmentPath,
-                    name = Path.GetFileName(attachmentPath),
-                };
-                filePtr = Marshal.AllocHGlobal(Marshal.SizeOf<MapiFileDesc>());
-                Marshal.StructureToPtr(file, filePtr, false);
-                message.fileCount = 1;
-                message.files = filePtr;
+                // Information: a client without Unicode support is a fact about this PC worth
+                // seeing in a bundle (its text may lose characters), not a failure.
+                Logger.Information("Simple MAPI client does not take Unicode ({Reason}); sending through the ANSI call",
+                    result is { } code ? DescribeMapiCode(code) : "no MAPISendMailW export");
+                encoding = MapiEncoding.Ansi;
+                result = SendOnce(encoding, recipientEmail, subject, body, attachmentPath, call);
             }
 
-            var result = MAPISendMail(IntPtr.Zero, IntPtr.Zero, message, MAPI_LOGON_UI | MAPI_DIALOG, 0);
             if (result == SUCCESS_SUCCESS || result == MAPI_USER_ABORT)
+            {
+                Logger.Information("Simple MAPI compose handed over ({Encoding})", encoding);
                 return true; // compose window was shown with the attachment in place
+            }
 
             // WARNING, not Information (REL-25 item 2): this is the branch that silently turns an
             // auto-attached report into "attach it yourself", so it has to be findable in a bundle.
@@ -185,9 +199,9 @@ public static class MapiMailService
             // this line is the user's choice (retry, or the manual attach), and a log line that
             // asserts a path which no longer runs would mislead the next REL-25-style investigation.
             Logger.Warning(
-                "MAPISendMail failed with {MapiCode} ({MapiCodeValue}); the bundle is kept and the caller decides (retry or mailto). "
+                "MAPISendMail failed with {MapiCode} ({MapiCodeValue}, {Encoding}); the bundle is kept and the caller decides (retry or mailto). "
                 + "Attachment: {AttachmentPresent}, {AttachmentBytes} bytes",
-                DescribeMapiCode(result), result,
+                DescribeMapiCode(result ?? -1), result ?? -1, encoding,
                 attachmentPath != null, TryGetLength(attachmentPath));
             return false;
         }
@@ -197,12 +211,31 @@ public static class MapiMailService
                 TryGetLength(attachmentPath));
             return false;
         }
-        finally
+    }
+
+    /// <summary>Builds the message block in <paramref name="encoding"/>, makes one native call, and
+    /// frees the block. Returns null only when the Unicode export is missing.</summary>
+    private static int? SendOnce(
+        MapiEncoding encoding, string recipientEmail, string subject, string body, string? attachmentPath, MapiNativeCall call)
+    {
+        using var block = MapiMessageBlock.Create(encoding, recipientEmail, subject, body, attachmentPath);
+        try
         {
-            if (filePtr != IntPtr.Zero) { Marshal.DestroyStructure<MapiFileDesc>(filePtr); Marshal.FreeHGlobal(filePtr); }
-            if (recipPtr != IntPtr.Zero) { Marshal.DestroyStructure<MapiRecipDesc>(recipPtr); Marshal.FreeHGlobal(recipPtr); }
+            var flags = MAPI_LOGON_UI | MAPI_DIALOG;
+            if (encoding == MapiEncoding.Unicode)
+                flags |= MAPI_FORCE_UNICODE;
+            return call(encoding, block.Message, flags);
+        }
+        catch (EntryPointNotFoundException) when (encoding == MapiEncoding.Unicode)
+        {
+            return null;
         }
     }
+
+    private static int CallMapiSendMail(MapiEncoding encoding, IntPtr message, int flags)
+        => encoding == MapiEncoding.Unicode
+            ? MAPISendMailW(IntPtr.Zero, IntPtr.Zero, message, flags, 0)
+            : MAPISendMail(IntPtr.Zero, IntPtr.Zero, message, flags, 0);
 
     /// <summary>Attachment size for the failure log, or -1 when there is no attachment or it
     /// cannot be measured. Never throws — a diagnostic must not become a second failure.</summary>
@@ -213,18 +246,119 @@ public static class MapiMailService
         catch { return -1; }
     }
 
-    [DllImport("MAPI32.DLL", CharSet = CharSet.Ansi)]
-    private static extern int MAPISendMail(IntPtr session, IntPtr uiparam, MapiMessage message, int flags, int reserved);
+    private const int MAPI_E_UNICODE_NOT_SUPPORTED = 27;
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    private sealed class MapiMessage
+    [DllImport("MAPI32.DLL", EntryPoint = "MAPISendMail", ExactSpelling = true)]
+    private static extern int MAPISendMail(IntPtr session, IntPtr uiparam, IntPtr message, int flags, int reserved);
+
+    [DllImport("MAPI32.DLL", EntryPoint = "MAPISendMailW", ExactSpelling = true)]
+    private static extern int MAPISendMailW(IntPtr session, IntPtr uiparam, IntPtr message, int flags, int reserved);
+
+    /// <summary>
+    /// REL-40: the unmanaged message, recipient and attachment for one call, every string allocated
+    /// in the call's encoding and freed on dispose. ONE struct layout serves both calls because
+    /// Simple MAPI's ANSI and wide structs (<c>MapiMessage</c>/<c>MapiMessageW</c> and their
+    /// recipient and file descriptors) differ only in the TYPE their string pointers point at;
+    /// holding the strings as <see cref="IntPtr"/> moves that difference to allocation time
+    /// instead of duplicating three structs.
+    /// </summary>
+    internal sealed class MapiMessageBlock : IDisposable
+    {
+        private readonly List<IntPtr> _allocations = new();
+        private readonly MapiEncoding _encoding;
+
+        public IntPtr Message { get; private set; }
+
+        private MapiMessageBlock(MapiEncoding encoding) => _encoding = encoding;
+
+        public static MapiMessageBlock Create(
+            MapiEncoding encoding, string recipientEmail, string subject, string body, string? attachmentPath)
+        {
+            var block = new MapiMessageBlock(encoding);
+            try
+            {
+                block.Build(recipientEmail, subject, body, attachmentPath);
+                return block;
+            }
+            catch
+            {
+                block.Dispose();
+                throw;
+            }
+        }
+
+        private void Build(string recipientEmail, string subject, string body, string? attachmentPath)
+        {
+            // Single recipient.
+            var recip = new MapiRecipDesc
+            {
+                recipClass = MAPI_TO,
+                name = String(recipientEmail),
+                address = String("SMTP:" + recipientEmail),
+            };
+            var recipPtr = Struct(recip);
+
+            var message = new MapiMessage
+            {
+                subject = String(subject ?? string.Empty),
+                noteText = String(body ?? string.Empty),
+                recipCount = 1,
+                recips = recipPtr,
+            };
+
+            // Optional single attachment (the redacted log ZIP).
+            if (!string.IsNullOrEmpty(attachmentPath) && File.Exists(attachmentPath))
+            {
+                var file = new MapiFileDesc
+                {
+                    position = -1, // not embedded at a specific point in the body
+                    path = String(attachmentPath),
+                    name = String(Path.GetFileName(attachmentPath)),
+                };
+                message.fileCount = 1;
+                message.files = Struct(file);
+            }
+
+            Message = Struct(message);
+        }
+
+        private IntPtr String(string value)
+        {
+            var ptr = _encoding == MapiEncoding.Unicode
+                ? Marshal.StringToHGlobalUni(value)
+                : Marshal.StringToHGlobalAnsi(value);
+            _allocations.Add(ptr);
+            return ptr;
+        }
+
+        private IntPtr Struct<T>(T value) where T : struct
+        {
+            var ptr = Marshal.AllocHGlobal(Marshal.SizeOf<T>());
+            _allocations.Add(ptr);
+            Marshal.StructureToPtr(value, ptr, false);
+            return ptr;
+        }
+
+        public void Dispose()
+        {
+            // Every field is blittable (strings are pointers we allocated), so freeing the blocks
+            // is the whole cleanup — no DestroyStructure.
+            foreach (var ptr in _allocations)
+                Marshal.FreeHGlobal(ptr);
+            _allocations.Clear();
+            Message = IntPtr.Zero;
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MapiMessage
     {
         public int reserved;
-        public string? subject;
-        public string? noteText;
-        public string? messageType;
-        public string? dateReceived;
-        public string? conversationID;
+        public IntPtr subject;
+        public IntPtr noteText;
+        public IntPtr messageType;
+        public IntPtr dateReceived;
+        public IntPtr conversationID;
         public int flags;
         public IntPtr originator;
         public int recipCount;
@@ -233,25 +367,25 @@ public static class MapiMailService
         public IntPtr files;
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    private struct MapiRecipDesc
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MapiRecipDesc
     {
         public int reserved;
         public int recipClass;
-        public string? name;
-        public string? address;
+        public IntPtr name;
+        public IntPtr address;
         public int eIDSize;
         public IntPtr entryID;
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    private struct MapiFileDesc
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MapiFileDesc
     {
         public int reserved;
         public int flags;
         public int position;
-        public string? path;
-        public string? name;
+        public IntPtr path;
+        public IntPtr name;
         public IntPtr type;
     }
 }

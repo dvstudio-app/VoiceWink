@@ -5437,15 +5437,17 @@ public partial class MainViewModel : ObservableObject
             // FileStream inside TranscribeAsync; a handler-level retry could not replay that stream.
             // AUD-36: a deferred block takes the engine's gate-blocked entry (the guard above
             // proved the cast); everything else is the ordinary call, byte-for-byte.
-            string rawText = await Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
-                token => noSpeechDeferredToEngine && transcriber is Services.Transcription.INoSpeechAwareTranscriber aware
-                    ? aware.TranscribeSuspectedNoSpeechAsync(recordingPath, language, transcriptionHints, token)
-                    : transcriber.TranscribeAsync(recordingPath, language, transcriptionHints, diarize: false, token),
-                onRetrying: () =>
-                {
-                    PipelineNoticeRequested?.Invoke("Poor connection — retrying");
-                    return Task.CompletedTask;
-                },
+            string rawText = await Helpers.OperationTiming.TimeTranscriptionAsync(attemptModel, recordingPath,
+                () => Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
+                    token => noSpeechDeferredToEngine && transcriber is Services.Transcription.INoSpeechAwareTranscriber aware
+                        ? aware.TranscribeSuspectedNoSpeechAsync(recordingPath, language, transcriptionHints, token)
+                        : transcriber.TranscribeAsync(recordingPath, language, transcriptionHints, diarize: false, token),
+                    onRetrying: () =>
+                    {
+                        PipelineNoticeRequested?.Invoke("Poor connection — retrying");
+                        return Task.CompletedTask;
+                    },
+                    ct),
                 ct);
 
             // RAW recognizer output, before the text pipeline — the request-side trace

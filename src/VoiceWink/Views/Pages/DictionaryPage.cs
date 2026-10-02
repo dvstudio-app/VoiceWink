@@ -181,7 +181,7 @@ public sealed class DictionaryPage : Page
             // detail live where those settings are, and the shipped defaults are NOT announced here
             // (owner: the user can see the rows and knows what delete does) — DefaultDictionary's
             // own doc comment carries the seeding rule.
-            Text = "Recognition hints for Deepgram, ElevenLabs and GPT Transcribe, and preferred spellings for AI enhancement. Local Whisper, Groq and Parakeet take no hints — use Word Replacements for those.",
+            Text = "Recognition hints for Deepgram, ElevenLabs and GPT Transcribe, and preferred spellings for AI enhancement. Built-in Whisper, Groq and Parakeet take no hints — use Word Replacements for those.",
             FontSize = 13,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             TextWrapping = TextWrapping.Wrap,

@@ -657,17 +657,19 @@ public sealed class AudioTranscribePage : Page
             // NET-1: one automatic retry on a connect-phase failure (nothing uploaded, so a
             // replay is provably safe). The notice is THIS page's status line, not the recorder
             // pill — a shared notice route would surface a recording pill for file work.
-            transcribedText = await Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
-                token => transcriber.TranscribeAsync(wavPath, language, hints, diarize, token),
-                onRetrying: () =>
-                {
-                    DispatcherQueue.TryEnqueue(() =>
+            transcribedText = await Helpers.OperationTiming.TimeTranscriptionAsync(selectedModel, wavPath,
+                () => Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
+                    token => transcriber.TranscribeAsync(wavPath, language, hints, diarize, token),
+                    onRetrying: () =>
                     {
-                        if (_isUnloaded) return;
-                        _statusText!.Text = "Poor connection — retrying...";
-                    });
-                    return Task.CompletedTask;
-                },
+                        DispatcherQueue.TryEnqueue(() =>
+                        {
+                            if (_isUnloaded) return;
+                            _statusText!.Text = "Poor connection — retrying...";
+                        });
+                        return Task.CompletedTask;
+                    },
+                    ct),
                 ct);
             // Same raw-output trace as the live pipeline (MainViewModel) — "(file)"
             // marks the Audio Transcribe page's file mode.

@@ -637,12 +637,27 @@ public sealed class ClipboardService
     /// signature from the probe or from SetFocus) — an ALIVE captured element
     /// (Windows Terminal's hidden-tab TermControl) can never be silently
     /// swapped for whatever the user focused since.
+    /// <para>PST-17: also carries the restore-skip inputs — whether the target is a Chromium
+    /// top level (the only family the cold-tree skip applies to) and a foreground check read at
+    /// decision time — plus the one Information line a skip logs (shapes only).</para>
     /// </summary>
     private static Helpers.IdentityVerifiedRestore? BuildIdentityVerifiedRestore(
-        object? focusedElement, Func<Helpers.CapturedElementProbe> capturedProbe)
+        object? focusedElement, Func<Helpers.CapturedElementProbe> capturedProbe,
+        IntPtr targetWindow, string? targetClass)
     {
         if (focusedElement is not Helpers.UiaFocusBridge.IUIAutomationElement element)
             return null;
+
+        var liveEditableSkip = new Helpers.LiveEditableSkip(
+            NoEditableFocusGate.IsChromiumTopLevelClass(targetClass),
+            () => targetWindow != IntPtr.Zero && NativeInterop.GetForegroundWindow() == targetWindow,
+            (captured, live) => Logger.Information(
+                "text paste: skipping UIA focus restore (PST-17) — captured controlType={CapturedControlType} " +
+                "text={CapturedText} value={CapturedValue} focusable={CapturedFocusable} is a bare container; " +
+                "live controlType={LiveControlType} text={LiveText} value={LiveValue} readOnly={LiveReadOnly} " +
+                "is a writable text box — pasting there, re-proven after the modifier wait",
+                captured.ControlTypeId, captured.HasTextPattern, captured.HasValuePattern, captured.IsKeyboardFocusable,
+                live.ControlTypeId, live.HasTextPattern, live.HasValuePattern, live.ValueIsReadOnly));
 
         return new Helpers.IdentityVerifiedRestore(
             capturedProbe,
@@ -659,7 +674,8 @@ public sealed class ClipboardService
                 Logger.Information("UIA focus restore: captured element dead; fresh-recapture {Result}",
                     refreshed ? "succeeded" : "failed");
                 return refreshed;
-            });
+            },
+            liveEditableSkip);
     }
 
     /// <summary>Maps a pre-restore stage block to the paste outcome + pill message
@@ -955,7 +971,9 @@ public sealed class ClipboardService
                 () => ShouldBlockNoEditableFocusedAsync(targetWindow, route, "text paste (pre-restore)", prePasteFocus),
                 () => TryRestoreUiaFocus(focusedElement),
                 BuildCapturedElementRescue(focusedElement, capturedProbe, fallbackFocusedElement),
-                BuildIdentityVerifiedRestore(focusedElement, capturedProbe),
+                BuildIdentityVerifiedRestore(
+                    focusedElement, capturedProbe, targetWindow,
+                    prePasteFocus?.TargetClass ?? GetWindowClassName(targetWindow)),
                 // PST-6 live-shape fallback (TEXT path only — the image path stays
                 // byte-identical this wave). Consulted solely when the rescue could
                 // not engage: a certified-DEAD capture (Chromium re-rendered the
@@ -979,7 +997,9 @@ public sealed class ClipboardService
                 return mapped;
             }
             uiaRestored = preRestoreStage.UiaRestored;
-            if (preRestoreStage.Kind != Helpers.PreRestorePassKind.None)
+            // PST-17's LiveEditableSkip keeps the Edit-only net and logs its own line, so key
+            // this one on the net it names rather than on "any non-None kind".
+            if (preRestoreStage.UsesIdentityBoundDriftNet)
                 Logger.Information(
                     "text paste: pre-restore gate passed via {PassKind} — identity-bound drift net armed",
                     preRestoreStage.Kind);
@@ -1056,20 +1076,24 @@ public sealed class ClipboardService
             // NOT the bar (round 4): a capped baseline cannot prove non-insertion, and a
             // missing/mismatched runtime ID makes every later comparison Unknown — both of
             // which the ladder would fail OPEN into a success claim.
+            //
+            // PST-17: the LiveEditableSkip stage takes the same obligation — its usable baseline
+            // is what re-proves the live Edit after the modifier wait, so an unprovable late
+            // identity declines (as today's FocusMovedInTarget) instead of reading PST-7's
+            // UnreadableGap and pasting. The decision is PreRestoreStage.FallbackBaselineDecline
+            // (pure, dispatch-tested); this closure only logs.
             Func<PasteResult?> checkFallbackBaseline = () =>
             {
-                if (!preRestoreStage.RequiresDeliveryVerification
-                    || Helpers.PasteInsertionVerification.IsUsableFallbackBaseline(
-                        deliveryBaseline, preRestoreStage.VerifiedRuntimeId))
+                if (preRestoreStage.FallbackBaselineDecline(deliveryBaseline) is not { } decline)
                     return null;
                 Logger.Warning(
-                    "text paste: {PassKind} pass cannot be verified (baseline present={Present} capped={Capped} identityMatch={Match}) — restoring the no-editable block, text kept on clipboard",
+                    "text paste: {PassKind} pass cannot be verified (baseline present={Present} capped={Capped} identityMatch={Match}) — restoring the block it replaced, text kept on clipboard",
                     preRestoreStage.Kind,
                     deliveryBaseline.HasValue,
                     deliveryBaseline?.CapHit,
                     NoEditableFocusGate.RuntimeIdsEqual(
                         deliveryBaseline?.RuntimeId, preRestoreStage.VerifiedRuntimeId));
-                return PasteResult.Fail(PasteAttemptOutcome.NoEditableFocused, PasteResultPresentation.NoTextBoxMessage);
+                return decline;
             };
 
             // checkTargetAlive — final liveness/identity re-check immediately before the send:

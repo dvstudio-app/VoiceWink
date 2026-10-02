@@ -17,6 +17,19 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.105.401] - 2026-10-02
+
+- VoiceWink Engine keeps its model loaded for 30 minutes between dictations instead of 5.
+- VoiceWink Engine offers Qwen3.5 9B, and PCs with a 10 GB graphics card get Gemma 4 12B as their best model.
+- VoiceWink Engine lists its models largest to smallest, after the one recommended for your PC.
+- Models that run on your PC are now called "built-in", and VoiceWink Engine's messages speak of AI enhancement.
+- VoiceWink Engine rates each downloaded model's speed on your PC and stops recommending one that is too slow.
+- PCs with built-in graphics are no longer told to use VoiceWink Engine's largest models.
+- Built-in Whisper models now recognise the spoken language when Language is set to Auto.
+- Report a problem keeps text in any language, such as Chinese, in the email.
+- The System default microphone now follows the default device chosen in Windows Sound settings.
+- The first dictation into a newly opened Edge page is pasted instead of left on the clipboard.
+
 ## [1.104.400] - 2026-09-30
 
 - AI enhancement's built-in engine is now called VoiceWink Engine, leads the provider list, and is the default on new installs.

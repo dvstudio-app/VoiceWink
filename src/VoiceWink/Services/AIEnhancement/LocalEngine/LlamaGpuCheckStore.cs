@@ -40,8 +40,10 @@ internal sealed class LlamaGpuCheckStore
     /// A test seam: a test uses it to release a handle it holds, so the retry path is deterministic.</summary>
     internal Action<int> Backoff { get; init; } = TransientFileRetry.DefaultBackoff;
 
-    /// <summary><paramref name="Route"/> is set on every Pass this returns, never on a Fail.</summary>
-    internal readonly record struct Entry(LlamaSelfTestVerdict Verdict, string? Adapter, LlamaRoute? Route = null);
+    /// <summary><paramref name="Route"/> is set on every Pass this returns, never on a Fail.
+    /// <paramref name="RouteMs"/> is the timed run of the chosen route (the speed this PC gives the
+    /// model), null when it was not recorded.</summary>
+    internal readonly record struct Entry(LlamaSelfTestVerdict Verdict, string? Adapter, LlamaRoute? Route = null, int? RouteMs = null);
 
     /// <summary>The stored verdict for <paramref name="modelIdentity"/> under this build and driver,
     /// or null. An unreadable driver signature (null) never matches a stored one, so it reads as
@@ -54,17 +56,20 @@ internal sealed class LlamaGpuCheckStore
             // Member names only: Enum.TryParse would also accept "1" or "Unknown".
             return (row?.Verdict, row?.Route) switch
             {
-                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Gpu)) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Gpu),
-                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Cpu)) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Cpu),
+                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Gpu)) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Gpu, Positive(row.GpuMs)),
+                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Cpu)) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Cpu, Positive(row.CpuMs)),
                 (nameof(LlamaSelfTestVerdict.Fail), _) => new Entry(LlamaSelfTestVerdict.Fail, row!.Adapter),
                 _ => null,
             };
         }
     }
 
+    private static int? Positive(int? ms) => ms > 0 ? ms : null;
+
     /// <summary>Record a Fail, or a Pass with the route its timing comparison chose; Unknown and a
     /// Pass without a route are ignored. False when nothing was written (best effort — the test
-    /// simply runs again next time). The timings are kept for support, never read back.</summary>
+    /// simply runs again next time). The chosen route's timing is read back as the model's
+    /// measured speed on this PC (the Speed stars and "Best for this PC").</summary>
     internal bool Record(string modelIdentity, LlamaSelfTestVerdict verdict, string? adapter,
         LlamaRoute? route = null, int? gpuMs = null, int? cpuMs = null)
     {

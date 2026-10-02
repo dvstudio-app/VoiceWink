@@ -757,6 +757,12 @@ internal static class NoEditableFocusGate
 
 
         var restored = RunIdentityVerifiedRestore(identityRestore, probePostRestoreIdentity);
+        // PST-17: a skipped restore is NOT a plain Kind == None stage — it relaxed PST-4's
+        // block on the promise that the dispatch re-proves the live Edit, so it carries its own
+        // kind and with it the delivery-verification obligation (Codex plan round, B1).
+        if (restored.LiveEditableSkipped)
+            return new PreRestoreStage(PreRestoreBlock.None, UiaRestored: false,
+                PreRestorePassKind.LiveEditableSkip, restored.EffectiveRuntimeId);
         // PST-7: an EffectiveRuntimeId (when the text path asked for one) rides on a
         // Kind == None stage. That deliberately does NOT change any existing routing —
         // EvaluatePostRestore selects the identity-bound drift net on
@@ -884,6 +890,25 @@ internal static class NoEditableFocusGate
                         // focus-changing call — the pre-call match is a stale answer — and only
                         // when that call SETTLED (AllowsIdentityProof).
                         ProveEffectiveIdentity(probePostRestoreIdentity, captured.RuntimeId, matchDirect));
+                }
+
+                // PST-17: the captured element is a bare cold-tree container and the live focus
+                // is already a writable Edit in the Chromium target — focusing the container is
+                // what moves focus OUT of the text box (Edge, 2026-09-24). Skip the restore and
+                // bind the live Edit; the LiveEditableSkip stage then REQUIRES a usable post-wait
+                // baseline carrying that same id, so an unprovable late identity declines rather
+                // than pasting (Codex plan round, B1). Text path only (probePostRestoreIdentity
+                // supplied): without it nothing downstream could re-prove the element. The
+                // foreground is read here, AFTER the live probe — a separate native sample.
+                if (restore.LiveEditableSkip is { } skip
+                    && probePostRestoreIdentity != null
+                    && live is { } liveEdit
+                    && ColdCapturePolicy.ShouldSkipRestoreForLiveEditable(
+                        captured.Shape, liveEdit, skip.TargetIsChromium, skip.TargetIsForeground()))
+                {
+                    skip.OnSkipped(captured.Shape!.Value, liveEdit.Shape);
+                    return new IdentityVerifiedRestoreResult(
+                        PreRestoreBlock.None, UiaRestored: false, liveEdit.RuntimeId, LiveEditableSkipped: true);
                 }
 
                 var result = restore.RestoreDirect();
@@ -1176,11 +1201,25 @@ internal sealed record RescueCandidate(
 /// ONLY when the captured element is certified dead (pinned by call-count
 /// tests).
 /// </summary>
+/// <param name="LiveEditableSkip">PST-17: the restore-skip inputs, or null (feature off for
+/// this attempt — every pre-PST-17 construction).</param>
 internal sealed record IdentityVerifiedRestore(
     Func<CapturedElementProbe> ProbeCaptured,
     Func<UiaShapeWithIdentity?> ProbeLiveIdentity,
     Func<RestoreFocusResult> RestoreDirect,
-    Func<bool> Recapture);
+    Func<bool> Recapture,
+    LiveEditableSkip? LiveEditableSkip = null);
+
+/// <summary>
+/// PST-17: the native target facts <see cref="ColdCapturePolicy.ShouldSkipRestoreForLiveEditable"/>
+/// needs, plus the caller's log hook (PasteDiagnostics stays log-free).
+/// <see cref="TargetIsForeground"/> is invoked only on the mismatch arm, after the live probe.
+/// <see cref="OnSkipped"/> receives the captured and live SHAPES only — never an identity or content.
+/// </summary>
+internal sealed record LiveEditableSkip(
+    bool TargetIsChromium,
+    Func<bool> TargetIsForeground,
+    Action<UiaElementShape, UiaElementShape> OnSkipped);
 
 /// <summary>How the pre-restore stage blocked, if it did (PST-4: callers map
 /// each to its own <see cref="PasteAttemptOutcome"/> + pill message).</summary>
@@ -1203,8 +1242,11 @@ internal readonly record struct PostRestoreEvaluation(bool Block, bool ProbeProd
 /// Null means "nothing to re-check", which makes the late guard a no-op and preserves
 /// today's behaviour exactly (the image path always gets null: it supplies no probe).
 /// </summary>
+/// <remarks><see cref="LiveEditableSkipped"/> (PST-17): the restore was skipped in favour of the
+/// live Edit whose id <see cref="EffectiveRuntimeId"/> carries; the stage maps it to
+/// <see cref="PreRestorePassKind.LiveEditableSkip"/>.</remarks>
 internal readonly record struct IdentityVerifiedRestoreResult(
-    PreRestoreBlock Block, bool UiaRestored, int[]? EffectiveRuntimeId)
+    PreRestoreBlock Block, bool UiaRestored, int[]? EffectiveRuntimeId, bool LiveEditableSkipped = false)
 {
     public static IdentityVerifiedRestoreResult Unbound(PreRestoreBlock block, bool uiaRestored)
         => new(block, uiaRestored, null);
@@ -1249,7 +1291,13 @@ internal enum PreRestorePassKind
     DeadCaptureLiveShape,
     /// <summary>PST-6: the SAME captured element (runtime-ID match) transitioned to
     /// an editable shape after a11y hydration.</summary>
-    SameElementShapeTransition
+    SameElementShapeTransition,
+    /// <summary>PST-17: NOT an overturned pre-restore block — PST-4's restore to a bare
+    /// cold-tree container was SKIPPED and the live writable Edit bound instead. Keeps the
+    /// Edit-only drift net (the bound element IS an Edit) but carries the delivery-verification
+    /// obligation: the dispatch must re-prove the live Edit with a usable post-wait baseline,
+    /// or decline as today's <see cref="PreRestoreBlock.FocusMovedInTarget"/>.</summary>
+    LiveEditableSkip
 }
 
 /// <summary>
@@ -1281,8 +1329,12 @@ internal readonly record struct PreRestoreStage(
     /// exists to fix. Every non-None kind carries a
     /// <see cref="VerifiedRuntimeId"/>, which is what keeps the broad predicate
     /// bound to one element.
+    /// <para>PST-17: <see cref="PreRestorePassKind.LiveEditableSkip"/> is excluded — it never
+    /// overturned a block, and the element it bound is an Edit, which the Edit-only rule passes;
+    /// the broad predicate would only widen what the drift net admits.</para>
     /// </summary>
-    public bool UsesIdentityBoundDriftNet => Kind != PreRestorePassKind.None;
+    public bool UsesIdentityBoundDriftNet
+        => Kind is not (PreRestorePassKind.None or PreRestorePassKind.LiveEditableSkip);
 
     /// <summary>
     /// Do the PST-6 fallback kinds' relaxed semantics REQUIRE a working delivery
@@ -1300,9 +1352,36 @@ internal readonly record struct PreRestoreStage(
     /// EXCLUDED: it performs a real SetFocus plus its own fail-closed live
     /// verification, which is independent evidence that predates this wave, and
     /// its behavior must not regress when verification is unavailable.</para>
+    /// <para>PST-17: <see cref="PreRestorePassKind.LiveEditableSkip"/> carries the same
+    /// obligation for the same reason — it relaxed PST-4's restore, and the post-wait
+    /// baseline is what re-proves the live Edit (Codex plan round, B1). Without it, a
+    /// same-window field switch during the modifier wait whose baseline timed out and whose
+    /// identity probe failed would read PST-7's <c>UnreadableGap</c> and paste into the field
+    /// the user moved to.</para>
     /// </summary>
     public bool RequiresDeliveryVerification
-        => Kind is PreRestorePassKind.DeadCaptureLiveShape or PreRestorePassKind.SameElementShapeTransition;
+        => Kind is PreRestorePassKind.DeadCaptureLiveShape
+            or PreRestorePassKind.SameElementShapeTransition
+            or PreRestorePassKind.LiveEditableSkip;
+
+    /// <summary>
+    /// The dispatch's fallback-baseline check, extracted pure so the decline rule is pinned
+    /// through the real sequence (<c>ClipboardDispatchOrderingTests</c>). Null = proceed: either
+    /// this stage carries no verification obligation, or the post-wait baseline is usable for
+    /// it (<see cref="PasteInsertionVerification.IsUsableFallbackBaseline"/> — present, not
+    /// capped, same runtime id as <see cref="VerifiedRuntimeId"/>). Otherwise the stage
+    /// restores the outcome it replaced: the PST-6 kinds overturned a <c>NoEditableFocused</c>
+    /// block; PST-17's skip replaced a restore that ends in <c>FocusMovedInTarget</c>.
+    /// </summary>
+    public PasteResult? FallbackBaselineDecline(PasteTextReadback? baseline)
+    {
+        if (!RequiresDeliveryVerification
+            || PasteInsertionVerification.IsUsableFallbackBaseline(baseline, VerifiedRuntimeId))
+            return null;
+        return Kind == PreRestorePassKind.LiveEditableSkip
+            ? PasteResult.Fail(PasteAttemptOutcome.FocusMovedInTarget, PasteResultPresentation.FocusMovedMessage)
+            : PasteResult.Fail(PasteAttemptOutcome.NoEditableFocused, PasteResultPresentation.NoTextBoxMessage);
+    }
 
     public static PreRestoreStage NotBlocked(bool uiaRestored)
         => new(PreRestoreBlock.None, uiaRestored, PreRestorePassKind.None, VerifiedRuntimeId: null);

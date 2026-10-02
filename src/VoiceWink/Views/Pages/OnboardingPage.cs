@@ -585,7 +585,7 @@ public sealed class OnboardingPage : Page
     private void BuildTranscriptionChoiceStep()
     {
         AddStepHeader("Choose Transcription Method",
-            "Transcribe using a local model or a cloud API. You can change this later.");
+            "Transcribe using a built-in model or a cloud API. You can change this later.");
 
         // ── Cloud option card ──
         var cloudBorder = CreateSelectableOption(
@@ -599,7 +599,7 @@ public sealed class OnboardingPage : Page
         // ── Local option card ──
         var localBorder = CreateSelectableOption(
             "\uE7F8",
-            "Local Transcription",
+            "Built-in Transcription",
             // Size resolves from the same catalogue row step 5 prints, so the mode-choice card and
             // the download screen cannot disagree. This was a hardcoded "~260 MB" defended as
             // deliberately model-agnostic — defensible while the recommendation was Whisper Small
@@ -666,7 +666,7 @@ public sealed class OnboardingPage : Page
         }
         else
         {
-            AddStepHeader("Download Local Model");
+            AddStepHeader("Download Built-in Model");
 
             var localPanel = new StackPanel { Spacing = 10 };
             BuildLocalDetailPanel(localPanel);
@@ -738,7 +738,7 @@ public sealed class OnboardingPage : Page
             var modelName = RecommendedLocalModel.Name;
             if (downloaded.Contains(modelName, ModelDiskReconciliation.NameComparer))
             {
-                var continueBtn = AppTheme.CreateAccentButton("Continue with Local Model");
+                var continueBtn = AppTheme.CreateAccentButton("Continue with Built-in Model");
                 continueBtn.Tapped += (_, _) => ShowStep(6);
                 AddButtonRow(CreateBackButton(), continueBtn);
             }

@@ -24,29 +24,60 @@ internal static class LocalModelsSection
     /// <param name="isSelected">Whether a model id is the provider's selected model.</param>
     /// <param name="select">Makes an installed model the selected one.</param>
     /// <param name="changed">A download finished or a model was deleted.</param>
+    /// <param name="measured">A first-use check settled: its time now decides the stars and the pick.</param>
     internal static UIElement Build(LocalModelStore store, LocalHardwareProfile profile,
         Func<string, bool> isSelected, Action<string> select,
-        OnThisPcEngine? engine = null, Action? changed = null)
+        OnThisPcEngine? engine = null, Action? changed = null, Action? measured = null)
     {
-        var recommended = LocalModelRecommendation.Recommend(profile);
+        // Running checks captured BEFORE their results are read, so a settle in between is not missed.
+        var runningChecks = LocalModelCatalog.All.ToDictionary(e => e.Tier,
+            e => engine is not null && store.IsInstalled(e.Id) ? engine.WhenFirstUseCheckSettledAsync(e.Id) : null);
+        // The speed this PC measured for each installed model; null where nothing was measured.
+        var measuredMs = LocalModelCatalog.All.ToDictionary(e => e.Tier,
+            e => engine is not null && store.IsInstalled(e.Id) ? engine.MeasuredSpeedMs(e.Id) : null);
+        var recommended = LocalModelRecommendation.Recommend(profile, tier => measuredMs[tier]);
         var rows = new StackPanel { Spacing = 4 };
         if (recommended is null)
         {
-            rows.Children.Add(Caption(profile.TotalRamBytes is null
-                ? "This PC's memory could not be read."
-                : "This PC has too little memory for a local model.", AppTheme.WarningText));
+            rows.Children.Add(Caption(
+                profile.TotalRamBytes is null ? "This PC's memory could not be read."
+                : LocalModelCatalog.All.Any(e => LocalModelRecommendation.Fits(e.Tier, profile))
+                    ? "Built-in AI is slow on this PC. A cloud provider is recommended."
+                    : "Not enough memory for built-in AI. A cloud provider is recommended.",
+                AppTheme.WarningText));
         }
 
-        var ordered = LocalModelCatalog.All.OrderBy(e => e.Tier == recommended ? 0 : 1).ToList();
+        var ordered = LocalModelRecommendation.DisplayOrder(recommended);
         for (var i = 0; i < ordered.Count; i++)
         {
             var entry = ordered[i];
             if (recommended is not null && i == 1)
                 rows.Children.Add(Caption("Other models", AppTheme.SubtleText));
-            rows.Children.Add(BuildRow(store, engine, changed, entry, entry.Tier == recommended,
-                LocalModelRecommendation.FloorNote(entry.Tier, profile), isSelected, select));
+            var ms = measuredMs[entry.Tier];
+            // A measured model ran here, so its floor no longer applies; a slow one says so.
+            var note = ms is not null
+                ? (LocalModelRecommendation.IsTooSlow(ms) ? "Slow on this PC." : null)
+                : LocalModelRecommendation.FloorNote(entry.Tier, profile);
+            rows.Children.Add(BuildRow(store, engine, changed, measured, entry, entry.Tier == recommended,
+                note, ms, isSelected, select));
+            if (measured is not null && runningChecks[entry.Tier] is { } running)
+                RefreshWhenMeasured(running, measured);
         }
         return rows;
+    }
+
+    /// <summary>Rebuilds the rows once a running first-use check has settled, so its time shows.</summary>
+    private static async void RefreshWhenMeasured(Task running, Action measured)
+    {
+        try
+        {
+            await running;
+        }
+        catch
+        {
+            return;
+        }
+        measured();
     }
 
     private static TextBlock Caption(string text, Windows.UI.Color color) => new()
@@ -58,8 +89,8 @@ internal static class LocalModelsSection
         Margin = new Thickness(0, 6, 0, 0),
     };
 
-    private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action? changed,
-        LocalModelEntry entry, bool isRecommended, string? floorNote,
+    private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action? changed, Action? measured,
+        LocalModelEntry entry, bool isRecommended, string? floorNote, int? measuredMs,
         Func<string, bool> isSelected, Action<string> select)
     {
         var title = new TextBlock { FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = AppTheme.Brush(AppTheme.TextPrimary) };
@@ -81,12 +112,16 @@ internal static class LocalModelsSection
 
         var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(title);
-        text.Children.Add(new TextBlock
+        var speed = measuredMs is { } ms ? LocalModelRecommendation.MeasuredSpeedStars(ms) : entry.Speed;
+        var ratings = new TextBlock
         {
-            Text = $"Accuracy {ModelRatings.Stars(entry.Accuracy)} · Speed {ModelRatings.Stars(entry.Speed)}",
+            Text = $"Accuracy {ModelRatings.Stars(entry.Accuracy)} · Speed {ModelRatings.Stars(speed)}",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.DimText),
-        });
+        };
+        if (measuredMs is not null)
+            ToolTipService.SetToolTip(ratings, "Speed measured on this PC.");
+        text.Children.Add(ratings);
         if (floorNote is not null)
         {
             text.Children.Add(new TextBlock { Text = floorNote, FontSize = 12, Foreground = AppTheme.Brush(AppTheme.WarningText), TextWrapping = TextWrapping.Wrap });
@@ -161,6 +196,8 @@ internal static class LocalModelsSection
                 {
                     // LAI-4: the first-use check runs now, not on the first dictation.
                     engine?.StartFirstUseCheck(entry.Id);
+                    if (measured is not null && engine?.WhenFirstUseCheckSettledAsync(entry.Id) is { } running)
+                        RefreshWhenMeasured(running, measured);
                     changed?.Invoke();
                 }
             }

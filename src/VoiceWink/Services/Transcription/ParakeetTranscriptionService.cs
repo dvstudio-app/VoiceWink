@@ -331,7 +331,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                     // Retry) — never the misleading "No Parakeet model is loaded" a sherpa
                     // branch with no model would throw.
                     throw new InvalidOperationException(
-                        "Local transcription is unavailable right now: the Parakeet engine could not start " +
+                        "Built-in transcription is unavailable right now: the Parakeet engine could not start " +
                         "and no legacy engine remains. Try again, or re-download the model.");
                 }
                 else if (_recognizer is null)
@@ -347,7 +347,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                     // succeeds. What must NOT happen is falling through to the legacy throw —
                     // "No Parakeet model is loaded" is false and points the user at nothing.
                     throw new InvalidOperationException(
-                        "Local transcription hit an engine restart. Press Retry to transcribe this recording.");
+                        "Built-in transcription hit an engine restart. Press Retry to transcribe this recording.");
                 }
                 // PcppServe.Sherpa with a built recognizer falls through to the unchanged path.
             }
@@ -592,7 +592,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                     ? "Restart VoiceWink to try again."
                     : "Retry will restart the engine.";
                 throw new InvalidOperationException(
-                    $"Local transcription failed ({ex.FailureClass}). {advice}", ex);
+                    $"Built-in transcription failed ({ex.FailureClass}). {advice}", ex);
             }
 
             // TRN-50: the safety net for a GPU driver that decodes real speech to NOTHING (the

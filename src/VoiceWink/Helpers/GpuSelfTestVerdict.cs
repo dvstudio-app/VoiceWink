@@ -125,7 +125,8 @@ internal static class GpuSelfTestVerdict
         => string.Create(CultureInfo.InvariantCulture, $"recall {j.Recall:F2} ({j.MatchedWords} of {j.ExpectedWords} words)");
 
     /// <summary>May a Whisper decode of the ENGLISH golden clip be judged at all? Only when the
-    /// processor decodes as auto (the clip detects as English) or English. A processor pinned to
+    /// processor decodes as auto (pinned to English for the clip by <c>WarmUpDecodeAsync</c>,
+    /// TRN-75) or English. A processor pinned to
     /// any other language is built <c>WithLanguage</c> at load and decodes the clip AS that
     /// language by construction, so its low recall proves the pin, never a broken GPU — judging it
     /// would persist a GPU-confirmed FAIL on a healthy machine, and the re-arm would fail
