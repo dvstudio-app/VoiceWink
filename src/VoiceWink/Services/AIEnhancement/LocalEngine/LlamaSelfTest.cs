@@ -16,7 +16,7 @@ internal enum LlamaRoute
 
 /// <summary>One timed run of the self-test's request. <c>Completed</c> is false when no reply
 /// arrived inside the deadline (or the request failed); <c>Correct</c> is the facts check.</summary>
-internal readonly record struct LlamaTimedRun(bool Completed, bool Correct, TimeSpan Elapsed);
+internal readonly record struct LlamaTimedRun(bool Completed, bool Correct, TimeSpan Elapsed, bool Garbled = false);
 
 /// <summary>The GPU self-test's outcome. <c>Unknown</c> (the request did not complete) never pins.</summary>
 internal enum LlamaSelfTestVerdict
@@ -45,6 +45,20 @@ internal static class LlamaSelfTest
 
     internal const string Dictation =
         "so um tell Marguerite that the invoice for four thousand two hundred euros is due on Thursday and uh the call moves to half past three";
+
+    /// <summary>The TIMED run's dictation: a paragraph the size of a real one (about 80 words) that
+    /// carries the same four facts, so the timed reply is scored by the same rule. Its time is the
+    /// model's speed on this PC (owner, 2026-10-03): a ~25-word request could not tell the models
+    /// apart, because its time was mostly fixed cost — on the Arc laptop Qwen3.5 4B and Gemma 4
+    /// both took about 3.7 s, while their real paragraphs took 5.0 s and 15.4 s.</summary>
+    internal const string TimedDictation =
+        "so um hi team quick update on the project we finished the first round of testing yesterday and most of the results look good " +
+        "there are still two open issues the export sometimes takes too long and uh the settings page does not always save " +
+        "I will look into both tomorrow morning oh and tell Marguerite that the invoice for four thousand two hundred euros is due on Thursday " +
+        "and the call moves to half past three let me know if that works for you thanks";
+
+    /// <summary>Room for the timed reply: a cleaned ~80-word paragraph is ~110 tokens.</summary>
+    internal const int TimedMaxTokens = 256;
 
     internal const int PassThreshold = 3;
 
@@ -93,8 +107,9 @@ internal static class LlamaSelfTest
             stream = false,
         });
 
-    /// <summary>The same request with the server's prompt cache off, so a timed run on either
-    /// route pays for the whole prompt and the two are comparable.</summary>
+    /// <summary>The timed request: the paragraph-sized <see cref="TimedDictation"/>, with the
+    /// server's prompt cache off so a run on either route pays for the whole prompt and the two are
+    /// comparable.</summary>
     internal static string BuildTimedRequestBody()
         => JsonSerializer.Serialize(new
         {
@@ -102,11 +117,11 @@ internal static class LlamaSelfTest
             messages = new object[]
             {
                 new { role = "system", content = SystemInstruction },
-                new { role = "user", content = Dictation },
+                new { role = "user", content = TimedDictation },
             },
             temperature = 0,
             seed = 42,
-            max_tokens = 128,
+            max_tokens = TimedMaxTokens,
             stream = false,
             cache_prompt = false,
         });
@@ -145,9 +160,13 @@ internal static class LlamaSelfTest
             }
             var content = ReadContent(await response.Content.ReadAsStringAsync(bounded.Token).ConfigureAwait(false));
             var elapsed = watch.Elapsed;
-            return content is null
-                ? new LlamaTimedRun(false, false, elapsed)
-                : new LlamaTimedRun(true, Judge(content) == LlamaSelfTestVerdict.Pass, elapsed);
+            if (content is null)
+                return new LlamaTimedRun(false, false, elapsed);
+            // Correct (3 of 4 facts) decides whether the CPU may win the route. Garbled (none of
+            // the four) is the broken-driver shape that fails a GPU: a model that condenses the
+            // longer paragraph and drops a fact is still a working GPU.
+            var facts = FactsPresent(content);
+            return new LlamaTimedRun(true, facts >= PassThreshold, elapsed, Garbled: facts == 0);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

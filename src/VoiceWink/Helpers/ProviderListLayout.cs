@@ -4,7 +4,7 @@ namespace VoiceWink.Helpers;
 
 /// <summary>
 /// How a provider dropdown is laid out (owner, 2026-09-30): the providers that run on this PC first -
-/// VoiceWink Engine, then Local server - under an "On this PC" heading, then the cloud providers
+/// The built-in models, then Local server - under an "On this PC" heading, then the cloud providers
 /// under "Cloud", in enum order. Headings appear only when both groups do; a list with one group
 /// (the image providers, all cloud) shows no heading at all.
 /// </summary>
@@ -21,7 +21,7 @@ internal static class ProviderListLayout
 
     internal static bool IsLocal(AIProvider provider) => provider is AIProvider.OnThisPc or AIProvider.LocalServer;
 
-    /// <summary>The providers in display order: VoiceWink Engine, Local server, then everything else
+    /// <summary>The providers in display order: the built-in models, Local server, then everything else
     /// in the order given. Duplicates are dropped.</summary>
     internal static IEnumerable<AIProvider> Ordered(IEnumerable<AIProvider> providers)
     {

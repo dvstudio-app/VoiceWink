@@ -151,8 +151,7 @@ public sealed class EnhancementPage : Page
         _viewModel.SelectedModel = enhancement.SelectedModel;
         _viewModel.SelectedImageModel = enhancement.SelectedImageModel;
         // Force combo sync even if the value didn't change (no PropertyChanged fired)
-        if (_textProviderCombo != null)
-            _textProviderCombo.SelectedItem = AIProviderDisplay.Label(_viewModel.SelectedProvider);
+        SyncTextProviderCombo();
         if (_imageProviderCombo != null)
             _imageProviderCombo.SelectedItem = AIProviderDisplay.Label(_viewModel.SelectedImageProvider);
 
@@ -166,6 +165,18 @@ public sealed class EnhancementPage : Page
         _ = _viewModel.FetchModelsCommand.ExecuteAsync(null);
         if (ImageGenerationFeature.IsEnabled)
             _ = _viewModel.FetchImageModelsCommand.ExecuteAsync(null);
+    }
+
+    /// <summary>The text provider combo shows the selected provider, or nothing while the
+    /// built-in models are in use (they are chosen in their own card, not in this combo).</summary>
+    private void SyncTextProviderCombo()
+    {
+        if (_textProviderCombo is not { } combo)
+            return;
+        if (_viewModel.IsOnThisPcSelected)
+            combo.SelectedIndex = -1;
+        else
+            combo.SelectedItem = AIProviderDisplay.Label(_viewModel.SelectedProvider);
     }
 
     private void DetachSubscriptions()
@@ -242,7 +253,8 @@ public sealed class EnhancementPage : Page
             Func<Task> fetchAction,
             Func<string?> getFetchError,
             string fetchErrorPropertyName,
-            bool imageOnly = false)
+            bool imageOnly = false,
+            bool excludeBuiltIn = false)
         {
             var lbl = new TextBlock
             {
@@ -256,8 +268,12 @@ public sealed class EnhancementPage : Page
             AppTheme.AllowParentScroll(combo);
             var registry = App.Services.GetRequiredService<AIProviderRegistry>();
             AppTheme.AddProviderItems(combo, EnhancementViewModel.ProvidersIncluding(initial)
-                .Where(p => !imageOnly || registry.SupportsImageGeneration(p)));
-            combo.SelectedItem = AIProviderDisplay.Label(initial);
+                .Where(p => !imageOnly || registry.SupportsImageGeneration(p))
+                .Where(p => !excludeBuiltIn || p != AIProvider.OnThisPc));
+            if (excludeBuiltIn)
+                combo.PlaceholderText = "Choose a provider";
+            if (!excludeBuiltIn || initial != AIProvider.OnThisPc)
+                combo.SelectedItem = AIProviderDisplay.Label(initial);
             combo.SelectionChanged += (_, _) =>
             {
                 if (combo.SelectedItem is string str && AIProviderDisplay.TryParse(str, out var p))
@@ -462,8 +478,17 @@ public sealed class EnhancementPage : Page
             p => _viewModel.SelectedProvider = p,
             () => _viewModel.FetchModelsCommand.ExecuteAsync(null),
             () => _viewModel.ModelFetchError,
-            nameof(EnhancementViewModel.ModelFetchError));
+            nameof(EnhancementViewModel.ModelFetchError),
+            excludeBuiltIn: true);
         _textProviderCombo = textProviderCombo;
+        // A built-in model's Select moves the provider away from this combo's choice: it shows
+        // nothing chosen while the built-in models are in use, and the provider again after.
+        PropertyChangedEventHandler textProviderSyncHandler = (_, e) =>
+        {
+            if (e.PropertyName == nameof(EnhancementViewModel.SelectedProvider))
+                DispatcherQueue.TryEnqueue(SyncTextProviderCombo);
+        };
+        RegisterViewModelSubscription(textProviderSyncHandler);
 
         var modelLabel = new TextBlock
         {
@@ -641,34 +666,55 @@ public sealed class EnhancementPage : Page
         // flood both dropdowns at once.
         var (showAllCheck, showAllWarning) = BuildShowAllModelsRow(
             () => _viewModel.ShowAllModels, v => _viewModel.ShowAllModels = v);
-        // VoiceWink Engine (LAI-4, "On this PC"): no key and a fixed catalog — no key row, no show-all
-        // escape hatch, and its models are ROWS in this card instead of the Model dropdown (owner,
-        // 2026-09-30: one place to pick the model and download it).
-        var localModelsHost = new StackPanel { Margin = new Thickness(0, 0, 0, 8) };
+        // The built-in models (LAI-4, "On this PC") have their own card, first (owner, 2026-10-04):
+        // the GPU switch, then the model rows — download, "Best for this PC", Select. The second
+        // card is the cloud providers and Local server. An "Active" marker names the card in use.
+        var localModelsHost = new StackPanel();
+        var builtInActive = AppTheme.CreateActiveBadge();
+        var providerActive = AppTheme.CreateActiveBadge();
+        var localRowsGeneration = _uiGeneration;
+        // One tracker per page: a "speed ratings were updated" line stays for the life of the page.
+        var speedNotice = _viewModel.CreateSpeedNotice();
+        // The rows are built only while their host is on screen: building them records the shown
+        // speed ratings, so a page built but never displayed (a failed attach, a queued refresh
+        // after the user left) would spend the "updated" line unseen (Codex diff r2/r3).
+        var localRowsShown = false;
+        localModelsHost.Loaded += (_, _) => { localRowsShown = true; ApplyOnThisPcRows(); };
+        localModelsHost.Unloaded += (_, _) => localRowsShown = false;
         void RebuildLocalModelRows()
         {
+            if (!localRowsShown || localRowsGeneration != _uiGeneration)
+                return;
             localModelsHost.Children.Clear();
             if (!OnThisPcAvailability.IsOffered || _viewModel.LocalModels is not { } localModels)
                 return;
             localModelsHost.Children.Add(LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
-                id => string.Equals(_viewModel.SelectedModel, id, StringComparison.Ordinal),
-                id => _viewModel.SelectedModel = id,
+                id => _enhancement.SelectedProvider == AIProvider.OnThisPc
+                      && string.Equals(_enhancement.SelectedModel, id, StringComparison.Ordinal),
+                _viewModel.UseBuiltInModel,
                 _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels,
-                () => DispatcherQueue.TryEnqueue(ApplyOnThisPcRows)));
+                () => DispatcherQueue.TryEnqueue(ApplyOnThisPcRows),
+                speedNotice));
         }
         void ApplyOnThisPcRows()
         {
             var engine = _viewModel.IsOnThisPcSelected;
+            // The markers name what dictations USE: the active prompt's provider override first, else
+            // the STORED provider. A cloud provider picked without a key is shown in the combo (so a
+            // key can be entered) but is not stored, and the built-in models stay in use until it
+            // is (self-review).
+            var builtInInUse = _enhancement.ActiveTextProvider() == AIProvider.OnThisPc;
             var keyRows = engine ? Visibility.Collapsed : Visibility.Visible;
             apiKeyLabel.Visibility = keyRows;
             saveBtnRow.Visibility = keyRows;
             showAllCheck.Visibility = keyRows;
             showAllWarning.Visibility = !engine && _viewModel.ShowAllModels
                 ? Visibility.Visible : Visibility.Collapsed;
+            modelLabel.Visibility = keyRows;
             modelCombo.Visibility = keyRows;
-            localModelsHost.Visibility = engine ? Visibility.Visible : Visibility.Collapsed;
-            if (engine)
-                RebuildLocalModelRows();
+            builtInActive.Visibility = builtInInUse ? Visibility.Visible : Visibility.Collapsed;
+            providerActive.Visibility = builtInInUse ? Visibility.Collapsed : Visibility.Visible;
+            RebuildLocalModelRows();
         }
         ApplyOnThisPcRows();
         PropertyChangedEventHandler onThisPcRowsHandler = (_, e) =>
@@ -676,7 +722,9 @@ public sealed class EnhancementPage : Page
             // The rows are rebuilt on a new selection too, so Select / Active follows the model
             // chosen here, after a download, or healed after a delete. A running download survives
             // the rebuild: the store owns it and the new row reattaches.
-            if (e.PropertyName == nameof(EnhancementViewModel.IsOnThisPcSelected)
+            // A saved key stores the provider picked without one, so the markers move then too.
+            if (e.PropertyName is nameof(EnhancementViewModel.IsOnThisPcSelected) or nameof(EnhancementViewModel.HasExistingKey)
+                    or nameof(EnhancementViewModel.ActiveTextProvider)
                 || (e.PropertyName == nameof(EnhancementViewModel.SelectedModel) && _viewModel.IsOnThisPcSelected))
                 DispatcherQueue.TryEnqueue(ApplyOnThisPcRows);
         };
@@ -700,7 +748,6 @@ public sealed class EnhancementPage : Page
                 localServerPanel,
                 modelLabel,
                 modelCombo,
-                localModelsHost,
                 apiKeyLabel,
                 saveBtnRow,
                 showAllCheck,
@@ -711,10 +758,26 @@ public sealed class EnhancementPage : Page
         // NO extra Spacing here (owner 2026-07-31 — "too much blank space"): CreateSectionHeader
         // already carries a 24 px top / 12 px bottom margin and CreateCard a 12 px bottom, so a
         // StackPanel Spacing ADDS to all three and inflated every gap on the page.
-        var sections = new StackPanel
+        // Laid out like the Models page (owner, 2026-10-04): a "Built-in Models" section with the
+        // GPU switch in its own card and one card per model, then the cloud / own-server section.
+        var sections = new StackPanel();
+        if (OnThisPcAvailability.IsOffered && _viewModel.LocalModels is not null)
         {
-            Children = { sectionHeader, AppTheme.CreateCard(textCardContent) }
-        };
+            var gpuPresentation = GpuToggleAvailability.Decide(GpuToggleAvailability.Current, _viewModel.GpuAccelerationEnabled);
+            sections.Children.Add(AppTheme.CreateSectionHeader("Built-in Models", builtInActive));
+            sections.Children.Add(AppTheme.CreateCard(GpuAccelerationRow.Build(gpuPresentation, isOn => GpuAccelerationRow.Apply(isOn,
+                () => _viewModel.GpuAccelerationEnabled,
+                value => _viewModel.GpuAccelerationEnabled = value,
+                _viewModel.AppRestart,
+                () => XamlRoot))));
+            sections.Children.Add(localModelsHost);
+            sections.Children.Add(AppTheme.CreateSectionHeader("Cloud or Your Own Server", providerActive));
+        }
+        else
+        {
+            sections.Children.Add(sectionHeader);
+        }
+        sections.Children.Add(AppTheme.CreateCard(textCardContent));
 
         // Image generation is gated by ImageGenerationFeature (currently enabled in all builds) —
         // the whole image card disappears if it is ever switched off.
@@ -1156,22 +1219,7 @@ public sealed class EnhancementPage : Page
         // Active badge — OMITTED entirely when inactive, not added collapsed. FlowPanel measures
         // every child and adds HorizontalSpacing after it, so a zero-size collapsed child would
         // leave a phantom gap before the first visible badge.
-        UIElement? activeBadge = null;
-        if (prompt.IsActive)
-        {
-            activeBadge = new Border
-            {
-                Background = AppTheme.Brush(ColorHelper.FromArgb(30, 48, 209, 88)),
-                CornerRadius = new CornerRadius(4),
-                Padding = new Thickness(8, 2, 8, 2),
-                Child = new TextBlock
-                {
-                    Text = "Active",
-                    FontSize = 11,
-                    Foreground = AppTheme.Brush(AppTheme.AccentGreen)
-                }
-            };
-        }
+        UIElement? activeBadge = prompt.IsActive ? AppTheme.CreateActiveBadge() : null;
 
         // Trigger words display
         UIElement? triggerWordsDisplay = null;
@@ -2285,7 +2333,7 @@ public sealed class EnhancementPage : Page
             var lastContext = CurrentContext();
 
             // The provider whose list the combo shows: the override, else the main text provider.
-            // VoiceWink Engine rows are names; this maps them back to the stored id.
+            // built-in model rows are names; this maps them back to the stored id.
             AIProvider? ListProvider(PromptModelOverridePolicy.OverrideContext ctx)
                 => ctx.ProviderOverride ?? (ctx.IsImage ? null : _viewModel.SelectedProvider);
 

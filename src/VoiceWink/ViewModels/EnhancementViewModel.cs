@@ -63,7 +63,7 @@ public partial class EnhancementViewModel : ObservableObject
     private CancellationTokenSource? _fetchImageCts; // cancel stale image model fetches
     private const string MaskedKeyPlaceholder = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
 
-    /// <summary>Every provider a combo offers, in the order it shows them — VoiceWink Engine
+    /// <summary>Every provider a combo offers, in the order it shows them — the built-in models
     /// ("On this PC") first where <see cref="Services.AIEnhancement.LocalEngine.OnThisPcAvailability"/>
     /// offers it, then Local server, then the cloud providers in enum order
     /// (<see cref="Helpers.ProviderListLayout"/> groups them).</summary>
@@ -90,12 +90,43 @@ public partial class EnhancementViewModel : ObservableObject
     /// <summary>LAI-4: the engine host the models card hands a finished download or a delete to.</summary>
     internal Services.AIEnhancement.LocalEngine.OnThisPcEngine? OnThisPc { get; }
 
+    /// <summary>A fresh "speed ratings were updated" tracker for one page instance (2026-10-03).</summary>
+    internal SpeedRatingsNotice.Tracker CreateSpeedNotice() => new(
+        () => _settings.GetString(AppDefaults.SpeedRatingsShownEngine, ""),
+        value => _settings.SetString(AppDefaults.SpeedRatingsShownEngine, value));
+
+    /// <summary>The one GPU acceleration preference (2026-10-04: the built-in models card shows the
+    /// Models page's switch), read through so nothing holds a stale copy.</summary>
+    public bool GpuAccelerationEnabled
+    {
+        get => GpuAccelerationPreference.Read(_settings);
+        set => GpuAccelerationPreference.Write(_settings, value);
+    }
+
+    /// <summary>TRN-59: the restart a GPU acceleration flip offers; null in tests.</summary>
+    public Services.System.AppRestartService? AppRestart { get; }
+
+    /// <summary>The provider dictations are cleaned by now, the active prompt's override included;
+    /// raised after every prompt save, so the page's "Active" marker follows a Configure change
+    /// (Codex diff r1).</summary>
+    public AIProvider ActiveTextProvider => _enhancement.ActiveTextProvider();
+
+    /// <summary>Makes a built-in model the text enhancement model: the provider moves to the built-in
+    /// models and the model to <paramref name="id"/> (a row's Select, on the page and in setup).</summary>
+    internal void UseBuiltInModel(string id)
+    {
+        SelectedProvider = AIProvider.OnThisPc;
+        SelectedModel = id;
+    }
+
     public EnhancementViewModel(AIEnhancementService enhancement, ApiKeyManager apiKeys, Services.System.SettingsService settings,
         Services.AIEnhancement.LocalEngine.LocalModelStore? localModels = null,
-        Services.AIEnhancement.LocalEngine.OnThisPcEngine? onThisPc = null)
+        Services.AIEnhancement.LocalEngine.OnThisPcEngine? onThisPc = null,
+        Services.System.AppRestartService? appRestart = null)
     {
         LocalModels = localModels;
         OnThisPc = onThisPc;
+        AppRestart = appRestart;
         _enhancement = enhancement;
         _apiKeys = apiKeys;
         _settings = settings;
@@ -215,6 +246,8 @@ public partial class EnhancementViewModel : ObservableObject
             if (toActivate != null)
                 SetActivePrompt(toActivate);
         }
+        // The built-in models' model is loaded when enhancement turns on and unloaded when it turns off.
+        _enhancement.SyncOnThisPcResidency();
     }
 
     partial void OnSelectedProviderChanged(AIProvider value)
@@ -254,6 +287,8 @@ public partial class EnhancementViewModel : ObservableObject
         IsLoadingModels = false;
         if (usable)
             _ = FetchModelsAsync();
+        // Choosing the built-in models loads its model now; leaving it gives the memory back.
+        _enhancement.SyncOnThisPcResidency();
     }
 
     // ── LAI-1: Local server settings ────────────────────────────────────
@@ -275,6 +310,9 @@ public partial class EnhancementViewModel : ObservableObject
         // The options dialog binds a cached list; an install or delete makes it stale whichever
         // provider is selected right now.
         _enhancement.InvalidateModelLists(AIProvider.OnThisPc);
+        // A finished download's first-use check leaves its model loaded: unloaded again when
+        // the built-in models are not in use (the unload waits for the check to end).
+        _enhancement.SyncOnThisPcResidency();
         if (!IsOnThisPcSelected)
             return;
         HealOnThisPcSelection();
@@ -499,7 +537,11 @@ public partial class EnhancementViewModel : ObservableObject
     partial void OnSelectedModelChanged(string value)
     {
         if (!_suppressModelSync)
+        {
             _enhancement.SelectedModel = value;
+            // A newly selected built-in model is loaded now, replacing the previous one.
+            _enhancement.SyncOnThisPcResidency();
+        }
         // LAI-8: the processor hint is keyed on the selected model, and the card re-reads it only
         // on this notification.
         OnPropertyChanged(nameof(LocalServerRunsOnProcessor));
@@ -1330,5 +1372,8 @@ public partial class EnhancementViewModel : ObservableObject
     private void SavePrompts()
     {
         _enhancement.SavePrompts(Prompts.ToList());
+        // The active prompt, or its provider or model override, may have changed.
+        _enhancement.SyncOnThisPcResidency();
+        OnPropertyChanged(nameof(ActiveTextProvider));
     }
 }

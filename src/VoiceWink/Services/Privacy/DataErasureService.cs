@@ -223,6 +223,10 @@ public sealed class DataErasureService
         //    success path; the process is ending). Quiesce settings persistence so exit can't
         //    rewrite settings.json.
         _settings.SuppressPersistence();
+        // The same for this PC's measured speech-model speeds: a speed check that finished just
+        // before the gate cleared may still be writing, and a late write would recreate
+        // transcription-speed.json after the delete pass below (Codex plan round).
+        Helpers.TranscriptionSpeedStore.Current?.StopWrites();
 
         // 3. Release SQLite file handles. Disposing a context returns its connection to the pool
         //    still holding the file handle, so ClearAllPools() is what actually frees the
@@ -353,6 +357,10 @@ public sealed class DataErasureService
             // warm-up marker above.
             Path.Combine(root, "llama-gpu-check.json"),
             Path.Combine(root, "llama-gpu-check.json.tmp"),
+            // This PC's measured speech-model speeds (the Models page's Speed stars) - app-owned
+            // RootDir state like the two stores above.
+            Path.Combine(root, "transcription-speed.json"),
+            Path.Combine(root, "transcription-speed.json.tmp"),
         };
 
         if (Directory.Exists(root))
@@ -400,12 +408,22 @@ public sealed class DataErasureService
         }
     }
 
-    private static void DeleteTarget(string path, List<string> failures)
+    /// <summary>Deletes one target; any failure is recorded by name. Only GENUINE absence counts as
+    /// done: <c>Directory.Exists</c>/<c>File.Exists</c> answer false for an access error too, so a
+    /// target the probe could not see was skipped silently and erasure reported success over data
+    /// it never deleted (Codex diff round). The attribute read throws instead, and only the two
+    /// not-found exceptions mean nothing is there.</summary>
+    internal static void DeleteTarget(string path, List<string> failures)
     {
         try
         {
-            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
-            else if (File.Exists(path)) File.Delete(path);
+            var attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.Directory) != 0) Directory.Delete(path, recursive: true);
+            else File.Delete(path);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // Genuinely absent - nothing to erase.
         }
         catch (Exception ex)
         {

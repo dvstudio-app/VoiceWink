@@ -519,6 +519,7 @@ public sealed class AudioTranscribePage : Page
         // and shares CPU/RAM with the warm Parakeet child (self-review, regression lens). Same
         // session-permanent cancel recording admission uses.
         GpuWarmup.Instance.Cancel(GpuWarmupCancelReason.AudioTranscribe);
+        Services.Transcription.SpeechSpeedCheck.Current?.CancelForUserWork();
 
         // Create a fresh CTS for this transcription
         _cts?.Dispose();

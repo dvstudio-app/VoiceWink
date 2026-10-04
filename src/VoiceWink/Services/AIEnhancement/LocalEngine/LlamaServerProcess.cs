@@ -373,6 +373,9 @@ internal sealed class LlamaServerProcess
         }
     }
 
+    /// <summary>A child is loaded right now (read without the gate - a hint; under the gate it is exact).</summary>
+    internal bool HasResident => Volatile.Read(ref _resident) is not null;
+
     /// <summary>Mid-session retire (a model delete, the GPU toggle): confirm-or-park, bounded gate
     /// wait. False = could not retire inside the bound, or the kill is unconfirmed. With
     /// <paramref name="onlyModelIdentity"/>, a resident serving ANOTHER model is left alone.</summary>

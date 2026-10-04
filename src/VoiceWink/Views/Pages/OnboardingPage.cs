@@ -35,6 +35,7 @@ public sealed class OnboardingPage : Page
     private readonly Services.Legal.LegalAcceptanceService _legal;
     private readonly ModelDownloadManager _downloader;
     private readonly ApiKeyManager _apiKeys;
+    private readonly EnhancementViewModel _enhancementModels;
     private int _step;
     private readonly bool _parakeetAvailable;
     private StackPanel _contentPanel = null!;
@@ -91,6 +92,9 @@ public sealed class OnboardingPage : Page
                                  ex.GetType().Name));
         _downloader = App.Services.GetRequiredService<ModelDownloadManager>();
         _apiKeys = App.Services.GetRequiredService<ApiKeyManager>();
+        // The AI step's built-in models (2026-10-04): the model store and the engine host, which
+        // this view model already carries for the AI Enhancement page.
+        _enhancementModels = App.Services.GetRequiredService<EnhancementViewModel>();
         // Read ONCE, here, with the page's other dependencies: a CPU/build-flag probe, not I/O.
         // Fail-soft — anything that stops us answering means "no", which lands on the Whisper
         // backstop rather than throwing during a flow that has no user to report to yet.
@@ -1726,7 +1730,7 @@ public sealed class OnboardingPage : Page
         var enhancement = App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>();
 
         AddStepHeader("AI Enhancement (Optional)",
-            "Improve transcriptions with AI or generate images by voice.\nRequires an API key from a supported provider.");
+            "Improve transcriptions with AI or generate images by voice.");
 
         // ── Provider config panel (shown when toggle is on) ──
         var configPanel = new StackPanel { Spacing = 10, Visibility = Visibility.Collapsed };
@@ -1802,31 +1806,121 @@ public sealed class OnboardingPage : Page
             [Services.AIEnhancement.AIProvider.Cerebras] = "https://cloud.cerebras.ai",
         };
 
-        // ── Text Enhancement Provider ──
+        // ── Text enhancement: the built-in models first, then a cloud provider (2026-10-04) ──
+        // Which card is in use is read from the STORED provider: nothing stored (a new install)
+        // marks neither, and setup's finish then starts the install on the built-in models.
+        Services.AIEnhancement.AIProvider? StoredTextProvider()
+            => Enum.TryParse<Services.AIEnhancement.AIProvider>(_settings.GetString(AppDefaults.AiProvider, ""), out var stored)
+                ? stored : null;
+
+        var builtInActive = AppTheme.CreateActiveBadge();
+        var cloudActive = AppTheme.CreateActiveBadge();
+        Action clearCloudChoice = () => { };
+        Action refreshBuiltInRows = () => { };
+        void ApplyActive()
+        {
+            // What dictations use: the active prompt's provider override first (Codex diff r1).
+            // Nothing stored marks neither card.
+            var inUse = StoredTextProvider() is null ? (Services.AIEnhancement.AIProvider?)null : enhancement.ActiveTextProvider();
+            builtInActive.Visibility = inUse == Services.AIEnhancement.AIProvider.OnThisPc ? Visibility.Visible : Visibility.Collapsed;
+            cloudActive.Visibility = inUse is { } p && Array.IndexOf(allProviders, p) >= 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        if (Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered && _enhancementModels.LocalModels is { } localModels)
+        {
+            void UseBuiltIn(string id)
+            {
+                enhancement.SelectedProvider = Services.AIEnhancement.AIProvider.OnThisPc;
+                enhancement.SelectedModel = id;
+                enhancement.SyncOnThisPcResidency();
+                clearCloudChoice();
+                ApplyActive();
+                refreshBuiltInRows();
+            }
+
+            // A finished download is taken into use unless a cloud provider WITH a key was chosen
+            // here, so the model the user just downloaded is the one setup ends on.
+            void AdoptDownloaded()
+            {
+                // The service directly, never the shared view model's refresh: setup writes the
+                // service, so that view model can still hold an older provider and would heal its
+                // model selection into whatever provider setup stored (self-review: a llama id
+                // written as the cloud provider's model).
+                enhancement.InvalidateModelLists(Services.AIEnhancement.AIProvider.OnThisPc);
+                enhancement.SyncOnThisPcResidency();
+                var stored = StoredTextProvider();
+                if (stored is { } cloud && cloud != Services.AIEnhancement.AIProvider.OnThisPc
+                    && _apiKeys.HasApiKey(cloud.ToString().ToLowerInvariant()))
+                {
+                    refreshBuiltInRows();
+                    return;
+                }
+                var installed = _enhancementModels.OnThisPc?.InstalledModelIds() ?? [];
+                var current = stored == Services.AIEnhancement.AIProvider.OnThisPc ? enhancement.SelectedModel : "";
+                if (installed.Contains(current))
+                    refreshBuiltInRows();
+                else if (installed.Count > 0)
+                    UseBuiltIn(installed[0]);
+                else
+                    refreshBuiltInRows();
+            }
+
+            var rowsHost = new StackPanel();
+            var rowsShown = false;
+            void RebuildRows()
+            {
+                if (!rowsShown) return;
+                rowsHost.Children.Clear();
+                rowsHost.Children.Add(LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
+                    id => StoredTextProvider() == Services.AIEnhancement.AIProvider.OnThisPc
+                          && string.Equals(enhancement.SelectedModel, id, StringComparison.Ordinal),
+                    UseBuiltIn,
+                    _enhancementModels.OnThisPc,
+                    AdoptDownloaded,
+                    () => DispatcherQueue.TryEnqueue(RebuildRows)));
+            }
+            refreshBuiltInRows = RebuildRows;
+            rowsHost.Loaded += (_, _) => { rowsShown = true; RebuildRows(); };
+            rowsHost.Unloaded += (_, _) => rowsShown = false;
+
+            var builtInCard = new StackPanel { Spacing = 12 };
+            builtInCard.Children.Add(AppTheme.CreateCardTitle(Services.AIEnhancement.AIProviderDisplay.OnThisPcLabel, builtInActive));
+            builtInCard.Children.Add(new TextBlock
+            {
+                Text = "Run on this PC. Your text stays here.",
+                FontSize = 12,
+                Foreground = AppTheme.Brush(AppTheme.SubtleText),
+                TextWrapping = TextWrapping.Wrap
+            });
+            builtInCard.Children.Add(rowsHost);
+            // Not wrapped in a card: each model is its own card, as on the Models page.
+            panel.Children.Add(builtInCard);
+        }
+
         var textCard = new StackPanel { Spacing = 10 };
+        textCard.Children.Add(AppTheme.CreateCardTitle("Cloud provider", cloudActive));
         textCard.Children.Add(new TextBlock
         {
-            Text = "Text Enhancement",
-            FontSize = 15,
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = AppTheme.Brush(AppTheme.TextPrimary)
-        });
-        textCard.Children.Add(new TextBlock
-        {
-            Text = "Improve grammar, translate, or summarize your transcriptions.",
+            Text = "Your text is sent to the provider you choose.",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             TextWrapping = TextWrapping.Wrap
         });
 
-        // Only pre-select if the user previously chose a provider (raw setting is non-empty)
-        var rawTextProvider = _settings.GetString(AppDefaults.AiProvider, "");
-        Services.AIEnhancement.AIProvider? textProviderInit =
-            !string.IsNullOrEmpty(rawTextProvider) && Enum.TryParse<Services.AIEnhancement.AIProvider>(rawTextProvider, out var tp) ? tp : null;
+        // Only pre-select a provider the user previously chose from this list.
+        var textProviderInit = StoredTextProvider() is { } tp && Array.IndexOf(allProviders, tp) >= 0 ? tp : (Services.AIEnhancement.AIProvider?)null;
 
         var validateTextKey = BuildProviderKeyRow(textCard, allProviders, signupUrls, textProviderInit,
-            provider => enhancement.SelectedProvider = provider,
+            provider =>
+            {
+                enhancement.SelectedProvider = provider;
+                enhancement.SyncOnThisPcResidency();
+                ApplyActive();
+                refreshBuiltInRows();
+            },
+            out clearCloudChoice,
             isImageModels: false);
+        ApplyActive();
         panel.Children.Add(AppTheme.CreateCard(textCard));
 
         // ── Image Generation Provider ──
@@ -1852,6 +1946,7 @@ public sealed class OnboardingPage : Page
 
         var validateImageKey = BuildProviderKeyRow(imageCard, imageProviders, signupUrls, imageProviderInit,
             provider => enhancement.SelectedImageProvider = provider,
+            out _,
             isImageModels: true);
         panel.Children.Add(AppTheme.CreateCard(imageCard));
 
@@ -1861,6 +1956,8 @@ public sealed class OnboardingPage : Page
 
     /// <summary>
     /// Returns a validation function: saves any unsaved key, returns true if OK to proceed.
+    /// <paramref name="clearSelection"/> empties the provider combo — the text card's, when a
+    /// built-in model is chosen instead.
     /// </summary>
     private Func<Task<bool>> BuildProviderKeyRow(
         StackPanel card,
@@ -1868,6 +1965,7 @@ public sealed class OnboardingPage : Page
         Dictionary<Services.AIEnhancement.AIProvider, string> signupUrls,
         Services.AIEnhancement.AIProvider? currentProvider,
         Action<Services.AIEnhancement.AIProvider> onProviderChanged,
+        out Action clearSelection,
         bool isImageModels = false)
     {
         var providerCombo = new ComboBox
@@ -1886,6 +1984,11 @@ public sealed class OnboardingPage : Page
         {
             Spacing = 8,
             Visibility = currentProvider.HasValue ? Visibility.Visible : Visibility.Collapsed
+        };
+        clearSelection = () =>
+        {
+            providerCombo.SelectedIndex = -1;
+            keyDetailsPanel.Visibility = Visibility.Collapsed;
         };
 
         var signupLink = new HyperlinkButton
@@ -3296,7 +3399,7 @@ public sealed class OnboardingPage : Page
             App.Services.GetRequiredService<Services.System.AutostartRegistrationService>()
                 .Apply(_settings.GetBool(AppDefaults.LaunchAtLogin, true));
 
-            // A new install starts on VoiceWink Engine when no provider was chosen here (owner,
+            // A new install starts on the built-in models when no provider was chosen here (owner,
             // 2026-09-30). Only a FIRST finish: a relaunched wizard already has the completion key.
             if (AiProviderDefaultSeed.ForNewInstall(
                     !_settings.Contains(AppDefaults.HasCompletedOnboarding),
@@ -3478,9 +3581,14 @@ public sealed class OnboardingPage : Page
         if (!enabled)
             return EnhancementSummaryText(enabled: false, hasKey: false, hasModel: false);
         var raw = _settings.GetString(AppDefaults.AiProvider, "");
-        var provider = Enum.TryParse<Services.AIEnhancement.AIProvider>(raw, out var p)
-            ? p
-            : Services.AIEnhancement.AIProvider.OpenAI;
+        // Nothing stored on a first finish means the built-in models — the seed Finish applies.
+        var provider = AiProviderDefaultSeed.ForNewInstall(
+                           !_settings.Contains(AppDefaults.HasCompletedOnboarding),
+                           _settings.Contains(AppDefaults.AiProvider),
+                           Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered)
+                       ?? (Enum.TryParse<Services.AIEnhancement.AIProvider>(raw, out var p)
+                           ? p
+                           : Services.AIEnhancement.AIProvider.OpenAI);
         // LAI-1/LAI-4: a keyless provider (Local server, On this PC) is never "incomplete" for want of a key.
         var hasKey = provider is Services.AIEnhancement.AIProvider.LocalServer or Services.AIEnhancement.AIProvider.OnThisPc
                      || !string.IsNullOrEmpty(_apiKeys.GetApiKey(provider.ToString().ToLowerInvariant()));

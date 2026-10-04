@@ -14,12 +14,18 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 /// unreadable but replaceable is never rewritten: the self-test simply runs again). A FAIL pins
 /// that model to the CPU; a PASS carries the ROUTE the timing comparison chose (GPU or CPU) and
 /// the two measurements, and a Pass row without a route - written before the comparison existed -
-/// reads as no verdict, so the check runs once more. <c>Unknown</c> is never stored. GDPR erasure
-/// deletes the file (<c>DataErasureService</c>).
+/// reads as no verdict, so the check runs once more. So does a Pass row timed by an older timed
+/// run (<see cref="CurrentTiming"/>): its times are not comparable with the speed limit.
+/// <c>Unknown</c> is never stored. GDPR erasure deletes the file (<c>DataErasureService</c>).
 /// </summary>
 internal sealed class LlamaGpuCheckStore
 {
     internal static string DefaultPath => Path.Combine(AppPaths.RootDir, "llama-gpu-check.json");
+
+    /// <summary>Which timed run a Pass row's times come from. 2 = the paragraph-sized run
+    /// (2026-10-03); rows without it were timed on the ~25-word request, whose times the speed
+    /// limit no longer measures, so they read as no verdict and the check runs once more.</summary>
+    internal const int CurrentTiming = 2;
 
     /// <summary>Verdicts kept per (build, driver); the oldest is dropped past this.</summary>
     internal const int MaxModels = 20;
@@ -54,17 +60,72 @@ internal sealed class LlamaGpuCheckStore
         {
             var row = ReadCurrent()?.Models.FirstOrDefault(m => string.Equals(m.Model, modelIdentity, StringComparison.Ordinal));
             // Member names only: Enum.TryParse would also accept "1" or "Unknown".
-            return (row?.Verdict, row?.Route) switch
+            var current = row?.Timing == CurrentTiming;
+            return (row?.Verdict, row?.Route, current) switch
             {
-                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Gpu)) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Gpu, Positive(row.GpuMs)),
-                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Cpu)) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Cpu, Positive(row.CpuMs)),
-                (nameof(LlamaSelfTestVerdict.Fail), _) => new Entry(LlamaSelfTestVerdict.Fail, row!.Adapter),
+                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Gpu), true) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Gpu, Positive(row.GpuMs)),
+                (nameof(LlamaSelfTestVerdict.Pass), nameof(LlamaRoute.Cpu), true) => new Entry(LlamaSelfTestVerdict.Pass, row!.Adapter, LlamaRoute.Cpu, Positive(row.CpuMs)),
+                (nameof(LlamaSelfTestVerdict.Fail), _, _) => new Entry(LlamaSelfTestVerdict.Fail, row!.Adapter),
                 _ => null,
             };
         }
     }
 
     private static int? Positive(int? ms) => ms > 0 ? ms : null;
+
+    /// <summary>2026-10-03 (Codex plan round): the model's paragraph time on the PROCESSOR when it
+    /// runs there for a reason the GPU check never timed — no GPU evidence, a failed GPU, or GPU
+    /// acceleration switched off — or null. Speed evidence kept apart from the GPU verdict: it never
+    /// clears a Fail and is never read as one.</summary>
+    internal int? CpuSpeedMs(string modelIdentity)
+    {
+        lock (_lock)
+        {
+            var row = ReadCurrent()?.Models.FirstOrDefault(m => string.Equals(m.Model, modelIdentity, StringComparison.Ordinal));
+            return row?.CpuOnlyTiming == CurrentTiming ? Positive(row.CpuOnlyMs) : null;
+        }
+    }
+
+    /// <summary>Record <see cref="CpuSpeedMs"/>; a verdict already stored for the model is kept.
+    /// False when nothing was written (best effort — the timing runs again next time).</summary>
+    internal bool RecordCpuSpeed(string modelIdentity, int ms)
+    {
+        if (_driverSignature is null || ms <= 0)
+        {
+            return false;
+        }
+        lock (_lock)
+        {
+            try
+            {
+                return TransientFileRetry.Run(() =>
+                {
+                    var state = ReadCurrentOrThrow() ?? new State { Build = _build, Driver = _driverSignature };
+                    var row = state.Models.FirstOrDefault(m => string.Equals(m.Model, modelIdentity, StringComparison.Ordinal));
+                    if (row is null)
+                    {
+                        row = new ModelRow { Model = modelIdentity };
+                        state.Models.Add(row);
+                    }
+                    row.CpuOnlyMs = ms;
+                    row.CpuOnlyTiming = CurrentTiming;
+                    if (state.Models.Count > MaxModels)
+                    {
+                        state.Models.RemoveRange(0, state.Models.Count - MaxModels);
+                    }
+                    Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+                    var tmp = _path + ".tmp";
+                    File.WriteAllText(tmp, JsonSerializer.Serialize(state));
+                    File.Move(tmp, _path, overwrite: true);
+                    return true;
+                }, Backoff);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
 
     /// <summary>Record a Fail, or a Pass with the route its timing comparison chose; Unknown and a
     /// Pass without a route are ignored. False when nothing was written (best effort — the test
@@ -89,15 +150,20 @@ internal sealed class LlamaGpuCheckStore
                 return TransientFileRetry.Run(() =>
                 {
                     var state = ReadCurrentOrThrow() ?? new State { Build = _build, Driver = _driverSignature };
+                    var previous = state.Models.FirstOrDefault(m => string.Equals(m.Model, modelIdentity, StringComparison.Ordinal));
                     state.Models.RemoveAll(m => string.Equals(m.Model, modelIdentity, StringComparison.Ordinal));
                     state.Models.Add(new ModelRow
                     {
+                        // The processor timing is separate evidence: a new verdict keeps it.
+                        CpuOnlyMs = previous?.CpuOnlyMs,
+                        CpuOnlyTiming = previous?.CpuOnlyTiming,
                         Model = modelIdentity,
                         Verdict = verdict.ToString(),
                         Adapter = adapter,
                         Route = verdict == LlamaSelfTestVerdict.Pass ? route.ToString() : null,
                         GpuMs = verdict == LlamaSelfTestVerdict.Pass ? gpuMs : null,
                         CpuMs = verdict == LlamaSelfTestVerdict.Pass ? cpuMs : null,
+                        Timing = verdict == LlamaSelfTestVerdict.Pass ? CurrentTiming : null,
                     });
                     if (state.Models.Count > MaxModels)
                     {
@@ -182,5 +248,8 @@ internal sealed class LlamaGpuCheckStore
         public string? Route { get; set; }
         public int? GpuMs { get; set; }
         public int? CpuMs { get; set; }
+        public int? Timing { get; set; }
+        public int? CpuOnlyMs { get; set; }
+        public int? CpuOnlyTiming { get; set; }
     }
 }

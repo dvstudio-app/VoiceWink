@@ -78,9 +78,18 @@ public sealed class LocalModelPreparer
         if (binding is null)
             return PrepareOutcome.UnknownModel;
 
-        return await binding.Runtime
+        // A speed check for another model stands down: this load must not wait behind its decode.
+        SpeechSpeedCheck.Current?.CancelUnless(binding.CanonicalName);
+        var outcome = await binding.Runtime
             .PrepareAsync(binding.CanonicalName, language, ct)
             .ConfigureAwait(false);
+        if (outcome == PrepareOutcome.Loaded)
+        {
+            // 2026-10-03: a model loaded on this PC for the first time gets its one speed check.
+            try { SpeechSpeedCheck.Current?.OfferAfterPrepare(binding.CanonicalName); }
+            catch (Exception ex) { Serilog.Log.Debug("Speech speed check not offered: {ExceptionType}", ex.GetType().Name); }
+        }
+        return outcome;
     }
 }
 

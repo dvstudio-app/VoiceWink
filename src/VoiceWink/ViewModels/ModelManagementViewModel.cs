@@ -204,6 +204,11 @@ public partial class ModelManagementViewModel : ObservableObject
     /// the flip applies at the next start either.</summary>
     public AppRestartService? AppRestart => _appRestart;
 
+    /// <summary>A fresh "speed ratings were updated" tracker for one Models page instance (2026-10-03).</summary>
+    internal SpeedRatingsNotice.Tracker CreateSpeedNotice() => new(
+        () => _settings.GetString(AppDefaults.SpeedRatingsShownModels, ""),
+        value => _settings.SetString(AppDefaults.SpeedRatingsShownModels, value));
+
     /// <remarks><paramref name="pcppBackend"/> (TRN-29 slice 4): null in every ordinary build.
     /// When registered, a delete of the Parakeet row routes through it so the hidden GGUF
     /// artifact is removed WITH the legacy bundle — otherwise "Delete" would strip sherpa and

@@ -515,6 +515,25 @@ public partial class App : Application, Services.IAppLifetime
             ParakeetGpuName: parakeetEvidence.Name);
         });
 
+        // 2026-10-03: this PC's measured speech-model speeds, and the one check that measures each
+        // model when it is first loaded here. Composition root only: nothing else resolves these.
+        var speechSpeeds = new Helpers.TranscriptionSpeedStore(
+            Helpers.TranscriptionSpeedStore.DefaultPath, Helpers.DisplayDriverSignature.Read());
+        Helpers.TranscriptionSpeedStore.Configure(speechSpeeds);
+        var speedCheckPreparer = Services!.GetRequiredService<LocalModelPreparer>();
+        var speedCheckClip = new Lazy<float[]?>(() => Helpers.GpuSelfTestClip.TryLoad(
+            Helpers.GpuSelfTestClip.DefaultWavPath, Helpers.GpuSelfTestClip.DefaultWordsPath, out _)?.Samples);
+        SpeechSpeedCheck.Configure(new SpeechSpeedCheck(
+            speechSpeeds,
+            name => speedCheckPreparer.TryResolve(name)?.Service,
+            name => speedCheckPreparer.TryResolve(name)?.Service is not WhisperTranscriptionService whisper
+                || string.Equals(whisper.LoadedModelName, name, StringComparison.OrdinalIgnoreCase),
+            () => Helpers.LocalComputeSnapshot.Current,
+            Services!.GetRequiredService<Services.Maintenance.IMaintenanceGate>(),
+            runtime => GpuWarmup.Instance.IsSelfTestRunning(runtime == Models.LocalRuntimeKind.Whisper
+                ? Helpers.GpuSelfTestEngine.Whisper : Helpers.GpuSelfTestEngine.Parakeet),
+            () => speedCheckClip.Value));
+
         // The Parakeet kick itself lives in StartGatedRuntimeServices, NOT here: this runs in
         // the App constructor, BEFORE the LGL-1 legal gate, and spawning a ~1 GB child that
         // reads 900 MB of model on a machine whose user has not accepted the current legal
@@ -1140,6 +1159,9 @@ public partial class App : Application, Services.IAppLifetime
             // that deleted Dutch/German "er") drops it so the corrected default applies. Same
             // shape as the line above: presence-and-value based, one-way, idempotent, fail-soft.
             FillerWordsMigration.Run(settingsSvc);
+
+            // 2026-10-03: an upgraded install announces its first render of the per-PC speed stars.
+            SpeedRatingsNotice.SeedUpgrade(settingsSvc);
 
             // Prompt/output trace (all builds since REL-17; owner request 2026-07-18):
             // wire the static gates once. Opt-in, default OFF. The startup sweep enforces
@@ -3448,7 +3470,7 @@ public partial class App : Application, Services.IAppLifetime
                 {
                     // Single ItemsSource swap (see the clear branches) — one container
                     // rebuild, not N incremental Adds into the live editable combo.
-                    // VoiceWink Engine models show by name; the confirm maps the pick back to its id.
+                    // built-in models show by name; the confirm maps the pick back to its id.
                     modelCombo.ItemsSource = EngineModelLabel.Labels(selProvider, filtered);
 
                     // Pre-select (UX-1): redo-chain recency, then the per-provider persisted
@@ -5118,6 +5140,7 @@ public partial class App : Application, Services.IAppLifetime
         // Parakeet child's teardown kills-and-confirms on cancellation (self-review, concurrency
         // lens). Same cancel as admission: session-permanent, exception-contained, reason logged.
         GpuWarmup.Instance.Cancel(GpuWarmupCancelReason.Shutdown);
+        SpeechSpeedCheck.Current?.CancelForUserWork();
 
         // TRN-29 slice 4: explicit kill of the resident parakeet-server (the kill-on-close job
         // object is the app-DEATH backstop, not the primary path). Null in every flag-off build.

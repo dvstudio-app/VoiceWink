@@ -25,8 +25,11 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 /// (<see cref="LlamaSelfTest.ChooseRoute"/>) - per model, stored with the verdict, never a rule
 /// about a brand or an architecture. A model whose route is the CPU is acquired in Cpu mode for
 /// its own calls; the session is not moved to the CPU for other models.</item>
-/// <item><b>Prepare on recording start</b> (fire-and-forget, never on the recording path), then a
-/// prompt-cache warm; <b>idle unload</b> after <see cref="DefaultIdleUnload"/>.</item>
+/// <item><b>Prepare</b> when the model is chosen, at app start and on recording start
+/// (fire-and-forget, never on the recording path), then a prompt-cache warm. <b>The model stays
+/// loaded</b> until the app exits, another model is prepared, or the built-in models stop being the
+/// enhancement provider (<see cref="UnloadAsync"/>) - owner, 2026-10-03: an unload after idle time
+/// made the next dictation pay a reload, up to half a minute on a slow PC.</item>
 /// <item><b>Erasure closes the engine for the session (Codex plan B2):</b> admission closes, the
 /// lifetime token cancels, background work is joined, and the verdict store refuses writes under
 /// the same lock, so an erased file is never recreated by a late continuation.</item>
@@ -42,12 +45,6 @@ public sealed class OnThisPcEngine : IDisposable
     internal const string UnavailableMessage = "AI enhancement unavailable";
     internal const string TooLongMessage = "Dictation too long";
     internal const string StoppedMessage = "AI enhancement stopped";
-
-    /// <summary>A resident child idle this long is retired, giving its RAM/VRAM back (the 4B held
-    /// +6.6 GB of commit idle on the laptop). 30 minutes since 2026-10-01 (owner; 5 before) — the
-    /// Local server provider's Ollama <c>keep_alive</c> window, so a dictation after a coffee break
-    /// does not pay the 1.3–7 s reload; prepare-on-record hides most of a reload either way.</summary>
-    internal static readonly TimeSpan DefaultIdleUnload = TimeSpan.FromMinutes(30);
 
     /// <summary>Tokens the chat template adds around the system and user turns, beyond the texts'
     /// own tokens — the admission check's margin.</summary>
@@ -68,14 +65,17 @@ public sealed class OnThisPcEngine : IDisposable
     /// retired and nothing is deleted.</summary>
     internal static readonly TimeSpan DeleteGateWait = TimeSpan.FromSeconds(10);
 
+    /// <summary>How often an unload that stood down for a busy engine asks again, and how many
+    /// times (10 minutes: longer than a first-use check on a slow PC).</summary>
+    internal static readonly TimeSpan UnloadRetry = TimeSpan.FromSeconds(5);
+    internal const int UnloadRetries = 120;
+
     private readonly LlamaServerProcess _process;
     private readonly Func<string, string?> _installedModelPath;
     private readonly HttpClient _http;
     private readonly LlamaGpuCheckStore _checks;
     private readonly Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<(LlamaSelfTestVerdict Verdict, int Facts, TimeSpan Elapsed)>> _selfTest;
     private readonly Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<LlamaTimedRun>> _timedRun;
-    private readonly Func<DateTime> _utcNow;
-    private readonly TimeSpan _idleUnload;
     private readonly TimeSpan _erasureJoinBudget;
     private readonly TimeSpan _deleteGateWait;
     private readonly CancellationTokenSource _lifetime = new();
@@ -90,15 +90,28 @@ public sealed class OnThisPcEngine : IDisposable
     private readonly HashSet<string> _deleting = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _inconclusiveWarmups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LlamaGpuCheckStore.Entry?> _verdicts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int?> _cpuSpeeds = new(StringComparer.Ordinal);
+    private CancellationTokenSource? _cpuTimingCts;
+    private TaskCompletionSource _speedMeasured = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completes when the next processor timing is stored, so an open page shows it
+    /// (Codex diff round: the timing published nothing and the page kept the estimate).</summary>
+    internal Task NextSpeedMeasured { get { lock (_state) return _speedMeasured.Task; } }
     /// <summary>One cancel per running first-use check, so a delete of that model stops the check's
     /// spawn instead of waiting out a health budget.</summary>
     private readonly Dictionary<string, CancellationTokenSource> _warmupCancels = new(StringComparer.Ordinal);
-    private bool _unloading;
+    /// <summary>Unloads retiring the resident right now - a count, so one unload ending never
+    /// clears the flag under another that is still waiting on the process gate.</summary>
+    private int _unloading;
     private Task? _prepare;
+    /// <summary>The model asked for while a prepare was running: prepared when that one ends, so
+    /// the LAST choice is what ends up loaded (latest wins, at most one waiting).</summary>
+    private (string ModelId, string? WarmSystemPrompt)? _queuedPrepare;
+    /// <summary>1 while an <see cref="UnloadWhenIdleAsync"/> loop runs (one at a time).</summary>
+    private int _unloadLoop;
+    private readonly TimeSpan _unloadRetry;
     private bool _closed;
     private int _inFlight;
-    private DateTime? _lastUseUtc;
-    private Timer? _idleTimer;
 
     /// <summary>Production: the payload next to the app, the native launcher, the verdict store in
     /// the app folder keyed by this build and display driver.</summary>
@@ -123,12 +136,12 @@ public sealed class OnThisPcEngine : IDisposable
         HttpClient http,
         LlamaGpuCheckStore checks,
         Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<(LlamaSelfTestVerdict, int, TimeSpan)>>? selfTest = null,
-        Func<DateTime>? utcNow = null,
-        TimeSpan? idleUnload = null,
         TimeSpan? erasureJoinBudget = null,
         Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<LlamaTimedRun>>? timedRun = null,
-        TimeSpan? deleteGateWait = null)
+        TimeSpan? deleteGateWait = null,
+        TimeSpan? unloadRetry = null)
     {
+        _unloadRetry = unloadRetry ?? UnloadRetry;
         _timedRun = timedRun ?? LlamaSelfTest.RunTimedAsync;
         _deleteGateWait = deleteGateWait ?? DeleteGateWait;
         _erasureJoinBudget = erasureJoinBudget ?? ErasureJoinBudget;
@@ -137,8 +150,6 @@ public sealed class OnThisPcEngine : IDisposable
         _http = http;
         _checks = checks;
         _selfTest = selfTest ?? LlamaSelfTest.RunAsync;
-        _utcNow = utcNow ?? (() => DateTime.UtcNow);
-        _idleUnload = idleUnload ?? DefaultIdleUnload;
     }
 
     internal LlamaServerProcess Process => _process;
@@ -186,11 +197,92 @@ public sealed class OnThisPcEngine : IDisposable
             return null;
         lock (_state)
         {
-            var verdict = VerdictLocked(IdentityOf(entry));
-            if (_process.LaunchMode == LlamaLaunchMode.Cpu && verdict is { Route: LlamaRoute.Gpu })
-                return null;
-            return verdict is { Verdict: LlamaSelfTestVerdict.Pass, RouteMs: { } ms } ? ms : null;
+            var identity = IdentityOf(entry);
+            var verdict = VerdictLocked(identity);
+            // The GPU check's own time when the model runs the route it chose; otherwise (no GPU, a
+            // failed GPU, GPU acceleration off) the processor timing (Codex plan round, 2026-10-03).
+            if (verdict is { Verdict: LlamaSelfTestVerdict.Pass, RouteMs: { } ms }
+                && !(_process.LaunchMode == LlamaLaunchMode.Cpu && verdict.Value.Route == LlamaRoute.Gpu))
+                return ms;
+            return CpuSpeedLocked(identity);
         }
+    }
+
+    /// <summary>GPU acceleration is off (or the session latched the CPU): every model runs on the processor.</summary>
+    internal bool RunsOnProcessor => _process.LaunchMode == LlamaLaunchMode.Cpu;
+
+    private int? CpuSpeedLocked(string identity)
+    {
+        if (!_cpuSpeeds.TryGetValue(identity, out var ms))
+        {
+            ms = _checks.CpuSpeedMs(identity);
+            _cpuSpeeds[identity] = ms;
+        }
+        return ms;
+    }
+
+    /// <summary>Is a processor timing owed for a child serving this model on the CPU? Not when the
+    /// GPU check's comparison already timed the CPU route for it.</summary>
+    private bool CpuTimingOwedLocked(string identity)
+        => !_closed && CpuSpeedLocked(identity) is null
+           && VerdictLocked(identity) is not { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Cpu };
+
+    /// <summary>Times the paragraph on a child serving this model on the processor, once, and stores
+    /// it (2026-10-03, Codex plan round: a model on the CPU was never timed, so its stars and "Best for
+    /// this PC" stayed an estimate forever). The caller holds the use slot. Best effort.</summary>
+    private async Task MeasureCpuIfOwedAsync(LlamaServerProcess.LlamaLease lease, string modelId, string identity,
+        CancellationToken ct)
+    {
+        lock (_state)
+        {
+            if (lease.OnGpu || !CpuTimingOwedLocked(identity))
+                return;
+        }
+        using var timing = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        lock (_state)
+        {
+            // A dictation already waiting cancelled nothing (there was no timing yet): it goes
+            // first, and the model is timed at a later prepare (self-review B2).
+            if (_inFlight > 0)
+                return;
+            _cpuTimingCts = timing;
+        }
+        LlamaTimedRun run;
+        try
+        {
+            run = await _timedRun(_http, lease, SelfTestTimeout, timing.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timing.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            Logger.Information("On this PC: the processor timing for {LocalModelId} stood down for a dictation", modelId);
+            return;
+        }
+        finally
+        {
+            lock (_state)
+                _cpuTimingCts = null;
+        }
+        if (!run.Completed || timing.IsCancellationRequested)
+        {
+            Logger.Information("On this PC: the processor timing for {LocalModelId} did not complete", modelId);
+            return;
+        }
+        _process.NotifyServed(lease.Generation);
+        var ms = Math.Max(1, (int)run.Elapsed.TotalMilliseconds);
+        TaskCompletionSource measured;
+        lock (_state)
+        {
+            // Erasure closes this under the same lock: a timing that lands after the file was deleted
+            // is dropped, never written back.
+            if (_closed)
+                return;
+            _checks.RecordCpuSpeed(identity, ms);
+            _cpuSpeeds[identity] = ms;
+            measured = _speedMeasured;
+            _speedMeasured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        measured.TrySetResult();
+        Logger.Information("On this PC: {LocalModelId} on the processor - {Ms} ms for the timed paragraph", modelId, ms);
     }
 
     /// <summary>The running first-use check's completion, or null when none is RUNNING (one merely
@@ -242,6 +334,12 @@ public sealed class OnThisPcEngine : IDisposable
         try
         {
             linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+            // A processor timing holding the slot stands down for the dictation; it is timed again
+            // at the next prepare.
+            lock (_state)
+            {
+                try { _cpuTimingCts?.Cancel(); } catch (ObjectDisposedException) { }
+            }
             await _useGate.WaitAsync(linked.Token).ConfigureAwait(false);
             ownsUseGate = true;
             // Asked again under the slot: a delete that ran while this waited has removed the model.
@@ -251,7 +349,6 @@ public sealed class OnThisPcEngine : IDisposable
                         ?? await _process.TryAcquireAsync(path, identity, linked.Token, route).ConfigureAwait(false);
             if (lease is not { } l)
                 throw new InvalidOperationException(UnavailableMessage);
-            StartIdleTimer();
 
             var hints = config.LocalRequest;
             var promptClass = hints?.PromptClass ?? LocalPromptClass.Custom;
@@ -301,18 +398,17 @@ public sealed class OnThisPcEngine : IDisposable
             lock (_state)
             {
                 _inFlight--;
-                _lastUseUtc = _utcNow();
             }
         }
     }
 
-    /// <summary>The lock-free ready lease - skipped while an idle unload is retiring the resident,
+    /// <summary>The lock-free ready lease - skipped while an unload is retiring the resident,
     /// which stays readable until its kill is confirmed; the gated acquire then waits the retire out.</summary>
     private LlamaServerProcess.LlamaLease? ReadyLeaseUnlessUnloading(string identity, LlamaLaunchMode? route)
     {
         lock (_state)
         {
-            if (_unloading)
+            if (_unloading > 0)
                 return null;
         }
         return _process.TryGetReadyLease(identity, route);
@@ -381,8 +477,9 @@ public sealed class OnThisPcEngine : IDisposable
     /// <summary>
     /// Recording started: load <paramref name="modelId"/> while the user speaks, then prefill
     /// <paramref name="warmSystemPrompt"/> so the dictation pays only for its own words. Never
-    /// throws, never blocks the caller, single-flight; a model owed its first-use check starts that
-    /// check instead.
+    /// throws, never blocks the caller, single-flight; a model owed its first-use check runs that
+    /// check first, INSIDE the prepare chain (Codex diff r1), so a later choice still queues behind
+    /// it and the last model chosen is the one left loaded.
     /// </summary>
     internal void Prepare(string modelId, string? warmSystemPrompt)
     {
@@ -397,19 +494,72 @@ public sealed class OnThisPcEngine : IDisposable
             {
                 if (_closed || _deleting.Contains(entry.Id))
                     return;
-                ApplyStoredVerdictLocked(identity);
-                if (StartWarmupIfOwedLocked(entry, path, identity) || _warmups.ContainsKey(identity))
-                    return;
                 if (_prepare is { IsCompleted: false })
+                {
+                    // Another prepare is running (the app-start one, say): this choice runs after
+                    // it instead of being dropped, replacing any choice already waiting.
+                    var chainNeeded = _queuedPrepare is null;
+                    _queuedPrepare = (entry.Id, warmSystemPrompt);
+                    if (chainNeeded)
+                        _prepare = RunQueuedPrepareAfterAsync(_prepare);
                     return;
-                var route = RouteModeLocked(identity);
-                _prepare = Task.Run(() => PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt));
+                }
+                _prepare = Task.Run(() => PrepareAfterCheckAsync(entry, path, identity, warmSystemPrompt));
             }
         }
         catch (Exception ex)
         {
             Logger.Debug("On this PC: prepare not started: {ErrorType}", ex.GetType().Name);
         }
+    }
+
+    /// <summary>Waits for the running prepare (it never throws), then prepares the choice that
+    /// waited - read now, so the latest one wins - through the same rules as <see cref="Prepare"/>.</summary>
+    private async Task RunQueuedPrepareAfterAsync(Task running)
+    {
+        await running.ConfigureAwait(false);
+        (string ModelId, string? WarmSystemPrompt)? next;
+        LocalModelEntry? entry;
+        string? path;
+        lock (_state)
+        {
+            next = _queuedPrepare;
+            _queuedPrepare = null;
+            if (next is null || _closed || _deleting.Contains(next.Value.ModelId))
+                return;
+            entry = LocalModelCatalog.Find(next.Value.ModelId);
+            path = entry is null ? null : _installedModelPath(entry.Id);
+            if (entry is null || path is null)
+                return;
+        }
+        await PrepareAfterCheckAsync(entry, path, IdentityOf(entry), next.Value.WarmSystemPrompt).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs the model's first-use check when it is owed (or waits for the one running),
+    /// then prepares it - unless the check ended without a verdict, which keeps admission shut.</summary>
+    private async Task PrepareAfterCheckAsync(LocalModelEntry entry, string path, string identity, string? warmSystemPrompt)
+    {
+        Task? check;
+        lock (_state)
+        {
+            if (_closed || _deleting.Contains(entry.Id))
+                return;
+            ApplyStoredVerdictLocked(identity);
+            StartWarmupIfOwedLocked(entry, path, identity);
+            _warmups.TryGetValue(identity, out check);
+        }
+        if (check is not null)
+            await check.ConfigureAwait(false);
+
+        LlamaLaunchMode? route;
+        lock (_state)
+        {
+            if (_closed || _deleting.Contains(entry.Id) || IsWarmupOwedLocked(identity))
+                return;
+            ApplyStoredVerdictLocked(identity);
+            route = RouteModeLocked(identity);
+        }
+        await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt).ConfigureAwait(false);
     }
 
     private async Task PrepareCoreAsync(string modelId, string path, string identity, LlamaLaunchMode? route, string? warmSystemPrompt)
@@ -425,11 +575,7 @@ public sealed class OnThisPcEngine : IDisposable
                         ?? await _process.TryAcquireAsync(path, identity, _lifetime.Token, route).ConfigureAwait(false);
             if (lease is not { } l)
                 return;
-            StartIdleTimer();
-            lock (_state)
-            {
-                _lastUseUtc = _utcNow();
-            }
+            await MeasureCpuIfOwedAsync(l, modelId, identity, _lifetime.Token).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(warmSystemPrompt))
             {
                 await WarmPromptCacheAsync(l, warmSystemPrompt, _lifetime.Token).ConfigureAwait(false);
@@ -489,8 +635,34 @@ public sealed class OnThisPcEngine : IDisposable
         {
             if (_closed || _deleting.Contains(entry.Id))
                 return;
-            ApplyStoredVerdictLocked(IdentityOf(entry));
-            StartWarmupIfOwedLocked(entry, path, IdentityOf(entry));
+            var identity = IdentityOf(entry);
+            ApplyStoredVerdictLocked(identity);
+            StartWarmupIfOwedLocked(entry, path, identity);
+            _ = TimeOnProcessorAfterCheckAsync(entry, path, identity,
+                _warmups.TryGetValue(identity, out var check) ? check : Task.CompletedTask);
+        }
+    }
+
+    /// <summary>After a download: once any first-use check has settled, a model that runs on the
+    /// processor (no GPU evidence, a failed GPU, GPU acceleration off) is timed there through the
+    /// slot path, rather than left an estimate. Best effort.</summary>
+    private async Task TimeOnProcessorAfterCheckAsync(LocalModelEntry entry, string path, string identity, Task check)
+    {
+        try
+        {
+            await check.ConfigureAwait(false);
+            LlamaLaunchMode? route;
+            lock (_state)
+            {
+                if (_closed || _deleting.Contains(entry.Id) || IsWarmupOwedLocked(identity) || !CpuTimingOwedLocked(identity))
+                    return;
+                route = RouteModeLocked(identity);
+            }
+            await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt: null).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug("On this PC: processor timing after the check skipped: {ErrorType}", ex.GetType().Name);
         }
     }
 
@@ -586,9 +758,10 @@ public sealed class OnThisPcEngine : IDisposable
     /// The first-use check. Settled: a Fail, a Pass with its route chosen, or a child with no GPU
     /// evidence (nothing to check). Inconclusive: no lease, an <c>Unknown</c> verdict, a GPU timed
     /// run that did not complete, an engine shutdown, an exception.
-    /// <para>After a Pass the same request is timed on the GPU (its second request there, so the
-    /// backend's first-run compilation is already paid), then on a CPU child with the GPU's time as
-    /// its deadline. <see cref="LlamaSelfTest.ChooseRoute"/> decides; the winning route's child is
+    /// <para>After a Pass a paragraph-sized request is timed on the GPU (after the self-test, so the
+    /// backend's first-run setup is already paid), then on a CPU child with the GPU's time as
+    /// its deadline. A GPU whose timed reply is garbage (none of the facts) is a failed GPU; one
+    /// that condensed the paragraph is not. <see cref="LlamaSelfTest.ChooseRoute"/> decides; the winning route's child is
     /// left loaded. The slot (<see cref="_useGate"/>) is held throughout.</para>
     /// </summary>
     private async Task<WarmupOutcome> RunWarmupAsync(LocalModelEntry entry, string path, string identity, CancellationToken ct)
@@ -606,13 +779,10 @@ public sealed class OnThisPcEngine : IDisposable
                 Logger.Warning("On this PC: first-use check for {LocalModelId} could not start the engine", entry.Id);
                 return WarmupOutcome.Inconclusive;
             }
-            StartIdleTimer();
-            lock (_state)
-            {
-                _lastUseUtc = _utcNow();
-            }
             if (!l.OnGpu)
             {
+                // No timing here: dictations are refused while a check runs, so the processor timing
+                // waits for the slot path once the gate is open (self-review B3).
                 Logger.Information("On this PC: {LocalModelId} loaded without GPU evidence - no GPU check to run", entry.Id);
                 return WarmupOutcome.Settled;
             }
@@ -637,8 +807,8 @@ public sealed class OnThisPcEngine : IDisposable
                 Logger.Warning("On this PC: the timed GPU run for {LocalModelId} did not complete", entry.Id);
                 return WarmupOutcome.Inconclusive;
             }
-            if (!gpu.Correct)
-                return SettleFail(entry, identity, adapter, facts: 0);   // the GPU's second reply was wrong: not a GPU to use
+            if (gpu.Garbled)
+                return SettleFail(entry, identity, adapter, facts: 0);   // the GPU's second reply was garbage: not a GPU to use
 
             if (!StillAdmitted(entry.Id))
                 return WarmupOutcome.Abandoned;
@@ -716,58 +886,83 @@ public sealed class OnThisPcEngine : IDisposable
         return WarmupOutcome.Settled;
     }
 
-    // ── Idle unload ─────────────────────────────────────────────────────────
+    // ── Unload ──────────────────────────────────────────────────────────────
 
-    private void StartIdleTimer()
+    /// <summary>
+    /// The built-in models are no longer the enhancement provider (or enhancement was switched off):
+    /// retire the resident child and give its memory back. Stands down while anything uses the
+    /// engine - asked again under the process gate, so a dictation handed the child in between
+    /// keeps it. True when a child was retired.
+    /// </summary>
+    internal async Task<bool> UnloadAsync()
     {
         lock (_state)
         {
-            if (_closed || _idleTimer is not null)
-                return;
-            var period = TimeSpan.FromSeconds(30);
-            _idleTimer = new Timer(_ => _ = CheckIdleAsync(), null, period, period);
-        }
-    }
-
-    /// <summary>Retires a resident child idle for longer than the unload period with nothing in flight.</summary>
-    internal async Task<bool> CheckIdleAsync()
-    {
-        lock (_state)
-        {
-            if (_closed || _inFlight > 0 || _warmups.Count > 0 || _prepare is { IsCompleted: false })
+            if (_closed || !_process.HasResident || _inFlight > 0 || _warmups.Count > 0 || _prepare is { IsCompleted: false })
                 return false;
-            if (_lastUseUtc is not { } last || _utcNow() - last < _idleUnload)
-                return false;
-            _lastUseUtc = null;
-            _unloading = true;   // from here a dictation takes the gated acquire, never the dying child
+            _unloading++;   // from here a dictation takes the gated acquire, never the dying child
         }
-        var retired = false;
         try
         {
-            // A dictation or prepare that arrived after the check above has already counted itself
-            // (_inFlight / _prepare) before it reaches the process gate; asked again under that
-            // gate, the unload stands down instead of killing the child it was just handed.
-            retired = await _process.TryRetireResidentAsync(TimeSpan.FromSeconds(1), onlyIf: () =>
+            var retired = await _process.TryRetireResidentAsync(TimeSpan.FromSeconds(1), onlyIf: () =>
             {
                 lock (_state)
                 {
-                    return _inFlight == 0 && _warmups.Count == 0 && _prepare is not { IsCompleted: false };
+                    return _process.HasResident && _inFlight == 0 && _warmups.Count == 0 && _prepare is not { IsCompleted: false };
                 }
             }).ConfigureAwait(false);
             if (retired)
-                Logger.Information("On this PC: engine unloaded after {Minutes:F0} min idle", _idleUnload.TotalMinutes);
+                Logger.Information("On this PC: engine unloaded - the built-in models are no longer the enhancement provider");
             return retired;
         }
         finally
         {
             lock (_state)
             {
-                _unloading = false;
-                // Not unloaded (gate busy, or work arrived): the idle clock restarts, so the
-                // timer tries again instead of never unloading this child.
-                if (!retired && !_closed)
-                    _lastUseUtc ??= _utcNow();
+                _unloading--;
             }
+        }
+    }
+
+    /// <summary>
+    /// <see cref="UnloadAsync"/>, asked again every <see cref="UnloadRetry"/> while the engine is
+    /// busy (a first-use check, a prepare, a dictation) - an unload that merely stood down would
+    /// otherwise leave the model in memory for the rest of the session, now that nothing unloads
+    /// on idle time (self-review, 2026-10-03). Stops when nothing is loaded, when
+    /// <paramref name="stillUnwanted"/> turns false (the built-in models were chosen again), after
+    /// <see cref="UnloadRetries"/> tries, or at app exit. One loop at a time: a second call while
+    /// one runs returns false, and the running loop reads the live answer anyway.
+    /// </summary>
+    internal async Task<bool> UnloadWhenIdleAsync(Func<bool> stillUnwanted)
+    {
+        if (Interlocked.Exchange(ref _unloadLoop, 1) == 1)
+            return false;
+        try
+        {
+            for (var attempt = 0; attempt < UnloadRetries; attempt++)
+            {
+                if (_lifetime.IsCancellationRequested || !stillUnwanted())
+                    return false;
+                lock (_state)
+                {
+                    // Nothing loaded AND nothing that could still load one (Codex diff r1 A1).
+                    if (!_process.HasResident && _inFlight == 0 && _warmups.Count == 0
+                        && _prepare is not { IsCompleted: false })
+                        return false;
+                }
+                if (await UnloadAsync().ConfigureAwait(false))
+                    return true;
+                await Task.Delay(_unloadRetry, _lifetime.Token).ConfigureAwait(false);
+            }
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        finally
+        {
+            Volatile.Write(ref _unloadLoop, 0);
         }
     }
 
@@ -843,8 +1038,6 @@ public sealed class OnThisPcEngine : IDisposable
         {
             _closed = true;
             pending = _warmups.Values.Concat(_prepare is { } p ? [p] : []).ToArray();
-            _idleTimer?.Dispose();
-            _idleTimer = null;
         }
         _lifetime.Cancel();
         var joined = true;
@@ -871,8 +1064,6 @@ public sealed class OnThisPcEngine : IDisposable
         lock (_state)
         {
             _closed = true;
-            _idleTimer?.Dispose();
-            _idleTimer = null;
         }
         _lifetime.Cancel();
         await _process.ShutdownAsync().ConfigureAwait(false);
@@ -880,10 +1071,5 @@ public sealed class OnThisPcEngine : IDisposable
 
     public void Dispose()
     {
-        lock (_state)
-        {
-            _idleTimer?.Dispose();
-            _idleTimer = null;
-        }
     }
 }

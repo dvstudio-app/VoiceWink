@@ -29,11 +29,13 @@ public sealed class ModelsPage : Page
     private readonly PropertyChangedEventHandler _vmPropertyChanged;
     private readonly List<(ModelItemViewModel model, PropertyChangedEventHandler handler)> _modelHandlers = new();
     private StackPanel? _modelList;
+    private SpeedRatingsNotice.Tracker? _speedNotice;
     private StackPanel? _cloudProviderList;
     private ComboBox? _languageCombo;
     private TextBlock? _gpuAdvisory;
     private TextBlock? _gpuStatus;
     private readonly Action _onGpuSelfTestChanged;
+    private readonly Action _onSpeedMeasured;
     private TextBlock? _activeModelName;
     private TextBlock? _activeModelSize;
     private TextBlock? _languageNote;
@@ -43,6 +45,7 @@ public sealed class ModelsPage : Page
         RequestedTheme = AppTheme.ElementTheme;
         Background = AppTheme.Brush(AppTheme.ContentBg);
         _viewModel = App.Services.GetRequiredService<ModelManagementViewModel>();
+        _speedNotice = _viewModel.CreateSpeedNotice();
         _apiKeyManager = App.Services.GetRequiredService<ApiKeyManager>();
         BuildUI();
         // UI-12: the GPU row's status line follows the self-test as it runs — raised on the
@@ -52,6 +55,13 @@ public sealed class ModelsPage : Page
         {
             if (_isUnloaded) return;
             RefreshGpuAdvisory();
+        });
+        // A speech speed check stores its time off the UI thread and raises no ViewModel event,
+        // so without this an open page kept the estimate (Kimi diff r2).
+        _onSpeedMeasured = () => DispatcherQueue.TryEnqueue(() =>
+        {
+            if (_isUnloaded) return;
+            RefreshModelList();
         });
         _vmPropertyChanged = (_, e) =>
         {
@@ -72,6 +82,11 @@ public sealed class ModelsPage : Page
             _viewModel.PropertyChanged += _vmPropertyChanged;
             GpuWarmup.Instance.SelfTestChanged -= _onGpuSelfTestChanged;
             GpuWarmup.Instance.SelfTestChanged += _onGpuSelfTestChanged;
+            if (SpeechSpeedCheck.Current is { } speedCheck)
+            {
+                speedCheck.Measured -= _onSpeedMeasured;
+                speedCheck.Measured += _onSpeedMeasured;
+            }
             // Re-read disk BEFORE building the cards. The VM is a singleton whose LoadModels() ran
             // once at construction, so without this a model deleted from disk stayed "downloaded"
             // for the rest of the process (UAT 15.16, 2026-07-25). In-place + fail-soft.
@@ -94,6 +109,7 @@ public sealed class ModelsPage : Page
         _isUnloaded = true;
         _viewModel.PropertyChanged -= _vmPropertyChanged;
         GpuWarmup.Instance.SelfTestChanged -= _onGpuSelfTestChanged;
+        if (SpeechSpeedCheck.Current is { } speedCheck) speedCheck.Measured -= _onSpeedMeasured;
         // Per-model card handlers subscribe onto the SINGLETON ModelManagementViewModel's
         // ModelItemViewModels, and MainWindow creates a fresh page per navigation — without
         // this drain every past visit's closures (capturing this page's controls) stayed
@@ -197,14 +213,7 @@ public sealed class ModelsPage : Page
     {
         var presentation = CurrentGpuPresentation();
 
-        var row = AppTheme.CreateToggleSetting(
-            "GPU acceleration",
-            presentation.Description,
-            presentation.IsOn,
-            OnGpuAccelerationToggled,
-            out var toggle);
-        toggle.IsEnabled = presentation.Enabled;
-        AppTheme.StripCardBorder(row);
+        var row = GpuAccelerationRow.Build(presentation, OnGpuAccelerationToggled);
 
         var content = new StackPanel { Spacing = 4 };
         content.Children.Add(row);
@@ -287,46 +296,16 @@ public sealed class ModelsPage : Page
         }
     }
 
-    /// <summary>
-    /// TRN-59: the switch's own change event — the ONLY trigger of the restart offer, so a
-    /// disabled row (which never raises it) never offers a restart, and the reset-all path
-    /// (which writes through the preference, not the switch) never prompts. The WRITE goes first
-    /// and is unchanged: <c>GpuAccelerationPreference.Write</c> — persist, log, re-arm the
-    /// self-test — through the ViewModel. The offer follows only when that write CHANGED the
-    /// stored value; a redundant write is a no-op there and leaves nothing to apply.
-    /// </summary>
+    /// <summary>TRN-59: the write, then the restart offer (<see cref="GpuAccelerationRow.Apply"/>).
+    /// UI-12: the lines under the switch follow the flip at once — OFF hides a self-test warning
+    /// (the user chose the CPU), ON after a re-arm shows what the cleared marker owes.</summary>
     private void OnGpuAccelerationToggled(bool isOn)
-    {
-        var changed = _viewModel.GpuAccelerationEnabled != isOn;
-        _viewModel.GpuAccelerationEnabled = isOn;
-        // UI-12: the lines under the switch follow the flip at once — OFF hides a self-test
-        // warning (the user chose the CPU), ON after a re-arm shows what the cleared marker owes.
-        RefreshGpuAdvisory();
-        if (!changed) return;
-
-        var restart = _viewModel.AppRestart;
-        if (restart is null) return;
-        _ = OfferRestartAsync(restart, isOn);
-    }
-
-    /// <summary>
-    /// Opens the "Restart now / Later" dialog. The setting is already written when this runs;
-    /// the dialog only decides WHEN it applies. Fail-soft: a second ContentDialog already open
-    /// throws, and that must not surface. Since UI-12 the row carries no standing restart sentence,
-    /// so this path is silent about it — an accepted cost recorded on that card.
-    /// </summary>
-    private async Task OfferRestartAsync(AppRestartService restart, bool isOn)
-    {
-        try
-        {
-            var dialog = new RestartToApplyDialog(restart, isOn) { XamlRoot = this.XamlRoot };
-            await dialog.ShowAsync();
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning(ex, "Could not offer the restart after the GPU acceleration flip; the change applies at the next start");
-        }
-    }
+        => GpuAccelerationRow.Apply(isOn,
+            () => _viewModel.GpuAccelerationEnabled,
+            value => _viewModel.GpuAccelerationEnabled = value,
+            _viewModel.AppRestart,
+            () => XamlRoot,
+            RefreshGpuAdvisory);
 
     /// <summary>
     /// Builds the language selection card with human-readable display names,
@@ -584,10 +563,32 @@ public sealed class ModelsPage : Page
             // and leave the selected row and its card showing different speed stars until the next
             // navigation (Codex diff r1 Blocker). The snapshot is still re-read on every refresh.
             var compute = LocalComputeSnapshot.Current;
+            // ONE read of the measurements for the whole render, like the compute snapshot.
+            var speeds = TranscriptionSpeedStore.Current?.Snapshot();
+
+            // 2026-10-03: a change in the local rows' speed stars (a speed check finished, the GPU
+            // switched) is announced once, never silent.
+            var rated = _viewModel.Models
+                .Select(m => (m.Name, Rating: ModelRatings.Find(m.Name)))
+                .Where(m => m.Rating is not null)
+                .ToList();
+            // The build before this one showed the table's own stars.
+            if (_speedNotice?.Show(
+                    SpeedRatingsNotice.Fingerprint(rated.Select(m => (m.Name, ModelRatings.SpeedFor(m.Rating!, compute, speeds)))),
+                    SpeedRatingsNotice.Fingerprint(rated.Select(m => (m.Name, ModelRatings.TableSpeed(m.Rating!, compute))))) == true)
+            {
+                _modelList.Children.Add(new TextBlock
+                {
+                    Text = SpeedRatingsNotice.Text,
+                    FontSize = 12,
+                    Foreground = AppTheme.Brush(AppTheme.TextSecondary),
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
 
             foreach (var model in _viewModel.Models)
             {
-                _modelList.Children.Add(CreateModelCard(model, compute));
+                _modelList.Children.Add(CreateModelCard(model, compute, speeds));
             }
 
             // Update the active model status card — check local models first, then cloud
@@ -599,7 +600,7 @@ public sealed class ModelsPage : Page
                 if (_activeModelSize != null)
                     _activeModelSize.Text = ComposeActiveModelSubtitle(
                         activeModel.FileSizeDisplay,
-                        GetRatingStarsLabel(activeModel.Name, compute),
+                        GetRatingStarsLabel(activeModel.Name, compute, speeds),
                         GetLanguageSupportLabel(activeModel.Name));
             }
             else
@@ -616,7 +617,7 @@ public sealed class ModelsPage : Page
                     if (_activeModelSize != null)
                         _activeModelSize.Text = ComposeActiveModelSubtitle(
                             cloudModel.Provider.ToString(),
-                            GetRatingStarsLabel(cloudModel.Name, compute),
+                            GetRatingStarsLabel(cloudModel.Name, compute, speeds),
                             GetLanguageSupportLabel(cloudModel.Name));
                 }
                 else
@@ -646,7 +647,8 @@ public sealed class ModelsPage : Page
         });
     }
 
-    private UIElement CreateModelCard(ModelItemViewModel model, LocalComputeSnapshot compute)
+    private UIElement CreateModelCard(ModelItemViewModel model, LocalComputeSnapshot compute,
+        TranscriptionSpeedStore? speeds)
     {
         // ── Left side: icon + model info ──────────────────────────────
         var iconBg = model.IsSelected
@@ -703,7 +705,7 @@ public sealed class ModelsPage : Page
         };
 
         // Description based on model type
-        var description = GetModelDescription(model.Name, compute);
+        var description = GetModelDescription(model.Name, compute, speeds);
         var descBlock = new TextBlock
         {
             Text = description,
@@ -712,6 +714,13 @@ public sealed class ModelsPage : Page
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 2, 0, 0)
         };
+        // Where this row's speed star came from: this PC's speed check, or an estimate for it.
+        if (ModelRatings.Find(model.Name) is { } rating
+            && ModelRatings.SpeedTooltip(ModelRatings.Rate(rating, compute, speeds ?? TranscriptionSpeedStore.Current,
+                ModelRatings.IsArm64Os).Basis) is { } speedTip)
+        {
+            ToolTipService.SetToolTip(descBlock, speedTip);
+        }
 
         var textPanel = new StackPanel
         {
@@ -1589,8 +1598,9 @@ public sealed class ModelsPage : Page
     /// <summary>The accuracy/speed star pair alone, for the Active Model card (TRN-7). Same table,
     /// same reasoning as <see cref="GetLanguageSupportLabel"/>: an unknown model yields null and
     /// simply drops out of the subtitle, rather than rendering an invented rating.</summary>
-    internal static string? GetRatingStarsLabel(string modelName, LocalComputeSnapshot compute) =>
-        ModelRatings.StarsFor(modelName, compute);
+    internal static string? GetRatingStarsLabel(string modelName, LocalComputeSnapshot compute,
+        TranscriptionSpeedStore? speeds = null) =>
+        ModelRatings.StarsFor(modelName, compute, speeds);
 
     internal static string GetModelDescription(string modelName) =>
         GetModelDescription(modelName, LocalComputeSnapshot.Current);
@@ -1598,8 +1608,9 @@ public sealed class ModelsPage : Page
     /// <summary>The row description against an explicit snapshot — the form RefreshModelList
     /// uses, so every row and the Active Model card of one refresh share one reading
     /// (TRN-52, Codex diff r1 Blocker).</summary>
-    internal static string GetModelDescription(string modelName, LocalComputeSnapshot compute) =>
-        ModelRatings.Describe(modelName, "Whisper model for built-in transcription.", compute);
+    internal static string GetModelDescription(string modelName, LocalComputeSnapshot compute,
+        TranscriptionSpeedStore? speeds = null) =>
+        ModelRatings.Describe(modelName, "Whisper model for built-in transcription.", compute, speeds);
 
     internal static string GetCloudModelDescription(string modelName) =>
         ModelRatings.Describe(modelName, "Cloud transcription model.");

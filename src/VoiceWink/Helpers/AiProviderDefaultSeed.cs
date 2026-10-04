@@ -3,7 +3,7 @@ using VoiceWink.Services.AIEnhancement;
 namespace VoiceWink.Helpers;
 
 /// <summary>
-/// Which text-enhancement provider a NEW install starts on (owner, 2026-09-30): VoiceWink Engine,
+/// Which text-enhancement provider a NEW install starts on (owner, 2026-09-30): the built-in models,
 /// where it is offered. The setup wizard's FIRST finish stores it when no provider is stored. A
 /// finish after Settings → "Relaunch setup wizard" is not a first finish (that button writes the
 /// completion flag, so the key exists), which is what keeps an existing install — whose provider

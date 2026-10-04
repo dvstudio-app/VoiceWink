@@ -136,7 +136,8 @@ public static class ReasoningEffortPolicy
     /// Deliberately EXCLUDES <c>claude-haiku-4-5</c> (not in the documented effort list —
     /// and it was the app's Anthropic text default in <see cref="TextModelDefaults"/> when
     /// phase A shipped, so a wrong row here would have 400'd the default path; the default is
-    /// <c>claude-sonnet-5</c> since 2026-07-29) and every <c>claude-3*</c> generation.
+    /// <c>claude-sonnet-5</c> on 2026-07-29 and <c>claude-sonnet-5-5</c> on 2026-10-03, which the
+    /// <c>claude-sonnet-5</c> row covers by prefix) and every <c>claude-3*</c> generation.
     /// </summary>
     private static readonly string[] AnthropicEffortFamilies =
     {

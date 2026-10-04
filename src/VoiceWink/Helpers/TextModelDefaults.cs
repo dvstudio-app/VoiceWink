@@ -29,8 +29,13 @@ internal static class TextModelDefaults
         // claude-haiku-4-5-20251001, and IsDatedSnapshot hides that — while the undated alias the
         // entry named is not in the catalog at all. So Anthropic silently had no pre-selected
         // model. An undated alias form is necessary but NOT sufficient; the id must also actually
-        // EXIST in the provider's live list. claude-sonnet-5 does, as an undated alias.
-        AIProvider.Anthropic => "claude-sonnet-5",
+        // EXIST in the provider's live list. claude-sonnet-5 did, as an undated alias.
+        // Sonnet 5.5 since 2026-10-03 (weekly /vw-model-review, Phase 3b): same vendor, same
+        // published `sonnet` tier, an undated alias like its predecessor, and Anthropic prices the
+        // two IDENTICALLY on every billed dimension ($2 in / $10 out per 1M, $0.20 cache hit,
+        // $2.50 / $4 cache writes). Both land in ReasoningEffortPolicy's `claude-sonnet-5` family
+        // row (delimiter-aware prefix) and take no default row, so the request is unchanged.
+        AIProvider.Anthropic => "claude-sonnet-5-5",
         // 3.8 Flash (2026-09-05, from the weekly /vw-model-review). Was gemini-3.7-flash, which
         // still resolves — this is the stale-but-working class Phase 3b exists to catch, not a dead
         // id. Same vendor, same published `flash` tier, one version newer, and Google prices the two

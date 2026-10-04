@@ -308,6 +308,57 @@ public static class AppTheme
         border.Margin = new Thickness(0);
     }
 
+    /// <summary>The green "Active" marker: the active prompt, and the text-enhancement card in use.</summary>
+    public static Border CreateActiveBadge() => new()
+    {
+        Background = Brush(ColorHelper.FromArgb(30, 48, 209, 88)),
+        CornerRadius = new CornerRadius(4),
+        Padding = new Thickness(8, 2, 8, 2),
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock
+        {
+            Text = "Active",
+            FontSize = 11,
+            Foreground = Brush(AccentGreen)
+        }
+    };
+
+    /// <summary>A card's title (15px semibold) with a marker such as <see cref="CreateActiveBadge"/>
+    /// beside it; the caller shows or collapses the marker.</summary>
+    public static Grid CreateCardTitle(string text, FrameworkElement marker)
+    {
+        var grid = new Grid { ColumnSpacing = 10, Margin = new Thickness(0, 0, 0, 8) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(new TextBlock
+        {
+            Text = text,
+            FontSize = 15,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush(TextPrimary),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        Grid.SetColumn(marker, 1);
+        grid.Children.Add(marker);
+        return grid;
+    }
+
+    /// <summary>A section header (<see cref="CreateSectionHeader(string)"/>) with a marker such as
+    /// <see cref="CreateActiveBadge"/> beside it; the caller shows or collapses the marker.</summary>
+    public static Grid CreateSectionHeader(string text, FrameworkElement marker)
+    {
+        var header = CreateSectionHeader(text);
+        var grid = new Grid { ColumnSpacing = 10, Margin = header.Margin };
+        header.Margin = new Thickness(0);
+        header.VerticalAlignment = VerticalAlignment.Center;
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.Children.Add(header);
+        Grid.SetColumn(marker, 1);
+        grid.Children.Add(marker);
+        return grid;
+    }
+
     /// <summary>Section header text — 18px semibold with top margin.</summary>
     public static TextBlock CreateSectionHeader(string text)
     {

@@ -1371,30 +1371,71 @@ public sealed class AIEnhancementService
     /// dictation's own prompt shares everything before it). The engine is single-flight and never
     /// throws; the prompt read runs off the recording path.
     /// </summary>
-    private void StartOnThisPcPrepare()
+    private void StartOnThisPcPrepare() => SyncOnThisPc(unloadWhenUnused: false);
+
+    /// <summary>
+    /// Keep the built-in models' model loaded exactly while it is in use (owner, 2026-10-03: the first
+    /// dictation must not pay the load, and no idle unload). Called at app start and after every
+    /// change to the enhancement switch, the text provider, its model or the active prompt: when
+    /// the active prompt runs on the built-in models its model is loaded now (a different model
+    /// replaces the loaded one); otherwise the loaded model is unloaded and its memory given back.
+    /// Fire-and-forget, never throws.
+    /// </summary>
+    public void SyncOnThisPcResidency() => SyncOnThisPc(unloadWhenUnused: true);
+
+    private void SyncOnThisPc(bool unloadWhenUnused)
     {
-        if (_providers.Get(AIProvider.OnThisPc) is not Providers.OnThisPcDescriptor onThisPc)
-            return;
-        _ = Task.Run(() =>
+        try
         {
-            try
+            if (_providers.Get(AIProvider.OnThisPc) is not Providers.OnThisPcDescriptor onThisPc)
+                return;
+            _ = Task.Run(async () =>
             {
-                // The ACTIVE prompt decides: one that routes to another provider loads nothing, and
-                // one with its own local model loads that model.
-                var prompt = GetActivePrompt() ?? PredefinedPrompts.Default;
-                if (prompt.IsImageGeneration
-                    || (ParseProviderOverride(prompt.ProviderOverride) ?? SelectedProvider) != AIProvider.OnThisPc)
-                    return;
-                var model = ResolveModelForPrompt(prompt);
-                if (string.IsNullOrWhiteSpace(model))
-                    return;
-                onThisPc.Prepare(model, AIPrompts.BuildSystemPrompt(prompt.PromptText, vocabularyTerms: null));
-            }
-            catch (Exception ex)
-            {
-                Logger.Debug("On this PC prepare not started: {ErrorType}", ex.GetType().Name);
-            }
-        });
+                try
+                {
+                    if (ActiveOnThisPcPrompt() is { } active)
+                        onThisPc.Prepare(active.Model, AIPrompts.BuildSystemPrompt(active.Prompt.PromptText, vocabularyTerms: null));
+                    else if (unloadWhenUnused)
+                        await onThisPc.UnloadWhenIdleAsync(() => ActiveOnThisPcPrompt() is null).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Debug("On this PC residency sync not run: {ErrorType}", ex.GetType().Name);
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug("On this PC residency sync not run: {ErrorType}", ex.GetType().Name);
+        }
+    }
+
+    /// <summary>The active prompt and its model when enhancement is on and that prompt runs on
+    /// the built-in models (its own provider override first); null otherwise. The ACTIVE prompt
+    /// decides: one that routes to another provider uses no local model, and one with its own
+    /// local model uses that model.</summary>
+    private (CustomPrompt Prompt, string Model)? ActiveOnThisPcPrompt()
+    {
+        if (!IsEnabled)
+            return null;
+        var prompt = GetActivePrompt() ?? PredefinedPrompts.Default;
+        if (prompt.IsImageGeneration || EffectiveTextProvider(prompt) != AIProvider.OnThisPc)
+            return null;
+        var model = ResolveModelForPrompt(prompt);
+        return string.IsNullOrWhiteSpace(model) ? null : (prompt, model);
+    }
+
+    /// <summary>The provider a text prompt runs on: its own override first, else the global one.</summary>
+    private AIProvider EffectiveTextProvider(CustomPrompt prompt)
+        => ParseProviderOverride(prompt.ProviderOverride) ?? SelectedProvider;
+
+    /// <summary>The provider dictations are cleaned by now: the active prompt's override first,
+    /// else the global text provider (an image prompt cleans nothing, so it reports the global
+    /// one). What the AI Enhancement page's "Active" marker names (2026-10-04).</summary>
+    public AIProvider ActiveTextProvider()
+    {
+        var prompt = GetActivePrompt() ?? PredefinedPrompts.Default;
+        return prompt.IsImageGeneration ? SelectedProvider : EffectiveTextProvider(prompt);
     }
 
     internal async Task PreloadLocalServerAsync(string model)

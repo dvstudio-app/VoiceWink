@@ -39,6 +39,17 @@ internal sealed record ModelRating(
     /// <summary>The written basis for <see cref="GpuSpeed"/> — its measurement, machine and
     /// results file — present exactly when <see cref="GpuSpeed"/> is.</summary>
     public string? GpuSource { get; init; }
+
+    /// <summary>2026-10-03: the reference p50 behind <see cref="Speed"/> in milliseconds (the figure
+    /// <see cref="Source"/> cites), so an unmeasured row can be ESTIMATED for this PC and calibrated
+    /// by a measured one rather than shown as a fixed star. Null where the star rests on no single
+    /// figure (cloud rows, the sherpa kill-switch row): those keep their table star.</summary>
+    public int? CpuP50Ms { get; init; }
+
+    /// <summary>The reference p50 behind <see cref="GpuSpeed"/> in milliseconds (the figure
+    /// <see cref="GpuSource"/> cites); null exactly when <see cref="CpuP50Ms"/> is null or the row
+    /// has no GPU set.</summary>
+    public int? GpuP50Ms { get; init; }
 }
 
 /// <summary>
@@ -569,6 +580,8 @@ internal static class ModelRatings
                     "corroborates the discrete " +
                     "class at 19.79x, p50 0.45 s (…-run-gpu-vulkan-rtx3080.json), where Base beats it — on " +
                     "the Arc tiny is the fastest Whisper row again.",
+                CpuP50Ms = 600,
+                GpuP50Ms = 210,
             },
         new("ggml-base-q8_0", 2, 4, "90+ languages",
             "ACCURACY measured on this project's own corpus at the SHIPPED decode config, 2026-08-31: " +
@@ -586,6 +599,8 @@ internal static class ModelRatings
                     "(results/speed-2026-09-02-ggml-base-q8_0-run-gpu-vulkan-arc140v-warm.json; the cold " +
                     "pass read 0.38 s). The desktop's RTX 3080 corroborates the discrete class at 25.27x, " +
                     "p50 0.33 s (…-run-gpu-vulkan-rtx3080.json), where it is the fastest Whisper row.",
+                CpuP50Ms = 1200,
+                GpuP50Ms = 310,
             },
         new("ggml-small-q8_0", 3, 3, "90+ languages",
             "ACCURACY measured on this project's own corpus at the SHIPPED decode config, 2026-08-31: " +
@@ -605,6 +620,8 @@ internal static class ModelRatings
                     "(results/speed-2026-09-02-ggml-small-q8_0-run-gpu-vulkan-arc140v-warm.json) — 35% " +
                     "inside the sub-second line; the cold pass read 0.87 s. The desktop's RTX 3080 " +
                     "corroborates the discrete class at 20.55x, p50 0.44 s (…-run-gpu-vulkan-rtx3080.json).",
+                CpuP50Ms = 3800,
+                GpuP50Ms = 650,
             },
         new("ggml-medium-q8_0", 4, 2, "90+ languages",
             "ACCURACY measured on this project's own corpus at the SHIPPED decode config, 2026-08-31: " +
@@ -624,6 +641,8 @@ internal static class ModelRatings
                     "(15.10x; …-run-gpu-vulkan-rtx3080.json), a ★5 figure the set does NOT carry: one GPU " +
                     "column, banded on the integrated class most laptops have (owner decision 2026-09-02) — " +
                     "a discrete-GPU owner sees an under-promise here, the cheaper error.",
+                CpuP50Ms = 11600,
+                GpuP50Ms = 1430,
             },
 
         // ★1 SPEED (down from the owner's ★2 correction the same day — the one row the speed
@@ -665,6 +684,8 @@ internal static class ModelRatings
                     "…-run-gpu-vulkan-rtx3080.json). The CPU ★1 row is ★4 on an integrated GPU and a ★5 " +
                     "figure on a discrete one: the full large encoder that costs 21.9 s on the laptop's CPU " +
                     "is exactly the part a GPU absorbs.",
+                CpuP50Ms = 21900,
+                GpuP50Ms = 1480,
             },
         // TRN-1 step 3 / TRN-29 flip. WHICH Parakeet bundle this row rates follows the build's
         // catalog row (ParakeetCatalog.ActiveRow) — the host-matching rule is why the two eras
@@ -734,6 +755,8 @@ internal static class ModelRatings
                     "(…-run-gpu-vulkan-rtx3080.json, compute block parakeetLaunchMode=Auto) — the fastest " +
                     "local row on the CPU and on the 3080; on the Arc, tiny edges it by the banding metric " +
                     "(212 ms vs this row's 217 ms non-empty p50) — same band, either way.",
+                CpuP50Ms = 906,
+                GpuP50Ms = 220,
             },
 #else
         // ACCURACY was unmeasured here until 2026-08-30 — the only published figures were taken
@@ -804,11 +827,12 @@ internal static class ModelRatings
     /// <summary>The same row rendered against an explicit compute snapshot (TRN-52) — the pure
     /// form the tests pin; the two-argument overload above reads the process-wide
     /// <see cref="LocalComputeSnapshot.Current"/>, which is what the Models page calls.</summary>
-    internal static string Describe(string? model, string fallback, LocalComputeSnapshot compute)
+    internal static string Describe(string? model, string fallback, LocalComputeSnapshot compute,
+        TranscriptionSpeedStore? speeds = null)
     {
         var rating = Find(model);
         if (rating is null) return fallback;
-        return $"Accuracy {Stars(rating.Accuracy)} · Speed {Stars(SpeedFor(rating, compute))} · {rating.Languages}";
+        return $"Accuracy {Stars(rating.Accuracy)} · Speed {Stars(SpeedFor(rating, compute, speeds))} · {rating.Languages}";
     }
 
     /// <summary>TRN-52: which local engine serves a row — DERIVED from the catalog row's own
@@ -823,13 +847,98 @@ internal static class ModelRatings
     /// other combination — a cloud row, a CPU-only engine, an engine that resolved CPU, an engine
     /// the snapshot does not model — renders the CPU set. Accuracy is never consulted here: it does
     /// not vary by backend, and the test suite holds that line.</summary>
-    internal static int SpeedFor(ModelRating rating, LocalComputeSnapshot compute)
+    internal static int SpeedFor(ModelRating rating, LocalComputeSnapshot compute, TranscriptionSpeedStore? speeds = null)
+        => Rate(rating, compute, speeds ?? TranscriptionSpeedStore.Current, IsArm64Os).Stars;
+
+    /// <summary>The table's own star for a row under a compute snapshot — the GPU set when the
+    /// row's engine resolved the GPU, the CPU set otherwise (TRN-52).</summary>
+    internal static int TableSpeed(ModelRating rating, LocalComputeSnapshot compute)
     {
         if (rating.GpuSpeed is not int gpuSpeed) return rating.Speed;
         return RuntimeOf(rating.Model) is { } runtime && compute.For(runtime) == LocalCompute.Gpu
             ? gpuSpeed
             : rating.Speed;
     }
+
+    /// <summary>How a row's speed star was arrived at on this PC.</summary>
+    internal enum SpeedBasis
+    {
+        /// <summary>A cloud row, or a local row with no reference figure: the table's star.</summary>
+        Table,
+        /// <summary>Estimated for this PC from the reference figure, calibrated by this PC's
+        /// measured rows of the same engine.</summary>
+        Estimated,
+        /// <summary>This PC's own speed check.</summary>
+        Measured,
+    }
+
+    internal readonly record struct SpeedRating(int Stars, SpeedBasis Basis);
+
+    /// <summary>An ARM64 PC runs the x64 engines emulated on its processor. 2.0 is PROVISIONAL, from
+    /// one ARM64 laptop's Parakeet dictation times (2026-10-03) set against the reference laptop's
+    /// p50; a speed check on the PC replaces it through the calibration.</summary>
+    internal const double Arm64CpuFactor = 2.0;
+
+    internal static bool IsArm64Os
+        => System.Runtime.InteropServices.RuntimeInformation.OSArchitecture
+           == System.Runtime.InteropServices.Architecture.Arm64;
+
+    /// <summary>The speed star on this PC (owner rule, 2026-10-03: stars must not jump around
+    /// without the user knowing why). A row this PC has MEASURED shows its own check's time; any
+    /// other local row shows its reference figure ESTIMATED for this PC (the ARM64 factor on the
+    /// processor) and calibrated by the measured rows of the same engine and compute class, so a
+    /// measurement moves every such row together. All on the table's own local bands, so an x64
+    /// PC with nothing measured shows exactly the table's stars. A cloud row keeps its table star.</summary>
+    internal static SpeedRating Rate(ModelRating rating, LocalComputeSnapshot compute,
+        TranscriptionSpeedStore? store, bool arm64)
+    {
+        if (RuntimeOf(rating.Model) is not { } runtime) return new(TableSpeed(rating, compute), SpeedBasis.Table);
+        var cls = compute.For(runtime);
+        if (store?.MeasuredMs(rating.Model, cls) is int measured)
+            return new(MeasuredSpeedStars(measured), SpeedBasis.Measured);
+        if (EstimateMs(rating, cls, arm64) is not int estimate)
+            return new(TableSpeed(rating, compute), SpeedBasis.Table);
+
+        var pairs = new List<(int Measured, int Estimate)>();
+        foreach (var (model, measuredCls, ms) in store?.All() ?? [])
+        {
+            if (measuredCls == cls && Find(model) is { } other && RuntimeOf(other.Model) == runtime
+                && EstimateMs(other, cls, arm64) is int otherEstimate)
+            {
+                pairs.Add((ms, otherEstimate));
+            }
+        }
+        return new(MeasuredSpeedStars(SpeedCalibration.Apply(estimate, SpeedCalibration.Factor(pairs))),
+            SpeedBasis.Estimated);
+    }
+
+    /// <summary>The reference figure for a row on a compute class, before calibration; null when the
+    /// row carries none.</summary>
+    internal static int? EstimateMs(ModelRating rating, LocalCompute cls, bool arm64)
+        => cls == LocalCompute.Gpu
+            ? rating.GpuP50Ms
+            : rating.CpuP50Ms is int cpu ? (arm64 ? (int)Math.Round(cpu * Arm64CpuFactor) : cpu) : null;
+
+    /// <summary>The tooltip a row's ratings carry: where its speed star came from. Null for a row
+    /// rated from the table (a cloud row).</summary>
+    internal static string? SpeedTooltip(SpeedBasis basis) => basis switch
+    {
+        SpeedBasis.Measured => "Speed measured on this PC.",
+        SpeedBasis.Estimated => "Speed estimated for this PC.",
+        _ => null,
+    };
+
+    /// <summary>A measured or estimated time as a speed star, on the local bands the table was cut
+    /// on (THE LOCAL BANDS above): under 1 s ★5, under 3 s ★4, under 8 s ★3, under 20 s ★2,
+    /// otherwise ★1.</summary>
+    internal static int MeasuredSpeedStars(int medianWaitMs) => medianWaitMs switch
+    {
+        < 1000 => 5,
+        < 3000 => 4,
+        < 8000 => 3,
+        < 20000 => 2,
+        _ => 1,
+    };
 
     /// <summary>The language bucket alone, for the Active Model card.</summary>
     internal static string? LanguagesFor(string? model) => Find(model)?.Languages;
@@ -847,11 +956,11 @@ internal static class ModelRatings
     /// <summary>The card's star pair against an explicit compute snapshot (TRN-52) — same
     /// <see cref="SpeedFor"/> decision as <see cref="Describe"/>, so the card and the row it
     /// describes render the same speed star for the same snapshot.</summary>
-    internal static string? StarsFor(string? model, LocalComputeSnapshot compute)
+    internal static string? StarsFor(string? model, LocalComputeSnapshot compute, TranscriptionSpeedStore? speeds = null)
     {
         var rating = Find(model);
         return rating is null
             ? null
-            : $"Accuracy {Stars(rating.Accuracy)} · Speed {Stars(SpeedFor(rating, compute))}";
+            : $"Accuracy {Stars(rating.Accuracy)} · Speed {Stars(SpeedFor(rating, compute, speeds))}";
     }
 }

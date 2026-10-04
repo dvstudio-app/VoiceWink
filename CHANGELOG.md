@@ -17,6 +17,14 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.106.402] - 2026-10-04
+
+- VoiceWink Engine is now called Built-in models, with its own card on the AI Enhancement page and in setup.
+- Built-in AI models load when you choose one and when VoiceWink starts, and stay loaded.
+- Built-in AI models' speed rating and "Best for this PC" now reflect how long a typical paragraph takes on your PC.
+- Speed ratings for built-in transcription and AI models now fit your PC, and say when they change.
+- Qwen3.5 4B is now offered on PCs with 16 GB of memory and no graphics card.
+
 ## [1.105.401] - 2026-10-02
 
 - VoiceWink Engine keeps its model loaded for 30 minutes between dictations instead of 5.

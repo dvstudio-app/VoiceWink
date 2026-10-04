@@ -4,7 +4,7 @@ using VoiceWink.Services.AIEnhancement.LocalEngine;
 namespace VoiceWink.Helpers;
 
 /// <summary>
-/// What a VoiceWink Engine model is CALLED ("Qwen3.5 4B") versus what is stored and sent
+/// What a built-in model is CALLED ("Qwen3.5 4B") versus what is stored and sent
 /// ("qwen3.5-4b-q4km"). Settings, prompt overrides and history keep the id; every model combo that
 /// lists the engine's models shows the name and maps the pick back through <see cref="Id"/>.
 /// </summary>
@@ -29,7 +29,7 @@ internal static class EngineModelLabel
         => ids.Select(id => Label(provider, id)).ToList();
 
     /// <summary>A history row's stored "Provider/model" as the user reads it: the provider's
-    /// dropdown label and the engine model's name ("VoiceWink Engine/Qwen3.5 4B"). A label that does
+    /// dropdown label and the engine model's name ("Built-in models/Qwen3.5 4B"). A label that does
     /// not parse is shown as stored.</summary>
     internal static string? ForHistory(string? stored)
     {

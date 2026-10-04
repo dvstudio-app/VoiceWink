@@ -519,6 +519,16 @@ public static class AppDefaults
     public const string LocalServerGraphicsOfferedModels = "localServerGraphicsOfferedModels";
 
     /// <summary>
+    /// The speed stars the Models page's local rows and the built-in model rows last showed
+    /// (<see cref="Helpers.SpeedRatingsNotice"/>), so a change is announced once. App-managed, NOT in
+    /// <see cref="Defaults"/>: a record of what was shown, not a preference.
+    /// </summary>
+    public const string SpeedRatingsShownModels = "speedRatingsShownModels";
+
+    /// <inheritdoc cref="SpeedRatingsShownModels"/>
+    public const string SpeedRatingsShownEngine = "speedRatingsShownEngine";
+
+    /// <summary>
     /// Builds the settings key used to store the selected model for an AI provider.
     /// Centralizes the <c>aiModel_{provider}</c> convention so callers don't hand-interpolate.
     /// </summary>

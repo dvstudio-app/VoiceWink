@@ -40,6 +40,10 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
     /// <summary>Test seam: pretend a catalog model is loaded (the gate needs a name, not a processor).</summary>
     internal void SetLoadedModelForTest(string? modelName) => _loadedModelName = modelName;
 
+    /// <summary>The catalog name of the model loaded now (volatile read), or null — what the speech
+    /// speed check asks before it times a decode, so a time is never recorded under another model.</summary>
+    internal string? LoadedModelName => _loadedModelName;
+
     // Upper bound on how long shutdown-time disposal waits for an in-flight transcription to
     // release the model lock. Dispose runs from DI-container teardown at app exit; blocking the
     // shutdown (UI) thread indefinitely on a long/hung native inference hangs the whole app.

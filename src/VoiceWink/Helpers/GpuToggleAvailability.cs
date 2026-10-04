@@ -147,8 +147,7 @@ internal static class GpuToggleAvailability
     /// nothing about the restart: a failed <c>ShowAsync</c> (fail-soft) and "Reset all settings",
     /// which is the accepted cost of the removal.</summary>
     public const string StandardDescription =
-        "Use your graphics card to speed up built-in transcription models when a compatible GPU is " +
-        "available.";
+        "Use your graphics card to speed up built-in models when a compatible GPU is available.";
 
     /// <summary>The disabled row's copy — the reason IS the description. No restart sentence:
     /// nothing the user can do on this PC changes the outcome.</summary>

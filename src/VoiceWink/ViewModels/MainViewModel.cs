@@ -625,6 +625,10 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public Task PreloadModelAsync()
     {
+        // The built-in models' model too, when it is the enhancement provider, so the first
+        // dictation does not pay its load (owner, 2026-10-03). Fire-and-forget, never throws.
+        _enhancement.SyncOnThisPcResidency();
+
         var selectedModel = _settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel);
 
         // Skip preload for cloud models — nothing to load locally
@@ -2311,6 +2315,11 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // A retry is user work like a recording or an Audio Transcribe start: a speech speed check
+        // for this retry's own model would otherwise hold the model while the retry queues behind
+        // its decode (Kimi diff round). The prepare below offers the check again later.
+        Services.Transcription.SpeechSpeedCheck.Current?.CancelForUserWork();
+
         // Moved AHEAD of ClearRetryState by TRN-17 (it used to sit just after). Same observable
         // outcome — torn down, Error pill — only earlier, because there is now a dialog in
         // between and opening one over a recording that no longer exists is a dead end.
@@ -3928,6 +3937,7 @@ public partial class MainViewModel : ObservableObject
         // recording path — by the time StartRecordingAsync's prepare reaches the quiesce, nothing
         // is left to wait for.
         GpuWarmup.Instance.Cancel(GpuWarmupCancelReason.RecordingAdmission);
+        Services.Transcription.SpeechSpeedCheck.Current?.CancelForUserWork();
 
         // License gate (LIC-3): block new recordings when the license is in a non-usable
         // state. Uses the synchronous cache (no network) so the hotkey path never stalls

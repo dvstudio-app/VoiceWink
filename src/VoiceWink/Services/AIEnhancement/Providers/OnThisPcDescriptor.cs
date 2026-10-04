@@ -44,12 +44,16 @@ internal sealed class OnThisPcDescriptor : IAIProviderDescriptor
         CancellationToken ct)
         => throw new NotSupportedException("The local engine does not generate images.");
 
-    /// <summary>Recording started: see <see cref="OnThisPcEngine.Prepare"/>.</summary>
+    /// <summary>Load the model ahead of the dictation: see <see cref="OnThisPcEngine.Prepare"/>.</summary>
     internal void Prepare(string modelId, string? warmSystemPrompt)
     {
         if (OnThisPcAvailability.IsOffered)
             _engine?.Prepare(modelId, warmSystemPrompt);
     }
+
+    /// <summary>The built-in models are no longer in use: see <see cref="OnThisPcEngine.UnloadWhenIdleAsync"/>.</summary>
+    internal Task UnloadWhenIdleAsync(Func<bool> stillUnwanted)
+        => _engine?.UnloadWhenIdleAsync(stillUnwanted) ?? Task.CompletedTask;
 
     /// <summary>The installed catalog models, catalog order; no request is made.</summary>
     public Task<ProviderModelList> FetchAvailableModelsAsync(
