@@ -79,7 +79,11 @@ internal static class LlamaServerLaunch
         }
         else
         {
-            // All layers; llama.cpp's own fit logic reduces the count when VRAM is short, and the
+            // All layers, explicitly. llama.cpp's --fit adjusts only arguments left unset, so it never
+            // lowers this, and its free-memory figure is the Vulkan budget of this process, not the
+            // card's: with another app holding most of a 10 GB card it read 9,467 MiB free and all
+            // layers loaded, part of them spilled to shared memory (measured 2026-10-05). Whether the
+            // child really got its memory is checked by OnThisPcEngine from Windows' counters. The
             // observed offload is logged.
             args.AddRange(["-ngl", "99"]);
         }

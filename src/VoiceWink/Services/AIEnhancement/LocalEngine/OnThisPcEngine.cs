@@ -70,6 +70,12 @@ public sealed class OnThisPcEngine : IDisposable
     internal static readonly TimeSpan UnloadRetry = TimeSpan.FromSeconds(5);
     internal const int UnloadRetries = 120;
 
+    /// <summary>How long a GPU measurement waits for our own speech GPU work (a Parakeet warm-up, a
+    /// Whisper self-test) to finish before it gives up for this session (Codex final check,
+    /// 2026-10-05: a speech warm-up runs up to 120 s, and a timing taken beside it is not true).</summary>
+    internal static readonly TimeSpan GpuQuietWait = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan GpuQuietPoll = TimeSpan.FromMilliseconds(250);
+
     private readonly LlamaServerProcess _process;
     private readonly Func<string, string?> _installedModelPath;
     private readonly HttpClient _http;
@@ -78,6 +84,16 @@ public sealed class OnThisPcEngine : IDisposable
     private readonly Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<LlamaTimedRun>> _timedRun;
     private readonly TimeSpan _erasureJoinBudget;
     private readonly TimeSpan _deleteGateWait;
+    private readonly IGpuMemoryProbe? _gpuMemory;
+    private readonly Func<bool, (IDisposable Handle, CancellationToken Yield)?>? _beginGpuProbe;
+    private readonly TimeSpan _gpuQuietWait;
+    /// <summary>Models running on the processor for THIS session only, because the graphics card
+    /// was busy when they were checked (2026-10-05). Never stored: the next session checks again.</summary>
+    private readonly HashSet<string> _sessionCpu = new(StringComparer.Ordinal);
+    /// <summary>Models whose stored processor route has had its one graphics-card re-try this session.</summary>
+    private readonly HashSet<string> _gpuRetried = new(StringComparer.Ordinal);
+    /// <summary>The running re-try's cancel, so a dictation or a delete stops it.</summary>
+    private CancellationTokenSource? _gpuRetryCts;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _state = new();
     /// <summary>One user of the child at a time, held from the acquire to the last response byte.
@@ -125,7 +141,11 @@ public sealed class OnThisPcEngine : IDisposable
                 payload: LlamaServerPayload.Current),
             store.InstalledModelPath,
             httpFactory.CreateClient(Http.VoiceWinkHttpClients.LlamaLocal),
-            new LlamaGpuCheckStore(LlamaGpuCheckStore.DefaultPath, LlamaServerPayload.Current.VerdictBuild, DisplayDriverSignature.Read()))
+            new LlamaGpuCheckStore(LlamaGpuCheckStore.DefaultPath, LlamaServerPayload.Current.VerdictBuild, DisplayDriverSignature.Read()),
+            gpuMemory: GpuMemoryCounters.Instance,
+            beginGpuProbe: yieldToUserWork => GpuWarmup.Instance.TryBeginGpuProbe(yieldToUserWork) is { } window
+                ? (window, window.Yield)
+                : null)
     {
     }
 
@@ -139,8 +159,14 @@ public sealed class OnThisPcEngine : IDisposable
         TimeSpan? erasureJoinBudget = null,
         Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<LlamaTimedRun>>? timedRun = null,
         TimeSpan? deleteGateWait = null,
-        TimeSpan? unloadRetry = null)
+        TimeSpan? unloadRetry = null,
+        IGpuMemoryProbe? gpuMemory = null,
+        Func<bool, (IDisposable Handle, CancellationToken Yield)?>? beginGpuProbe = null,
+        TimeSpan? gpuQuietWait = null)
     {
+        _gpuMemory = gpuMemory;
+        _beginGpuProbe = beginGpuProbe;
+        _gpuQuietWait = gpuQuietWait ?? GpuQuietWait;
         _unloadRetry = unloadRetry ?? UnloadRetry;
         _timedRun = timedRun ?? LlamaSelfTest.RunTimedAsync;
         _deleteGateWait = deleteGateWait ?? DeleteGateWait;
@@ -223,7 +249,7 @@ public sealed class OnThisPcEngine : IDisposable
             var verdict = VerdictLocked(identity);
             return new(verdict?.Verdict, verdict?.Route,
                 _warmups.ContainsKey(identity),
-                RunsOnProcessor, live?.Item2, live?.Item3);
+                RunsOnProcessor || _sessionCpu.Contains(identity), live?.Item2, live?.Item3);
         }
     }
 
@@ -353,17 +379,25 @@ public sealed class OnThisPcEngine : IDisposable
         try
         {
             linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
-            // A processor timing holding the slot stands down for the dictation; it is timed again
-            // at the next prepare.
+            // A processor timing or a graphics-card re-try holding the slot stands down for the
+            // dictation; the timing runs again at the next prepare, the re-try at the next session.
+            CancellationTokenSource? retry;
             lock (_state)
             {
                 try { _cpuTimingCts?.Cancel(); } catch (ObjectDisposedException) { }
+                retry = _gpuRetryCts;
             }
+            CancelRetryAsync(retry);
             await _useGate.WaitAsync(linked.Token).ConfigureAwait(false);
             ownsUseGate = true;
             // Asked again under the slot: a delete that ran while this waited has removed the model.
             if (!StillAdmitted(entry.Id))
                 throw new InvalidOperationException(NotInstalledMessage);
+            // And the route: a re-try that finished while this waited may have moved the model.
+            lock (_state)
+            {
+                route = RouteModeLocked(identity);
+            }
             var lease = ReadyLeaseUnlessUnloading(identity, route)
                         ?? await _process.TryAcquireAsync(path, identity, linked.Token, route).ConfigureAwait(false);
             if (lease is not { } l)
@@ -447,10 +481,14 @@ public sealed class OnThisPcEngine : IDisposable
         return _installedModelPath(modelId) is not null;
     }
 
-    /// <summary>The mode this model's own calls run in: Cpu when its check found the CPU faster,
-    /// otherwise the process's. Never the session latch.</summary>
+    /// <summary>The mode this model's own calls run in: Cpu when its check found the CPU faster, or
+    /// when the graphics card was busy at its check this session; otherwise the process's. Never
+    /// the session latch.</summary>
     private LlamaLaunchMode? RouteModeLocked(string identity)
-        => VerdictLocked(identity) is { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Cpu } ? LlamaLaunchMode.Cpu : null;
+        => _sessionCpu.Contains(identity)
+           || VerdictLocked(identity) is { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Cpu }
+            ? LlamaLaunchMode.Cpu
+            : null;
 
     /// <summary>The admission rule: the rendered prompt plus the reply's cap must fit the context.</summary>
     internal static bool Fits(int promptTokens, int cap)
@@ -570,6 +608,10 @@ public sealed class OnThisPcEngine : IDisposable
         if (check is not null)
             await check.ConfigureAwait(false);
 
+        // A stored processor route is never final: once per session, before the processor copy
+        // loads, the graphics card gets another try (owner decision 2026-10-05).
+        await RetryGpuIfOwedAsync(entry, path, identity).ConfigureAwait(false);
+
         LlamaLaunchMode? route;
         lock (_state)
         {
@@ -579,6 +621,202 @@ public sealed class OnThisPcEngine : IDisposable
             route = RouteModeLocked(identity);
         }
         await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A stored processor route is never final (owner decision 2026-10-05: a busy graphics card
+    /// once moved Gemma to the processor for good, 1 s cleanups became 20 s). Once per session, at
+    /// the model's first prepare and BEFORE its processor copy loads — so a dictation arriving
+    /// meanwhile pays no more than an unprepared model would — the card is loaded, primed with the
+    /// self-test, and timed against the stored processor time. Faster, complete and correct: the
+    /// route becomes the GPU and its child stays loaded. Anything else: nothing changes and the
+    /// normal prepare loads the processor copy. Runs only with GPU acceleration on, only when the
+    /// card is not busy, and gives way to a dictation, a delete, recording admission and our own
+    /// speech GPU work; cancellation always wins over adopting a result.
+    /// </summary>
+    private async Task RetryGpuIfOwedAsync(LocalModelEntry entry, string path, string identity)
+    {
+        int baseline;
+        CancellationTokenSource retry;
+        lock (_state)
+        {
+            if (_closed || _deleting.Contains(entry.Id) || _inFlight > 0
+                || _process.LaunchMode != LlamaLaunchMode.Auto
+                || _gpuRetried.Contains(identity) || _sessionCpu.Contains(identity)
+                || VerdictLocked(identity) is not { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Cpu }
+                || (_process.LiveChild() is { } live && string.Equals(live.ModelIdentity, identity, StringComparison.Ordinal)))
+            {
+                return;
+            }
+            if (_checks.CpuBaselineMs(identity) is not { } ms)
+            {
+                _gpuRetried.Add(identity);   // nothing to beat: not asked again (one store read per session)
+                return;
+            }
+            baseline = ms;
+            _gpuRetried.Add(identity);   // one try per session, whatever happens to it
+            retry = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            _gpuRetryCts = retry;
+        }
+
+        var ownsUseGate = false;
+        GpuWindow? window = null;
+        CancellationTokenSource? phase = null;
+        try
+        {
+            await _useGate.WaitAsync(retry.Token).ConfigureAwait(false);
+            ownsUseGate = true;
+            if (!StillAdmitted(entry.Id))
+                return;
+            lock (_state)
+            {
+                if (_process.LaunchMode != LlamaLaunchMode.Auto
+                    || VerdictLocked(identity) is not { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Cpu })
+                    return;
+            }
+
+            window = await TakeGpuWindowAsync(yieldToUserWork: true, retry.Token).ConfigureAwait(false);
+            if (window is null)
+            {
+                Logger.Information("On this PC: {LocalModelId} graphics-card re-try skipped - speech GPU work kept running", entry.Id);
+                return;
+            }
+            phase = CancellationTokenSource.CreateLinkedTokenSource(retry.Token, window.Yield);
+
+            var acquire = await _process.AcquireCheckingLoadAsync(path, identity, BusyAtLoad, phase.Token, cpuFallback: false).ConfigureAwait(false);
+            if (acquire.Busy)
+            {
+                Logger.Information("On this PC: {LocalModelId} graphics-card re-try skipped - the graphics card is busy", entry.Id);
+                return;
+            }
+            if (acquire.Lease is not { } l)
+                return;   // the engine would not start on the card; the processor prepare follows
+            if (!l.OnGpu || SpilledAfterLoad(entry, l))
+            {
+                Logger.Information("On this PC: {LocalModelId} graphics-card re-try skipped - {Why}",
+                    entry.Id, l.OnGpu ? "the graphics card is busy" : "no GPU evidence");
+                await RetireRetryChildAsync(identity).ConfigureAwait(false);
+                return;
+            }
+
+            // Prime: the self-test pays the backend's first-run setup and is the correctness check.
+            // Bounded by the processor's own time (at least 10 s): a GPU that cannot answer the short
+            // self-test within the paragraph the processor needs cannot win anyway (self-review).
+            var primeBound = TimeSpan.FromMilliseconds(Math.Clamp(baseline, 10_000, (int)SelfTestTimeout.TotalMilliseconds));
+            var (verdict, facts, _) = await _selfTest(_http, l, primeBound, phase.Token).ConfigureAwait(false);
+            retry.Token.ThrowIfCancellationRequested();
+            window.Yield.ThrowIfCancellationRequested();
+            phase.Token.ThrowIfCancellationRequested();
+            if (verdict == LlamaSelfTestVerdict.Fail)
+            {
+                SettleFail(entry, identity, _process.ObservedFor(l.Generation)?.DeviceName, facts, retry.Token, window.Yield);
+                return;
+            }
+            if (verdict != LlamaSelfTestVerdict.Pass)
+            {
+                await RetireRetryChildAsync(identity).ConfigureAwait(false);
+                return;
+            }
+            _process.NotifyServed(l.Generation);
+
+            // The GPU only has to beat the processor: the stored processor time is its deadline.
+            var gpu = await _timedRun(_http, l, TimeSpan.FromMilliseconds(baseline), phase.Token).ConfigureAwait(false);
+            // The token's own flags, not only the linked phase: a cancel arrives asynchronously, and the
+            // linked source hears of it a moment later.
+            if (retry.IsCancellationRequested || window.Yield.IsCancellationRequested)
+                throw new OperationCanceledException();
+            phase.Token.ThrowIfCancellationRequested();
+            if (gpu is { Completed: true, Garbled: true })
+            {
+                SettleFail(entry, identity, _process.ObservedFor(l.Generation)?.DeviceName, 0, retry.Token, window.Yield);
+                return;
+            }
+            var gpuMs = Math.Max(1, (int)gpu.Elapsed.TotalMilliseconds);
+            if (gpu is { Completed: true, Correct: true } && gpuMs < baseline)
+            {
+                TaskCompletionSource? measured = null;
+                var adapter = _process.ObservedFor(l.Generation)?.DeviceName;
+                lock (_state)
+                {
+                    // Cancellation wins over adoption: a dictation, a delete or erasure that arrived
+                    // after the timing leaves the stored route as it was.
+                    if (!_closed && !retry.IsCancellationRequested && !window.Yield.IsCancellationRequested
+                        && !phase.IsCancellationRequested && !_deleting.Contains(entry.Id))
+                    {
+                        _checks.Record(identity, LlamaSelfTestVerdict.Pass, adapter, LlamaRoute.Gpu, gpuMs, baseline);
+                        _verdicts[identity] = new LlamaGpuCheckStore.Entry(LlamaSelfTestVerdict.Pass, adapter, LlamaRoute.Gpu, gpuMs);
+                        measured = _speedMeasured;
+                        _speedMeasured = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    }
+                }
+                if (measured is not null)
+                {
+                    measured.TrySetResult();
+                    Logger.Information("On this PC: {LocalModelId} back on the graphics card - re-try {GpuMs} ms against the processor's {CpuMs} ms",
+                        entry.Id, gpuMs, baseline);
+                    return;   // the GPU child stays loaded for the prepare that follows
+                }
+            }
+            Logger.Information("On this PC: {LocalModelId} stays on the processor - graphics-card re-try {Gpu} against the processor's {CpuMs} ms",
+                entry.Id, !gpu.Completed ? "not done in time" : !gpu.Correct ? "gave wrong text" : $"{gpuMs} ms", baseline);
+            await RetireRetryChildAsync(identity).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.Information("On this PC: {LocalModelId} graphics-card re-try stood down", entry.Id);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug("On this PC: graphics-card re-try failed: {ErrorType}", ex.GetType().Name);
+        }
+        finally
+        {
+            phase?.Dispose();
+            window?.Dispose();
+            lock (_state)
+            {
+                if (ReferenceEquals(_gpuRetryCts, retry))
+                {
+                    _gpuRetryCts = null;
+                }
+            }
+            retry.Dispose();
+            if (ownsUseGate)
+                _useGate.Release();
+        }
+    }
+
+    /// <summary>Stop a running re-try without running its unwinding on the caller's thread or under
+    /// a lock (self-review, concurrency lens: a synchronous cancel ran the child kill and the next
+    /// model load inline, on the dictation's thread or under <c>_state</c>). The re-try reads its
+    /// own token before adopting a result, so cancellation still wins.</summary>
+    private static void CancelRetryAsync(CancellationTokenSource? retry)
+    {
+        if (retry is null)
+            return;
+        try
+        {
+            _ = retry.CancelAsync().ContinueWith(static t => Logger.Debug("On this PC: re-try cancel callback failed: {ErrorType}", t.Exception!.GetType().Name),
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The re-try ended between the read and the cancel.
+        }
+    }
+
+    /// <summary>Stop the re-try's GPU child so the processor prepare that follows loads its copy into
+    /// freed memory. Best effort: that prepare retires it anyway, its mode being Auto.</summary>
+    private async Task RetireRetryChildAsync(string identity)
+    {
+        try
+        {
+            await _process.TryRetireResidentAsync(TimeSpan.FromSeconds(5), identity).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug("On this PC: retiring the re-try's GPU child failed: {ErrorType}", ex.GetType().Name);
+        }
     }
 
     private async Task PrepareCoreAsync(string modelId, string path, string identity, LlamaLaunchMode? route, string? warmSystemPrompt)
@@ -738,7 +976,11 @@ public sealed class OnThisPcEngine : IDisposable
                     // than serve a GPU nothing has checked (nothing is stored: the next session
                     // tests again). An ABANDONED one (the model was deleted under it) counts as
                     // neither: it says nothing about the GPU.
-                    if (outcome == WarmupOutcome.Settled)
+                    // A BUSY check settles too, for this session only: the model runs on the
+                    // processor (_sessionCpu), nothing is stored, and it is owed again next session.
+                    // It never counts toward MaxInconclusiveWarmups — a busy card is a finding,
+                    // not a failure — so it never moves the other models to the processor.
+                    if (outcome is WarmupOutcome.Settled or WarmupOutcome.Busy)
                     {
                         _warmupsDone.Add(identity);
                     }
@@ -771,6 +1013,9 @@ public sealed class OnThisPcEngine : IDisposable
         Inconclusive,
         /// <summary>The model was deleted under the check: owed again if it returns, not counted.</summary>
         Abandoned,
+        /// <summary>The graphics card was busy — another app filled it, or our own speech GPU work
+        /// was running — so no timing was taken: processor for this session, nothing stored.</summary>
+        Busy,
     }
 
     /// <summary>
@@ -786,14 +1031,26 @@ public sealed class OnThisPcEngine : IDisposable
     private async Task<WarmupOutcome> RunWarmupAsync(LocalModelEntry entry, string path, string identity, CancellationToken ct)
     {
         var ownsUseGate = false;
+        GpuWindow? window = null;
+        CancellationTokenSource? gpuPhase = null;
         try
         {
             await _useGate.WaitAsync(ct).ConfigureAwait(false);
             ownsUseGate = true;
             if (!StillAdmitted(entry.Id))
                 return WarmupOutcome.Abandoned;
-            var lease = await _process.TryAcquireAsync(path, identity, ct).ConfigureAwait(false);
-            if (lease is not { } l)
+
+            // The GPU part runs only while none of our own speech GPU work does, and gives way the
+            // moment some starts (2026-10-05); the CPU timing after it needs no window.
+            window = await TakeGpuWindowAsync(yieldToUserWork: false, ct).ConfigureAwait(false);
+            if (window is null)
+                return await SettleBusyAsync(entry, identity, "speech GPU work kept running").ConfigureAwait(false);
+            gpuPhase = CancellationTokenSource.CreateLinkedTokenSource(ct, window.Yield);
+
+            var acquire = await _process.AcquireCheckingLoadAsync(path, identity, BusyAtLoad, gpuPhase.Token).ConfigureAwait(false);
+            if (acquire.Busy)
+                return await SettleBusyAsync(entry, identity, "the graphics card was full").ConfigureAwait(false);
+            if (acquire.Lease is not { } l)
             {
                 Logger.Warning("On this PC: first-use check for {LocalModelId} could not start the engine", entry.Id);
                 return WarmupOutcome.Inconclusive;
@@ -805,7 +1062,15 @@ public sealed class OnThisPcEngine : IDisposable
                 Logger.Information("On this PC: {LocalModelId} loaded without GPU evidence - no GPU check to run", entry.Id);
                 return WarmupOutcome.Settled;
             }
-            var (verdict, facts, elapsed) = await _selfTest(_http, l, SelfTestTimeout, ct).ConfigureAwait(false);
+            // Spill first, then the self-test (GLM final check): on a card another app has filled,
+            // the self-test stalls and a reply garbled by memory pressure would be stored as a
+            // broken GPU until the next driver update.
+            if (SpilledAfterLoad(entry, l))
+                return await SettleBusyAsync(entry, identity, "the model did not fit in graphics memory").ConfigureAwait(false);
+            var (verdict, facts, elapsed) = await _selfTest(_http, l, SelfTestTimeout, gpuPhase.Token).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            window.Yield.ThrowIfCancellationRequested();
+            gpuPhase.Token.ThrowIfCancellationRequested();
             if (verdict == LlamaSelfTestVerdict.Unknown)
             {
                 Logger.Warning("On this PC: GPU check for {LocalModelId} did not complete", entry.Id);
@@ -813,21 +1078,25 @@ public sealed class OnThisPcEngine : IDisposable
             }
             var adapter = _process.ObservedFor(l.Generation)?.DeviceName;
             if (verdict == LlamaSelfTestVerdict.Fail)
-                return SettleFail(entry, identity, adapter, facts);
+                return SettleFail(entry, identity, adapter, facts, ct, window.Yield);
 
             _process.NotifyServed(l.Generation);
             Logger.Information("On this PC: GPU check passed for {LocalModelId} ({Facts}/{Total} facts, {Ms:F0} ms)",
                 entry.Id, facts, LlamaSelfTest.FactGroups.Count, elapsed.TotalMilliseconds);
 
             // ── Which route is faster here? ──
-            var gpu = await _timedRun(_http, l, SelfTestTimeout, ct).ConfigureAwait(false);
+            var gpu = await _timedRun(_http, l, SelfTestTimeout, gpuPhase.Token).ConfigureAwait(false);
+            if (window.Yield.IsCancellationRequested)          // a timing cut short by a yield is not a GPU fact
+                throw new OperationCanceledException();
+            gpuPhase.Token.ThrowIfCancellationRequested();
+            window.Dispose();                                 // the GPU part is over; the CPU timing needs no window
             if (!gpu.Completed)
             {
                 Logger.Warning("On this PC: the timed GPU run for {LocalModelId} did not complete", entry.Id);
                 return WarmupOutcome.Inconclusive;
             }
             if (gpu.Garbled)
-                return SettleFail(entry, identity, adapter, facts: 0);   // the GPU's second reply was garbage: not a GPU to use
+                return SettleFail(entry, identity, adapter, 0, ct, window.Yield);   // the GPU's second reply was garbage: not a GPU to use
 
             if (!StillAdmitted(entry.Id))
                 return WarmupOutcome.Abandoned;
@@ -853,6 +1122,8 @@ public sealed class OnThisPcEngine : IDisposable
                     _checks.Record(identity, LlamaSelfTestVerdict.Pass, adapter, route, gpuMs, cpuMs);
                 }
                 _verdicts[identity] = entryNow;
+                // Just measured on a quiet card: no re-try of that route this session.
+                _gpuRetried.Add(identity);
             }
             Logger.Information("On this PC: {LocalModelId} runs on the {Route} here (GPU {GpuMs:F0} ms, CPU {Cpu})",
                 entry.Id, route == LlamaRoute.Cpu ? "processor" : "graphics card", gpu.Elapsed.TotalMilliseconds,
@@ -877,6 +1148,11 @@ public sealed class OnThisPcEngine : IDisposable
         {
             return _lifetime.IsCancellationRequested ? WarmupOutcome.Inconclusive : WarmupOutcome.Abandoned;
         }
+        catch (OperationCanceledException) when (window is not null && window.Yield.IsCancellationRequested)
+        {
+            // Our own speech GPU work started under the GPU part: nothing it measured is true.
+            return await SettleBusyAsync(entry, identity, "speech GPU work started").ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
             Logger.Warning("On this PC: first-use check for {LocalModelId} failed: {ErrorType}", entry.Id, ex.GetType().Name);
@@ -884,21 +1160,108 @@ public sealed class OnThisPcEngine : IDisposable
         }
         finally
         {
+            gpuPhase?.Dispose();
+            window?.Dispose();
             if (ownsUseGate)
                 _useGate.Release();
         }
     }
 
+    /// <summary>The graphics card is busy: this model runs on the processor for the rest of the
+    /// session, nothing is stored, and a GPU child it may hold is stopped so the memory goes back.
+    /// The caller holds the use slot.</summary>
+    private async Task<WarmupOutcome> SettleBusyAsync(LocalModelEntry entry, string identity, string why)
+    {
+        lock (_state)
+        {
+            _sessionCpu.Add(identity);
+        }
+        Logger.Information("On this PC: {LocalModelId} runs on the processor this session - {Why}; checked again at the next start",
+            entry.Id, why);
+        try
+        {
+            await _process.TryRetireResidentAsync(TimeSpan.FromSeconds(5), identity).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug("On this PC: retiring the busy GPU child failed: {ErrorType}", ex.GetType().Name);
+        }
+        return WarmupOutcome.Busy;
+    }
+
+    /// <summary>A held GPU measurement window (<see cref="GpuWarmup.TryBeginGpuProbe"/>), or a
+    /// never-yielding stand-in where none is wired (tests).</summary>
+    private sealed class GpuWindow(IDisposable? handle, CancellationToken yield) : IDisposable
+    {
+        private IDisposable? _handle = handle;
+        public CancellationToken Yield { get; } = yield;
+        public void Dispose() => Interlocked.Exchange(ref _handle, null)?.Dispose();
+    }
+
+    /// <summary>Waits (up to <see cref="GpuQuietWait"/>) until none of our own speech GPU work runs,
+    /// then holds the window; null when it never went quiet.</summary>
+    private async Task<GpuWindow?> TakeGpuWindowAsync(bool yieldToUserWork, CancellationToken ct)
+    {
+        if (_beginGpuProbe is null)
+            return new GpuWindow(null, CancellationToken.None);
+        var deadline = DateTime.UtcNow + _gpuQuietWait;
+        while (true)
+        {
+            if (_beginGpuProbe(yieldToUserWork) is { } taken)
+                return new GpuWindow(taken.Handle, taken.Yield);
+            if (DateTime.UtcNow >= deadline)
+                return null;
+            await Task.Delay(GpuQuietPoll, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The load guard: asked while an Auto child loads, once it has said how much graphics
+    /// memory it needs. True stops the load (<see cref="GpuMemoryVerdict.ClearlyTooFull"/>). Any
+    /// reading it cannot make answers false: load as before.</summary>
+    private bool BusyAtLoad(uint pid, int projectedMiB, string deviceName)
+    {
+        if (_gpuMemory?.FindAdapter(deviceName) is not { } adapter
+            || _gpuMemory.AdapterDedicatedUsage(adapter.Luid) is not { } used
+            || _gpuMemory.ProcessDedicatedUsage(pid, adapter.Luid) is not { } mine)
+            return false;
+        var busy = GpuMemoryVerdict.ClearlyTooFull(adapter.DedicatedBytes, used, mine, projectedMiB);
+        Logger.Information("On this PC: graphics memory before loading - {FreeMiB} of {TotalMiB} MiB free for other work, the model needs {ProjectedMiB} MiB{Busy}",
+            (adapter.DedicatedBytes - Math.Max(0, used - mine)) / (1024 * 1024), adapter.DedicatedBytes / (1024 * 1024), projectedMiB,
+            busy ? " - busy, not loading on the graphics card" : "");
+        return busy;
+    }
+
+    /// <summary>After an Auto child loaded: did it get its memory, or did part of the model spill
+    /// to shared memory because another app holds the card (<see cref="GpuMemoryVerdict.Spilled"/>)?
+    /// False whenever a reading is missing.</summary>
+    private bool SpilledAfterLoad(LocalModelEntry entry, LlamaServerProcess.LlamaLease lease)
+    {
+        if (_gpuMemory is null
+            || _process.ObservedLoadFor(lease.Generation) is not { ProjectedMiB: { } projected, DeviceName: { } device } load
+            || _gpuMemory.FindAdapter(device) is not { } adapter
+            || _gpuMemory.ProcessDedicatedUsage(load.Pid, adapter.Luid) is not { } held)
+            return false;
+        var spilled = GpuMemoryVerdict.Spilled(adapter.DedicatedBytes, held, projected);
+        Logger.Information("On this PC: {LocalModelId} holds {HeldMiB} of {ProjectedMiB} MiB in graphics memory{Spilled}",
+            entry.Id, held / (1024 * 1024), projected, spilled ? " - the rest spilled, the graphics card is busy" : "");
+        return spilled;
+    }
+
     /// <summary>A GPU that returned wrong text: stored, and the engine runs on the CPU from now on.</summary>
-    private WarmupOutcome SettleFail(LocalModelEntry entry, string identity, string? adapter, int facts)
+    private WarmupOutcome SettleFail(LocalModelEntry entry, string identity, string? adapter, int facts,
+        CancellationToken ct, CancellationToken yield)
     {
         bool persisted;
         lock (_state)
         {
-            persisted = !_closed && _checks.Record(identity, LlamaSelfTestVerdict.Fail, adapter);
+            ct.ThrowIfCancellationRequested();
+            yield.ThrowIfCancellationRequested();
+            if (_closed || _deleting.Contains(entry.Id))
+                return WarmupOutcome.Abandoned;
+            persisted = _checks.Record(identity, LlamaSelfTestVerdict.Fail, adapter);
             _verdicts[identity] = new LlamaGpuCheckStore.Entry(LlamaSelfTestVerdict.Fail, adapter);
+            _process.RequestCpu("the GPU check failed");
         }
-        _process.RequestCpu("the GPU check failed");
         Logger.Write(GpuSelfTestReport.LevelFor(persisted),
             "On this PC: GPU check FAILED for {LocalModelId} on {Adapter} ({Facts}/{Total} facts) - the engine runs on the CPU from now on",
             entry.Id, adapter ?? "unknown adapter", facts, LlamaSelfTest.FactGroups.Count);
@@ -1015,11 +1378,16 @@ public sealed class OnThisPcEngine : IDisposable
             // health budget; whoever gets the slot afterwards asks StillAdmitted again.
             if (entry is not null)
             {
+                CancellationTokenSource? retry;
                 lock (_state)
                 {
                     if (_warmupCancels.TryGetValue(IdentityOf(entry), out var cancel))
                         cancel.Cancel();
+                    // Any model's re-try: it can hold the slot past DeleteGateWait, and a cancelled
+                    // re-try stores nothing (self-review).
+                    retry = _gpuRetryCts;
                 }
+                CancelRetryAsync(retry);
             }
             if (!await _useGate.WaitAsync(_deleteGateWait).ConfigureAwait(false))
             {

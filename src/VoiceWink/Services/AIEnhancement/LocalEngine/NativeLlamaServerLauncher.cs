@@ -35,6 +35,12 @@ internal interface ILlamaServerChild : IDisposable
 
     /// <summary>The child's own <c>thinking = 0|1</c> statement; null until printed.</summary>
     bool? ObservedThinking { get; }
+
+    /// <summary>The graphics memory the child said it will allocate (MiB), available once it has
+    /// printed its projection and its device list (one device), before it reserves the weights'
+    /// memory; null until then, for a model split across two or more devices, and always for a
+    /// CPU-only child.</summary>
+    int? ObservedProjectedMiB => null;
 }
 
 /// <summary>One parsed device line: the token and the bounded name.</summary>
@@ -94,28 +100,84 @@ internal sealed class NativeLlamaServerLauncher : ILlamaServerLauncher
             case LlamaServerLogLineKind.Thinking:
                 Logger.Information("llama-server (pid {Pid}): thinking {Thinking}", pid, line.ThinkingOn ? "on" : "off");
                 break;
+            case LlamaServerLogLineKind.ProjectedDeviceMemory:
+                Logger.Information("llama-server (pid {Pid}): needs {ProjectedMiB} MiB of graphics memory", pid, line.ProjectedMiB);
+                break;
         }
     }
 
     /// <summary>What the child printed about itself; written by the drain thread, read by the
     /// manager on another, hence volatile.</summary>
-    private sealed class Observation
+    internal sealed class Observation
     {
         private volatile LlamaObservedDevice? _device;
         private volatile int _thinking = -1; // -1 unknown, 0 off, 1 on
+        private volatile int _projectedMiB;   // 0 unknown
+        private volatile bool _offloadSeen;
+        private long _lastDeviceAtMs = -1;
+        private readonly HashSet<string> _deviceTokens = new(StringComparer.Ordinal);
+        private readonly Func<long> _nowMs;
+
+        /// <summary>How long after the last device line the device list counts as complete. The
+        /// device lines come out together (measured b11147: projection at 1.87 s, the one device line
+        /// at 2.25 s, the offload line - with the weights' buffers already reserved - at 3.95 s), so
+        /// this answers ~1.4 s before the memory is taken (Kimi diff r1: waiting for the offload line
+        /// asked the load guard after the child had reserved its memory, when the other app's share
+        /// had already been pushed out and the card no longer read as busy).</summary>
+        internal static readonly TimeSpan DeviceListSettle = TimeSpan.FromMilliseconds(250);
+
+        public Observation()
+            : this(() => Environment.TickCount64)
+        {
+        }
+
+        /// <summary>Test seam: the clock the settle reads.</summary>
+        internal Observation(Func<long> nowMs) => _nowMs = nowMs;
 
         public LlamaObservedDevice? Device => _device;
         public bool? Thinking => _thinking < 0 ? null : _thinking == 1;
+
+        /// <summary>The projection, once the child has printed its devices and they are ONE device:
+        /// llama.cpp splits a model across every GPU it finds, and a projection for two cards read
+        /// against one would call a healthy load busy (self-review). The device list counts as
+        /// complete <see cref="DeviceListSettle"/> after its last line, or at the offload line,
+        /// whichever comes first. Null otherwise: behave as before.</summary>
+        public int? ProjectedMiB
+        {
+            get
+            {
+                if (_projectedMiB <= 0)
+                    return null;
+                lock (_deviceTokens)
+                {
+                    if (_deviceTokens.Count != 1)
+                        return null;
+                    var settled = _offloadSeen || _nowMs() - _lastDeviceAtMs >= (long)DeviceListSettle.TotalMilliseconds;
+                    return settled ? _projectedMiB : null;
+                }
+            }
+        }
 
         public void Observe(LlamaServerLogLine line)
         {
             switch (line.Kind)
             {
                 case LlamaServerLogLineKind.DeviceSelected:
+                    lock (_deviceTokens)
+                    {
+                        _deviceTokens.Add(line.DeviceToken);
+                        _lastDeviceAtMs = _nowMs();
+                    }
                     _device = new LlamaObservedDevice(line.DeviceToken, line.DeviceName);
+                    break;
+                case LlamaServerLogLineKind.LayersOffloaded:
+                    _offloadSeen = true;
                     break;
                 case LlamaServerLogLineKind.Thinking:
                     _thinking = line.ThinkingOn ? 1 : 0;
+                    break;
+                case LlamaServerLogLineKind.ProjectedDeviceMemory:
+                    _projectedMiB = line.ProjectedMiB;
                     break;
             }
         }
@@ -130,6 +192,7 @@ internal sealed class NativeLlamaServerLauncher : ILlamaServerLauncher
         public bool WaitForExit(TimeSpan timeout) => handle.WaitForExit(timeout);
         public LlamaObservedDevice? ObservedDevice => observation.Device;
         public bool? ObservedThinking => observation.Thinking;
+        public int? ObservedProjectedMiB => observation.ProjectedMiB;
         public void Dispose() => handle.Dispose();
     }
 }

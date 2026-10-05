@@ -264,6 +264,10 @@ internal sealed class GpuWarmup
             Logger.Information("GPU warm-up cancelled: {Reason}", reason);
         }
         TryCancel(_cts, "GPU warm-up cancellation callback failed");
+        // The built-in AI engine's GPU measurement steps aside for the same user work (when it
+        // asked to) and always for an app that is going away.
+        YieldGpuProbe(userWork: reason is GpuWarmupCancelReason.RecordingAdmission or GpuWarmupCancelReason.AudioTranscribe,
+            always: reason is GpuWarmupCancelReason.Shutdown or GpuWarmupCancelReason.DataErasure);
         if (cancelsWhisper)
         {
             CancellationTokenSource? whisper;
@@ -282,6 +286,127 @@ internal sealed class GpuWarmup
                 Logger.Information("Whisper GPU self-test cancelled: {Reason}", reason);
                 TryCancel(whisper, "Whisper GPU self-test cancellation callback failed");
             }
+        }
+    }
+
+    // ---- The built-in AI engine's GPU measurement window ----
+    //
+    // A timing of the AI engine on the graphics card is only true while nothing else of ours is
+    // working it (Codex final check, 2026-10-05): a speech warm-up runs up to 120 s, so the engine
+    // takes this window first and gives it up the moment a speech warm-up is queued — the speech
+    // side never waits for it. Publish-then-check on one side and set-run-then-yield on the other,
+    // each under a lock, so neither can miss the other.
+
+    private readonly object _probeLock = new();
+    private CancellationTokenSource? _probeYield;
+    private bool _probeYieldsToUserWork;
+
+    /// <summary>The window, held while the AI engine measures on the graphics card. Its token is
+    /// cancelled when a speech warm-up is queued, at app shutdown, and — when asked — at recording
+    /// admission and Audio Transcribe. Dispose ends it.</summary>
+    internal sealed class GpuProbeWindow : IDisposable
+    {
+        private readonly GpuWarmup _owner;
+        private readonly CancellationTokenSource _cts;
+        private int _disposed;
+
+        internal GpuProbeWindow(GpuWarmup owner, CancellationTokenSource cts)
+        {
+            _owner = owner;
+            _cts = cts;
+        }
+
+        internal CancellationToken Yield => _cts.Token;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                _owner.EndGpuProbe(_cts);
+        }
+    }
+
+    /// <summary>The window when no speech GPU work of ours is running — no Parakeet warm-up, no
+    /// Whisper self-test, no warm child whose exit is unconfirmed — else null. One window at a time.</summary>
+    internal GpuProbeWindow? TryBeginGpuProbe(bool yieldToUserWork)
+    {
+        var cts = new CancellationTokenSource();
+        lock (_probeLock)
+        {
+            if (_probeYield is not null)
+            {
+                cts.Dispose();
+                return null;
+            }
+            _probeYield = cts;
+            _probeYieldsToUserWork = yieldToUserWork;
+        }
+        bool idle;
+        try
+        {
+            idle = IsSpeechGpuWorkIdle();
+        }
+        catch
+        {
+            idle = false;   // never leave the window published behind a failed check (Kimi diff r1)
+        }
+        if (!idle)
+        {
+            EndGpuProbe(cts);
+            return null;
+        }
+        return new GpuProbeWindow(this, cts);
+    }
+
+    /// <summary>No speech GPU work of ours in flight. Read under the same locks the queues write under.</summary>
+    internal bool IsSpeechGpuWorkIdle()
+    {
+        lock (_parakeetLock)
+        {
+            if (_parakeetQueued != 0 && !_parakeetTask.IsCompleted)
+                return false;
+            if (_lingering is { } lingering && !lingering.Child.HasExited)
+                return false;
+        }
+        lock (_whisperLock)
+        {
+            if (_whisperQueuedModel is not null && !_whisperTask.IsCompleted)
+                return false;
+        }
+        return true;
+    }
+
+    private void EndGpuProbe(CancellationTokenSource cts)
+    {
+        lock (_probeLock)
+        {
+            if (ReferenceEquals(_probeYield, cts))
+                _probeYield = null;
+        }
+        cts.Dispose();
+    }
+
+    /// <summary>Ask a held window to give way: a speech warm-up was queued (<paramref name="always"/>),
+    /// or user work started and the holder asked to yield to it.</summary>
+    private void YieldGpuProbe(bool userWork, bool always)
+    {
+        CancellationTokenSource? cts;
+        lock (_probeLock)
+        {
+            cts = _probeYield;
+            if (cts is null || !(always || (userWork && _probeYieldsToUserWork)))
+                return;
+        }
+        try
+        {
+            // ASYNC (self-review, concurrency lens): this runs on the hotkey/UI thread at recording
+            // admission and on the startup path, and a synchronous Cancel runs the holder's
+            // continuations inline - a child kill and the next model load before recording starts.
+            _ = cts.CancelAsync().ContinueWith(static t => Logger.Warning(t.Exception, "GPU probe yield callback failed"),
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Ended between the read and the cancel: nothing to give way.
         }
     }
 
@@ -670,6 +795,7 @@ internal sealed class GpuWarmup
             _whisperVerdict = verdict;
             _whisperTask = Task.Run(() => RunWhisperSelfTestAsync(service, config, model, cts, verdict));
         }
+        YieldGpuProbe(userWork: false, always: true);   // speech GPU work started: the AI engine's measurement gives way
         // UI-12: "Checking…" BEGINS with the run — a page built before this load queued the test
         // would otherwise show "will be checked when VoiceWink restarts" for the whole run.
         NotifyChanged();
@@ -1176,6 +1302,7 @@ internal sealed class GpuWarmup
                 config.Marker, plan, _cts.Token, clip: resolveClip?.Invoke()));
             _parakeetQueued = 1;
         }
+        YieldGpuProbe(userWork: false, always: true);   // speech GPU work started: the AI engine's measurement gives way
         // UI-12: "Checking…" BEGINS with the run — a Models page already open at startup would
         // otherwise miss the whole Parakeet run and only see its end (Kimi diff r2). Outside the
         // lock: subscribers marshal and may read IsSelfTestRunning, which takes it.

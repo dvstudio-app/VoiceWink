@@ -15,6 +15,12 @@ public enum LlamaServerLogLineKind
     /// the template will think. LAI-2 runs with thinking OFF on the command line; a 1 here is a
     /// contract failure the manager refuses.</summary>
     Thinking,
+    /// <summary><c>common_params_fit_impl: projected to use N MiB of device memory vs. M MiB of free
+    /// device memory</c> — how much graphics memory the child is about to allocate, printed before
+    /// it loads the model's weights. Only N is read: the "free" figure is the Vulkan budget of the
+    /// child's own process and read 9,467 MiB on a card another app had filled to 2,989 MiB free
+    /// (measured 2026-10-05), so it is never evidence of a free card.</summary>
+    ProjectedDeviceMemory,
 }
 
 /// <summary>
@@ -33,8 +39,12 @@ public readonly record struct LlamaServerLogLine(
     string DeviceName,
     int LayersOnGpu,
     int LayersTotal,
-    bool ThinkingOn)
+    bool ThinkingOn,
+    int ProjectedMiB = 0)
 {
+    /// <summary>A projection above this (1 TiB) is refused as not a real figure.</summary>
+    public const int MaxProjectedMiB = 1 << 20;
+
     /// <summary>A device token longer than this is refused — a device id is a short word
     /// (<c>Vulkan0</c>), a path is not.</summary>
     public const int MaxDeviceTokenLength = 32;
@@ -48,6 +58,8 @@ public readonly record struct LlamaServerLogLine(
     private const string Offloaded = "load_tensors: offloaded ";
     private const string OffloadedSuffix = " layers to GPU";
     private const string Thinking = "init: chat template, thinking = ";
+    private const string Projected = "projected to use ";
+    private const string ProjectedSuffix = " MiB of device memory";
 
     public static bool TryParse(string? line, out LlamaServerLogLine parsed)
     {
@@ -109,6 +121,21 @@ public readonly record struct LlamaServerLogLine(
                 return false;
             }
             parsed = new LlamaServerLogLine(LlamaServerLogLineKind.Thinking, "", "", 0, 0, value == "1");
+            return true;
+        }
+
+        at = line.IndexOf(Projected, StringComparison.Ordinal);
+        if (at >= 0)
+        {
+            var rest = line[(at + Projected.Length)..];
+            var end = rest.IndexOf(ProjectedSuffix, StringComparison.Ordinal);
+            if (end <= 0
+                || !int.TryParse(rest[..end], NumberStyles.None, CultureInfo.InvariantCulture, out var mib)
+                || mib <= 0 || mib > MaxProjectedMiB)
+            {
+                return false;
+            }
+            parsed = new LlamaServerLogLine(LlamaServerLogLineKind.ProjectedDeviceMemory, "", "", 0, 0, false, mib);
             return true;
         }
 

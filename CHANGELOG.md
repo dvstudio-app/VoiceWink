@@ -17,6 +17,10 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.108.404] - 2026-10-05
+
+- A built-in AI model no longer stays on the processor after being checked while another app was using the graphics card.
+
 ## [1.107.403] - 2026-10-05
 
 - The AI Enhancement page now shows whether the built-in AI model runs on your graphics card.

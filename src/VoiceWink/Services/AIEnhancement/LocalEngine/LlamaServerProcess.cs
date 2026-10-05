@@ -68,6 +68,16 @@ internal sealed class LlamaServerProcess
     /// kill may target, and whether this child showed GPU evidence.</summary>
     internal readonly record struct LlamaLease(Uri BaseUri, string ApiKey, int Generation, bool OnGpu);
 
+    /// <summary>An acquire's result when the caller asked to be told about a busy graphics card:
+    /// <see cref="Busy"/> = the child was stopped while loading because the card could not hold
+    /// it (an expected stop: not charged, no CPU fallback, nothing latched).</summary>
+    internal readonly record struct LlamaAcquire(LlamaLease? Lease, bool Busy);
+
+    /// <summary>Asked once per Auto child, as soon as it has printed how much graphics memory it
+    /// needs and which device it chose — before it loads the weights: (pid, projected MiB, device
+    /// name) → true to stop the load because the card is busy.</summary>
+    internal delegate bool LoadGuard(uint pid, int projectedMiB, string deviceName);
+
     /// <param name="payloadDirectory">The llama directory (<see cref="LlamaPayloadSet.DirectoryFor"/>).</param>
     /// <param name="payload">Whose pins the spawn gate checks that directory against; null = the
     /// x64 set. Production passes <see cref="LlamaServerPayload.Current"/> for both.</param>
@@ -202,6 +212,20 @@ internal sealed class LlamaServerProcess
         return resident.Child.ObservedDevice is { } device ? (device.Token, device.Name) : (null, null);
     }
 
+    /// <summary>The live child's pid, the graphics memory it said it needs and its device name,
+    /// for <paramref name="generation"/>; null when that generation is not the live one. Lock-free;
+    /// a torn read can only refuse.</summary>
+    internal (uint Pid, int? ProjectedMiB, string? DeviceName)? ObservedLoadFor(int generation)
+    {
+        var resident = Volatile.Read(ref _resident);
+        if (resident is null || generation < resident.FirstGeneration
+            || Volatile.Read(ref _generation) < generation || resident.Child.HasExited)
+        {
+            return null;
+        }
+        return (resident.Child.Pid, resident.Child.ObservedProjectedMiB, resident.Child.ObservedDevice?.Name);
+    }
+
     /// <summary>
     /// A healthy resident server for <paramref name="modelPath"/>, or null when the engine cannot
     /// serve this call (payload refused, storm tripped, launch or health failure, a thinking
@@ -212,6 +236,25 @@ internal sealed class LlamaServerProcess
     /// </summary>
     internal async Task<LlamaLease?> TryAcquireAsync(
         string modelPath, string modelIdentity, CancellationToken ct, LlamaLaunchMode? requestedMode = null)
+        => (await AcquireCoreAsync(modelPath, modelIdentity, ct, requestedMode, loadGuard: null).ConfigureAwait(false)).Lease;
+
+    /// <summary>
+    /// An Auto acquire for a GPU measurement: like <see cref="TryAcquireAsync"/>, except that a
+    /// NEWLY spawned Auto child is shown to <paramref name="loadGuard"/> while it loads, and stopped
+    /// when the guard says the graphics card is busy (<see cref="LlamaAcquire.Busy"/>). A reused
+    /// child is not asked again: it already holds its memory.
+    /// </summary>
+    /// <para><paramref name="cpuFallback"/> false (the graphics-card re-try): an Auto child that
+    /// dies before health is retired uncharged and the acquire returns nothing — no CPU respawn and
+    /// no session latch, because a re-try must never move the OTHER models to the processor
+    /// (self-review). The first-use check keeps the fallback, as before.</para>
+    internal Task<LlamaAcquire> AcquireCheckingLoadAsync(
+        string modelPath, string modelIdentity, LoadGuard loadGuard, CancellationToken ct, bool cpuFallback = true)
+        => AcquireCoreAsync(modelPath, modelIdentity, ct, LlamaLaunchMode.Auto, loadGuard, cpuFallback);
+
+    private async Task<LlamaAcquire> AcquireCoreAsync(
+        string modelPath, string modelIdentity, CancellationToken ct, LlamaLaunchMode? requestedMode, LoadGuard? loadGuard,
+        bool cpuFallback = true)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -219,7 +262,7 @@ internal sealed class LlamaServerProcess
             if (!TryClearRetiring())
             {
                 Logger.Warning("llama-server: predecessor still exiting - not serving this call");
-                return null;
+                return default;
             }
 
             if (Volatile.Read(ref _cpuRequested) != 0 && _launchMode != LlamaLaunchMode.Cpu)
@@ -236,7 +279,7 @@ internal sealed class LlamaServerProcess
                     && current.Child.ObservedThinking != true;
                 if (reusable)
                 {
-                    return current.LeaseFor(Interlocked.Increment(ref _generation));
+                    return new(current.LeaseFor(Interlocked.Increment(ref _generation)), false);
                 }
                 if (current.Child.ObservedThinking == true)
                 {
@@ -247,13 +290,13 @@ internal sealed class LlamaServerProcess
                 }
                 if (!RetireResident(current, current.Child.ObservedThinking == true ? "thinking on" : "not reusable"))
                 {
-                    return null;
+                    return default;
                 }
             }
 
             if (_thinkingRefusedModels.Contains(modelIdentity))
             {
-                return null; // refused once this session with a logged reason; never respawned.
+                return default; // refused once this session with a logged reason; never respawned.
             }
 
             if (_stormTripped || !ParakeetServerPolicy.MayRespawn(_involuntaryExitsUtc, _utcNow()))
@@ -264,7 +307,7 @@ internal sealed class LlamaServerProcess
                     Logger.Error("llama-server: crash storm tripped ({Count} involuntary exits in {Window}) - the local engine is unrunnable until app restart",
                         _involuntaryExitsUtc.Count, ParakeetServerPolicy.StormWindow);
                 }
-                return null;
+                return default;
             }
 
             var payloadDir = Path.GetDirectoryName(_exePath)!;
@@ -282,17 +325,26 @@ internal sealed class LlamaServerProcess
                     // Not charged: nothing was spawned. Sanitized - the reason can carry a certificate
                     // subject, which is attacker-authored text on a planted file.
                     Logger.Error("llama-server: refusing to spawn - {Reason}", LogValueSanitizer.SingleLine(verdict.RefusalReason));
-                    return null;
+                    return default;
                 }
                 var apiKey = LlamaServerLaunch.NewApiKey();
                 var child = _launcher.TryLaunch(_exePath, modelPath, apiKey, mode);
                 if (child is null)
                 {
                     Logger.Warning("llama-server: launch failed (job setup or process creation, launch mode {Mode})", mode);
-                    return null;
+                    return default;
                 }
 
-                var outcome = await WaitForHealthAsync(child, ct).ConfigureAwait(false);
+                var (outcome, busy) = await WaitForHealthAsync(child, ct,
+                    mode == LlamaLaunchMode.Auto ? loadGuard : null).ConfigureAwait(false);
+                if (busy)
+                {
+                    // An expected stop, like a model switch: not charged, no CPU fallback, nothing
+                    // latched. The caller decides what a busy card means for this model.
+                    Retire(child);
+                    Logger.Information("llama-server: stopped loading on the graphics card - it is busy (pid {Pid})", child.Pid);
+                    return new(null, true);
+                }
                 if (outcome is { } baseUri)
                 {
                     var waited = Stopwatch.StartNew();
@@ -308,7 +360,7 @@ internal sealed class LlamaServerProcess
                         Retire(child);
                         _thinkingRefusedModels.Add(modelIdentity);
                         Logger.Error("llama-server: the model reports thinking on despite --reasoning off - refused for this session (a thinking model misses the dictation deadline)");
-                        return null;
+                        return default;
                     }
                     if (mode == LlamaLaunchMode.Cpu && cpuRetried)
                     {
@@ -316,22 +368,27 @@ internal sealed class LlamaServerProcess
                         Logger.Warning("llama-server: CPU retry healthy after the Auto (GPU) child died before health - latching CPU for this session");
                     }
                     var generation = Interlocked.Increment(ref _generation);
-                    var resident = new Resident(child, baseUri, apiKey, modelIdentity, mode, generation);
+                    var resident = new Resident(child, baseUri, apiKey, modelIdentity, mode, generation, cpuFallback);
                     Volatile.Write(ref _resident, resident);
                     Logger.Information("llama-server: generation {Gen} healthy on port {Port} (pid {Pid}, launch mode {Mode}, gpu evidence {OnGpu})",
                         generation, baseUri.Port, child.Pid, mode, resident.OnGpu);
-                    return resident.LeaseFor(generation);
+                    return new(resident.LeaseFor(generation), false);
                 }
 
                 var exitedOnItsOwn = child.HasExited;
                 Retire(child);
+                if (exitedOnItsOwn && mode == LlamaLaunchMode.Auto && !cpuRetried && !cpuFallback)
+                {
+                    Logger.Warning("llama-server: Auto (GPU) child exited before health during a graphics-card re-try - no CPU fallback (not charged)");
+                    return default;
+                }
                 if (exitedOnItsOwn && mode == LlamaLaunchMode.Auto && !cpuRetried)
                 {
                     Logger.Warning("llama-server: Auto (GPU) child exited before health - retrying once on CPU (not charged to the storm fuse)");
                     if (_retiring is not null)
                     {
                         Logger.Warning("llama-server: predecessor exit unconfirmed - CPU retry deferred to the next call");
-                        return null;
+                        return default;
                     }
                     mode = LlamaLaunchMode.Cpu;
                     cpuRetried = true;
@@ -343,7 +400,7 @@ internal sealed class LlamaServerProcess
                 }
                 Logger.Warning("llama-server: not healthy within {Budget} (childExited={Exited}, launch mode {Mode})",
                     _healthBudget, exitedOnItsOwn, mode);
-                return null;
+                return default;
             }
         }
         finally
@@ -451,11 +508,14 @@ internal sealed class LlamaServerProcess
     /// <summary>Poll until <c>/health</c> answers, the child dies, or the budget ends. Returns the
     /// base URI on health. The health budget is bounded in real time and each probe await is
     /// bounded too, so a probe that never answers cannot hold the gate. User cancellation retires
-    /// the candidate and propagates.</summary>
-    private async Task<Uri?> WaitForHealthAsync(ILlamaServerChild child, CancellationToken ct)
+    /// the candidate and propagates. <paramref name="loadGuard"/>, when given, is asked once — as
+    /// soon as the child has printed its graphics-memory projection and its device — and a true
+    /// answer ends the wait as Busy.</summary>
+    private async Task<(Uri? BaseUri, bool Busy)> WaitForHealthAsync(ILlamaServerChild child, CancellationToken ct, LoadGuard? loadGuard = null)
     {
         var spawnedUtc = _utcNow();
         Uri? baseUri = null;
+        var guardAsked = loadGuard is null;
         using var health = CancellationTokenSource.CreateLinkedTokenSource(ct);
         health.CancelAfter(_healthBudget);
         try
@@ -465,7 +525,26 @@ internal sealed class LlamaServerProcess
                 health.Token.ThrowIfCancellationRequested();
                 if (child.HasExited)
                 {
-                    return null;
+                    return (null, false);
+                }
+                if (!guardAsked && child.ObservedProjectedMiB is { } projected && child.ObservedDevice is { } device)
+                {
+                    guardAsked = true;
+                    bool busy;
+                    try
+                    {
+                        busy = loadGuard!(child.Pid, projected, device.Name);
+                    }
+                    catch (Exception ex)
+                    {
+                        // A guard that cannot answer never stops a load: behave as before.
+                        Logger.Debug("llama-server: the load guard failed ({ErrorType}) - loading as usual", ex.GetType().Name);
+                        busy = false;
+                    }
+                    if (busy)
+                    {
+                        return (null, true);
+                    }
                 }
                 if (baseUri is null && child.TryReadListeningPort() is { } port)
                 {
@@ -487,12 +566,12 @@ internal sealed class LlamaServerProcess
                     }
                     if (healthy)
                     {
-                        return baseUri;
+                        return (baseUri, false);
                     }
                 }
                 await Task.Delay(ParakeetServerPolicy.HealthPollInterval, health.Token).ConfigureAwait(false);
             }
-            return null;
+            return (null, false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -501,27 +580,36 @@ internal sealed class LlamaServerProcess
         }
         catch (OperationCanceledException)
         {
-            return null; // the budget fired during an await: a health failure, not a cancel.
+            return (null, false); // the budget fired during an await: a health failure, not a cancel.
         }
         catch (Exception ex)
         {
             // A throwing probe is a health failure; the child did not exit on its own.
             Logger.Warning(ex, "llama-server: health probe threw");
-            return null;
+            return (null, false);
         }
     }
 
     /// <summary>Retire the resident. A child that died on its own is charged — unless it was an
     /// Auto child that never served a request, which is the driver-shaped death: not charged, and
-    /// Cpu is latched so the next spawn uses it. False when the kill is unconfirmed.</summary>
+    /// Cpu is latched so the next spawn uses it — except for a graphics-card re-try's child
+    /// (<see cref="Resident.CpuFallback"/> false), which latches nothing. False when the kill is
+    /// unconfirmed.</summary>
     private bool RetireResident(Resident resident, string why)
     {
         if (resident.Child.HasExited)
         {
             if (resident.Mode == LlamaLaunchMode.Auto && !resident.Served && _launchMode == LlamaLaunchMode.Auto)
             {
-                _launchMode = LlamaLaunchMode.Cpu;
-                Logger.Warning("llama-server: the Auto (GPU) child died before serving a request - latching CPU for this session (not charged to the storm fuse)");
+                if (resident.CpuFallback)
+                {
+                    _launchMode = LlamaLaunchMode.Cpu;
+                    Logger.Warning("llama-server: the Auto (GPU) child died before serving a request - latching CPU for this session (not charged to the storm fuse)");
+                }
+                else
+                {
+                    Logger.Warning("llama-server: the graphics-card re-try child died before serving a request - no CPU latch (not charged)");
+                }
             }
             else
             {
@@ -573,7 +661,7 @@ internal sealed class LlamaServerProcess
     /// <summary>The live child and what it was spawned for. <see cref="Served"/> is written by
     /// <see cref="NotifyServed"/> off the gate, hence volatile.</summary>
     private sealed class Resident(
-        ILlamaServerChild child, Uri baseUri, string apiKey, string modelIdentity, LlamaLaunchMode mode, int firstGeneration)
+        ILlamaServerChild child, Uri baseUri, string apiKey, string modelIdentity, LlamaLaunchMode mode, int firstGeneration, bool cpuFallback)
     {
         private volatile bool _served;
 
@@ -581,6 +669,7 @@ internal sealed class LlamaServerProcess
         public string ModelIdentity { get; } = modelIdentity;
         public LlamaLaunchMode Mode { get; } = mode;
         public int FirstGeneration { get; } = firstGeneration;
+        public bool CpuFallback { get; } = cpuFallback;
         public bool OnGpu => LlamaServerLogLine.IsGpuDevice(Child.ObservedDevice?.Token);
 
         public bool Served

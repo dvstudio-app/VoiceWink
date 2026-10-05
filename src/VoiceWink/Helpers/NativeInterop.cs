@@ -36,6 +36,45 @@ internal static class NativeInterop
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetPhysicallyInstalledSystemMemory(out ulong totalMemoryInKilobytes);
 
+    // --- Performance counters (built-in AI engine: is the graphics card busy?) ---
+    // Windows' own per-adapter and per-process graphics memory counters, read through PDH. The
+    // English-name entry point is locale-safe: a localised Windows names the counters in its own
+    // language, and PdhAddCounterW would not find them there.
+
+    internal const uint PDH_FMT_LARGE = 0x00000400;
+    internal const uint PDH_MORE_DATA = 0x800007D2;
+    internal const uint PDH_CSTATUS_VALID_DATA = 0x00000000;
+    internal const uint PDH_CSTATUS_NEW_DATA = 0x00000001;
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct PDH_FMT_COUNTERVALUE_LARGE
+    {
+        [FieldOffset(0)] public uint CStatus;
+        [FieldOffset(8)] public long LargeValue;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PDH_FMT_COUNTERVALUE_ITEM_LARGE
+    {
+        public IntPtr szName;
+        public PDH_FMT_COUNTERVALUE_LARGE FmtValue;
+    }
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    internal static extern uint PdhOpenQueryW(string? szDataSource, IntPtr dwUserData, out IntPtr phQuery);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    internal static extern uint PdhAddEnglishCounterW(IntPtr hQuery, string szFullCounterPath, IntPtr dwUserData, out IntPtr phCounter);
+
+    [DllImport("pdh.dll")]
+    internal static extern uint PdhCollectQueryData(IntPtr hQuery);
+
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+    internal static extern uint PdhGetFormattedCounterArrayW(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, out uint lpdwItemCount, IntPtr itemBuffer);
+
+    [DllImport("pdh.dll")]
+    internal static extern uint PdhCloseQuery(IntPtr hQuery);
+
     // --- Final-path resolution (ENH-6 reference-image trust boundary) ---
     // GetFinalPathNameByHandle resolves every reparse point (junction/symlink) in the
     // OPENED handle's path, so containment can be verified against what the kernel

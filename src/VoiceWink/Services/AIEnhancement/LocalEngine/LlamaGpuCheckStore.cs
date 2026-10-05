@@ -86,6 +86,24 @@ internal sealed class LlamaGpuCheckStore
         }
     }
 
+    /// <summary>The processor time a graphics-card re-try must beat for a model whose stored route
+    /// is the CPU (2026-10-05): the processor timing (<see cref="CpuSpeedMs"/>) when there is one,
+    /// else the CPU time the first-use check measured; null when the route is not a current CPU
+    /// Pass or neither time is usable — then there is nothing to beat and no re-try runs.</summary>
+    internal int? CpuBaselineMs(string modelIdentity)
+    {
+        lock (_lock)
+        {
+            var row = ReadCurrent()?.Models.FirstOrDefault(m => string.Equals(m.Model, modelIdentity, StringComparison.Ordinal));
+            if (row is null || row.Verdict != nameof(LlamaSelfTestVerdict.Pass) || row.Route != nameof(LlamaRoute.Cpu)
+                || row.Timing != CurrentTiming)
+            {
+                return null;
+            }
+            return (row.CpuOnlyTiming == CurrentTiming ? Positive(row.CpuOnlyMs) : null) ?? Positive(row.CpuMs);
+        }
+    }
+
     /// <summary>Record <see cref="CpuSpeedMs"/>; a verdict already stored for the model is kept.
     /// False when nothing was written (best effort — the timing runs again next time).</summary>
     internal bool RecordCpuSpeed(string modelIdentity, int ms)

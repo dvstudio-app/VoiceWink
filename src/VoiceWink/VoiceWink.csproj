@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.107.403</Version>
-    <AssemblyVersion>1.107.403.0</AssemblyVersion>
-    <FileVersion>1.107.403.0</FileVersion>
+    <Version>1.108.404</Version>
+    <AssemblyVersion>1.108.404.0</AssemblyVersion>
+    <FileVersion>1.108.404.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
