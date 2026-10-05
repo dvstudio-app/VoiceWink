@@ -208,6 +208,25 @@ public sealed class OnThisPcEngine : IDisposable
         }
     }
 
+    /// <summary>Where this model runs, for the AI Enhancement page's GPU line (<see cref="Helpers.BuiltInGpuStatus"/>).
+    /// The live child counts only when it serves this model.</summary>
+    internal Helpers.BuiltInComputeFacts ComputeFacts(string modelId)
+    {
+        var entry = LocalModelCatalog.Find(modelId);
+        if (entry is null)
+            return new(null, null, false, RunsOnProcessor, null, null);
+        var identity = IdentityOf(entry);
+        var live = _process.LiveChild() is { } child && string.Equals(child.ModelIdentity, identity, StringComparison.Ordinal)
+            ? child : ((string, bool, string?)?)null;
+        lock (_state)
+        {
+            var verdict = VerdictLocked(identity);
+            return new(verdict?.Verdict, verdict?.Route,
+                _warmups.ContainsKey(identity),
+                RunsOnProcessor, live?.Item2, live?.Item3);
+        }
+    }
+
     /// <summary>GPU acceleration is off (or the session latched the CPU): every model runs on the processor.</summary>
     internal bool RunsOnProcessor => _process.LaunchMode == LlamaLaunchMode.Cpu;
 

@@ -170,7 +170,8 @@ internal static class LocalModelCatalog
             "https://www.apache.org/licenses/LICENSE-2.0.txt"),
         ValidatedOnLlamaBuild: LlamaServerPayload.Build);
 
-    /// <summary>Display order: the default first, then the larger ones, then the smaller.</summary>
+    /// <summary>Catalog order: the default first, which the "first installed model" fallback relies on. The
+    /// rows are shown in <see cref="LocalModelRecommendation.DisplayOrder"/>.</summary>
     internal static readonly IReadOnlyList<LocalModelEntry> All = [Standard, Large, Best, Light];
 
     internal static LocalModelEntry? Find(string id)

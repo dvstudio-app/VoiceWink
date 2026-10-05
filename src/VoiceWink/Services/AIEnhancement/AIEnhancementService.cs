@@ -1410,6 +1410,10 @@ public sealed class AIEnhancementService
         }
     }
 
+    /// <summary>The built-in model dictations use right now (enhancement on, the active prompt on the
+    /// built-in models, its own model override included), or null.</summary>
+    internal string? ActiveBuiltInModel() => ActiveOnThisPcPrompt()?.Model;
+
     /// <summary>The active prompt and its model when enhancement is on and that prompt runs on
     /// the built-in models (its own provider override first); null otherwise. The ACTIVE prompt
     /// decides: one that routes to another provider uses no local model, and one with its own

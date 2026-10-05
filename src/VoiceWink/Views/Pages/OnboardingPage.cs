@@ -65,6 +65,10 @@ public sealed class OnboardingPage : Page
     private string _selectedLanguage = "auto";
     private bool _useCloudTranscription;
     private List<Func<Task<bool>>>? _enhancementKeyValidators;
+    // Bumped by any provider or key-box change in setup's key rows. A Continue whose key checks
+    // saw a change while they ran does not move on, so the new choice is checked on the next
+    // press (ONB-9).
+    private int _keyInputGeneration;
 
     // Step panel cache — preserves user selections when navigating Back
     private readonly Dictionary<int, UIElement> _stepCache = new();
@@ -821,6 +825,7 @@ public sealed class OnboardingPage : Page
         // API key row
         var apiKeyBox = new PasswordBox { PlaceholderText = "Paste your API key", HorizontalAlignment = HorizontalAlignment.Stretch };
         var (keyStatusPanel, SetKeyStatus) = CreateKeyStatusPanel();
+        var (lockProviderBox, unlockProviderBox) = CreateProviderBoxLock(providerCombo);
         var saveKeyBtn = AppTheme.CreateCompactButton("Save", isAccent: true);
 
         var apiKeyRow = new StackPanel
@@ -893,18 +898,11 @@ public sealed class OnboardingPage : Page
                 var provider = providers[providerCombo.SelectedIndex];
                 var providerKey = provider.ToString().ToLowerInvariant();
                 var key = apiKeyBox.Password;
+                // An empty box never deletes a saved key in setup (ONB-9): a box rebuilt while a
+                // key check ran shows empty although the key was just saved. Keys are removed on
+                // the Models page.
                 if (string.IsNullOrWhiteSpace(key))
-                {
-                    // ENH-17: a clear is a write, so it claims the slot like any other.
-                    var clearGeneration = _apiKeys.BeginKeyWrite(providerKey);
-                    if (!_apiKeys.TryCommitApiKey(providerKey, "", clearGeneration, out _))
-                    {
-                        Logger.Information("Onboarding transcription key clear for {Provider} superseded", providerKey);
-                        return true;
-                    }
-                    SetKeyStatus("\uE946", "Key cleared", AppTheme.TextSecondary, true);
                     return true;
-                }
                 var previousKey = _apiKeys.GetApiKey(providerKey) ?? "";
                 if (key == previousKey)
                     return true; // already saved, no validation needed
@@ -918,6 +916,7 @@ public sealed class OnboardingPage : Page
 
                 bool isValid = false;
                 bool couldNotValidate = false;
+                lockProviderBox();
                 try
                 {
                     var http = App.Services.GetRequiredService<IHttpClientFactory>().CreateClient("transcription");
@@ -937,6 +936,7 @@ public sealed class OnboardingPage : Page
                     isValid = false;
                 }
                 catch (Exception) { couldNotValidate = true; }
+                finally { unlockProviderBox(); }
 
                 if (isValid)
                 {
@@ -1024,14 +1024,17 @@ public sealed class OnboardingPage : Page
                 UpdateSignupLink(p);
                 warnedNoKey = false;
             }
+            _keyInputGeneration++;
         };
+        apiKeyBox.PasswordChanged += (_, _) => _keyInputGeneration++;
 
         // Select button — returned to caller for button row layout
         var selectBtn = AppTheme.CreateAccentButton("Continue with Cloud Model");
         selectBtn.Tapped += async (_, _) =>
         {
             // Save and validate any key in the box (same logic as Save button)
-            if (!await SaveAndValidateKeyAsync())
+            var inputAtStart = _keyInputGeneration;
+            if (!await SaveAndValidateKeyAsync() || inputAtStart != _keyInputGeneration)
                 return;
 
             var provider = providers[providerCombo.SelectedIndex];
@@ -1764,13 +1767,15 @@ public sealed class OnboardingPage : Page
             // described that guard until 2026-09-13, and the Done card's copy was written against it.)
             if (_enhancementKeyValidators != null)
             {
+                var inputAtStart = _keyInputGeneration;
                 bool allOk = true;
                 foreach (var validate in _enhancementKeyValidators)
                 {
                     if (!await validate())
                         allOk = false;
                 }
-                if (!allOk)
+                // A provider or key changed while the other row was checked: check it next press.
+                if (!allOk || inputAtStart != _keyInputGeneration)
                     return; // a validator blocked (e.g. just-armed no-key warning) — don't proceed
             }
             ShowStep(7);
@@ -1840,7 +1845,7 @@ public sealed class OnboardingPage : Page
 
             // A finished download is taken into use unless a cloud provider WITH a key was chosen
             // here, so the model the user just downloaded is the one setup ends on.
-            void AdoptDownloaded()
+            void AdoptDownloaded(string? downloadedId)
             {
                 // The service directly, never the shared view model's refresh: setup writes the
                 // service, so that view model can still hold an older provider and would heal its
@@ -1857,7 +1862,11 @@ public sealed class OnboardingPage : Page
                 }
                 var installed = _enhancementModels.OnThisPc?.InstalledModelIds() ?? [];
                 var current = stored == Services.AIEnhancement.AIProvider.OnThisPc ? enhancement.SelectedModel : "";
-                if (installed.Contains(current))
+                // The model just downloaded here is the one setup ends on (Codex diff r1: a rerun kept
+                // the old selection, and with none the first installed model won).
+                if (downloadedId is { } downloaded && installed.Contains(downloaded))
+                    UseBuiltIn(downloaded);
+                else if (installed.Contains(current))
                     refreshBuiltInRows();
                 else if (installed.Count > 0)
                     UseBuiltIn(installed[0]);
@@ -1877,7 +1886,11 @@ public sealed class OnboardingPage : Page
                     UseBuiltIn,
                     _enhancementModels.OnThisPc,
                     AdoptDownloaded,
-                    () => DispatcherQueue.TryEnqueue(RebuildRows)));
+                    () => DispatcherQueue.TryEnqueue(RebuildRows),
+                    // In use: the stored selection, or the active prompt's own model (Codex diff r1).
+                    setupInUse: id => (StoredTextProvider() == Services.AIEnhancement.AIProvider.OnThisPc
+                                       && string.Equals(enhancement.SelectedModel, id, StringComparison.Ordinal))
+                                      || string.Equals(enhancement.ActiveBuiltInModel(), id, StringComparison.Ordinal)));
             }
             refreshBuiltInRows = RebuildRows;
             rowsHost.Loaded += (_, _) => { rowsShown = true; RebuildRows(); };
@@ -2005,6 +2018,7 @@ public sealed class OnboardingPage : Page
             Width = 320
         };
         var (eKeyStatusPanel, SetEnhKeyStatus) = CreateKeyStatusPanel();
+        var (lockProviderBox, unlockProviderBox) = CreateProviderBoxLock(providerCombo);
         var saveKeyBtn = AppTheme.CreateCompactButton("Save", isAccent: true);
 
         var apiKeyRow = new StackPanel
@@ -2029,9 +2043,27 @@ public sealed class OnboardingPage : Page
 
         var enhancement = App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>();
 
+        // Its rows change after a fetch: greyed out until the newest load's rows are in, a
+        // superseded load touches nothing, and the rows never change under an open or closing
+        // drop-down (ComboDropDownGate).
+        var modelLoadGeneration = 0;
+        var modelGate = ComboDropDownGate.For(modelCombo);
+
+        void ShowModels(List<string>? models, int generation)
+        {
+            if (modelGate.TryDefer(() => { if (generation == modelLoadGeneration) ShowModels(models, generation); })) return;
+            modelCombo.ItemsSource = models; // one swap; null empties it
+            if (models is null) return;
+            var currentModel = isImageModels ? enhancement.SelectedImageModel : enhancement.SelectedModel;
+            if (!string.IsNullOrEmpty(currentModel) && models.Contains(currentModel))
+                modelCombo.SelectedItem = currentModel;
+        }
+
         async Task LoadModelsAsync(Services.AIEnhancement.AIProvider provider, List<string>? prefetchedModels = null)
         {
-            modelCombo.Items.Clear();
+            var generation = ++modelLoadGeneration;
+            modelCombo.IsEnabled = false;
+            ShowModels(null, generation);
             modelCombo.PlaceholderText = "Loading models...";
             modelRow.Visibility = Visibility.Visible;
             try
@@ -2044,13 +2076,8 @@ public sealed class OnboardingPage : Page
                             ? global::VoiceWink.Services.AIEnhancement.Providers.ModelCatalogQuery.Image
                             : global::VoiceWink.Services.AIEnhancement.Providers.ModelCatalogQuery.Text,
                         showAll: false, providerOverride: provider);
-                modelCombo.Items.Clear();
-                foreach (var m in models) modelCombo.Items.Add(m);
-
-                var currentModel = isImageModels ? enhancement.SelectedImageModel : enhancement.SelectedModel;
-                if (!string.IsNullOrEmpty(currentModel) && models.Contains(currentModel))
-                    modelCombo.SelectedItem = currentModel;
-
+                if (generation != modelLoadGeneration) return;
+                ShowModels(models, generation);
                 modelCombo.PlaceholderText = models.Count > 0 ? "Select a model" : "No models available";
             }
             catch (Helpers.InvalidApiKeyFormatException ex)
@@ -2061,12 +2088,18 @@ public sealed class OnboardingPage : Page
                 // catch below.
                 Logger.Warning("Stored API key for {Provider} has an invalid format: {Verdict}",
                     ex.Provider, ex.Verdict);
+                if (generation != modelLoadGeneration) return;
                 SetEnhKeyStatus("\uE783", ex.UserMessage, AppTheme.AccentRed, true);
                 modelCombo.PlaceholderText = "Enter a valid API key";
             }
             catch
             {
+                if (generation != modelLoadGeneration) return;
                 modelCombo.PlaceholderText = "Failed to load models";
+            }
+            finally
+            {
+                if (generation == modelLoadGeneration) modelCombo.IsEnabled = true;
             }
         }
 
@@ -2113,6 +2146,13 @@ public sealed class OnboardingPage : Page
             }
         }
 
+        // The Provider box is locked while a key is checked, but picking a built-in model empties
+        // it (clearSelection), so a check can still finish on a row that no longer shows its
+        // provider: the key stays that provider's, and the row's key box, status and model list
+        // are left alone.
+        bool RowShows(Services.AIEnhancement.AIProvider provider)
+            => providerCombo.SelectedItem as string == provider.ToString();
+
         // Shared save-and-validate for both Save button and Continue validator.
         // Returns true if OK to proceed, false if invalid key.
         async Task<bool> SaveAndValidateEnhKeyAsync()
@@ -2129,19 +2169,13 @@ public sealed class OnboardingPage : Page
                 var providerKey = provider.ToString().ToLowerInvariant();
                 var key = apiKeyBox.Password;
 
+                // An empty box never deletes a saved key in setup (ONB-9); keys are removed on the
+
+                // AI Enhancement page.
+
                 if (string.IsNullOrWhiteSpace(key))
-                {
-                    // A clear IS a write, so it claims — this screen has two independent re-entrant
-                    // triggers (the Save button and the Continue validator).
-                    var clearGeneration = _apiKeys.BeginKeyWrite(providerKey);
-                    if (!_apiKeys.TryCommitApiKey(providerKey, "", clearGeneration, out _))
-                    {
-                        Logger.Information("Onboarding key clear for {Provider} superseded by a newer write", provider);
-                        return true; // superseded by a newer write, which owns the slot
-                    }
-                    SetEnhKeyStatus("\uE946", "Key cleared", AppTheme.TextSecondary, true);
+
                     return true;
-                }
 
                 var previousKey = _apiKeys.GetApiKey(providerKey) ?? "";
                 if (key == previousKey)
@@ -2168,6 +2202,7 @@ public sealed class OnboardingPage : Page
                 bool isValid = false;
                 bool couldNotValidate = false;
                 List<string>? fetchedModels = null;
+                lockProviderBox();
                 try
                 {
                     var svc = App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>();
@@ -2198,6 +2233,7 @@ public sealed class OnboardingPage : Page
                     isValid = false;
                 }
                 catch (Exception) { couldNotValidate = true; }
+                finally { unlockProviderBox(); }
 
                 if (isValid || couldNotValidate)
                 {
@@ -2220,6 +2256,7 @@ public sealed class OnboardingPage : Page
                         return false;
                     }
                     committed = true;
+                    if (!RowShows(provider)) return true; // the row no longer shows this provider
 
                     if (isValid)
                     {
@@ -2235,12 +2272,13 @@ public sealed class OnboardingPage : Page
 
                 // Invalid. Nothing was ever written, so there is nothing to restore — the stored
                 // key is already whatever it was before this attempt.
-                if (!_apiKeys.IsCurrentKeyWrite(providerKey, generation))
+                if (!_apiKeys.IsCurrentKeyWrite(providerKey, generation) || !RowShows(provider))
                 {
                     // ENH-17 (Codex round 3): a stale REJECTED validation must not repaint a row
                     // a newer save already owns. NOT cosmetic like the "Validating..." label:
                     // restoring the previous password can empty the box, and the next Continue
                     // press then takes the CLEAR branch and DELETES the newer save's good key.
+                    // The same holds for a row that no longer shows the checked provider (PR #1142).
                     Logger.Information("Onboarding key rejection for {Provider} superseded", providerKey);
                     return false;
                 }
@@ -2270,8 +2308,10 @@ public sealed class OnboardingPage : Page
 
         saveKeyBtn.Tapped += async (_, _) => await SaveAndValidateEnhKeyAsync();
 
+        apiKeyBox.PasswordChanged += (_, _) => _keyInputGeneration++;
         providerCombo.SelectionChanged += async (_, _) =>
         {
+            _keyInputGeneration++;
             if (providerCombo.SelectedItem is string name &&
                 Enum.TryParse<Services.AIEnhancement.AIProvider>(name, out var p))
             {
@@ -2284,7 +2324,10 @@ public sealed class OnboardingPage : Page
                 if (!string.IsNullOrEmpty(_apiKeys.GetApiKey(providerKey)))
                     await LoadModelsAsync(p);
                 else
+                {
+                    modelLoadGeneration++; // a load still in flight for the previous provider lands nowhere
                     modelRow.Visibility = Visibility.Collapsed;
+                }
             }
         };
 
@@ -3482,6 +3525,22 @@ public sealed class OnboardingPage : Page
         }
 
         return (panel, SetStatus);
+    }
+
+    /// <summary>
+    /// Greys out a key row's Provider box while one of its key checks runs (PR #1142). A check
+    /// belongs to the provider it started for; a provider switch during it left the row's key box,
+    /// status and model list showing another provider, which could delete a saved key, overwrite a
+    /// new key with the old one, or let setup move on without checking the key typed for the other
+    /// provider. Counted, because the Save button and Continue can each start a check on one row.
+    /// Used by both key rows, like the status panel above.
+    /// </summary>
+    private static (Action Lock, Action Unlock) CreateProviderBoxLock(ComboBox providerCombo)
+    {
+        var checks = 0;
+        return (
+            () => { if (checks++ == 0) providerCombo.IsEnabled = false; },
+            () => { if (--checks == 0) providerCombo.IsEnabled = true; });
     }
 
     /// <summary>

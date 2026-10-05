@@ -461,14 +461,6 @@ public sealed class SettingsPage : Page
     private bool _micComboSuppress;
     private bool _pageUnloaded;
     private int _micSelectionGen;
-    // AUD-7: a snapshot whose swap was DEFERRED because the popup was open when the enumeration
-    // landed. Assigning ItemsSource under a live popup destroys the item containers it is
-    // rendering, and WinUI closes the dropdown — which is exactly what refresh-on-open did (the
-    // list "flashed" and shut). The ENH-7 rule (ONE swap, never Clear+Add) was never the problem
-    // and is unchanged; only the TIMING moved. The generation fence is re-checked at APPLY time,
-    // not just at capture time, because a user selection made while the popup was open both
-    // closes the dropdown and supersedes this snapshot.
-    private (int Gen, IReadOnlyList<MicComboItem> Items, int SelectedIndex, string? ResolvedLabel)? _micPendingSnapshot;
 
     /// <summary>AUD-1: the Microphone dropdown — "System default" first (the default), then the
     /// active capture devices, plus a synthetic "(unavailable)" entry for a pinned-but-absent
@@ -550,12 +542,10 @@ public sealed class SettingsPage : Page
             _micComboSuppress = false;
         }
 
+        // Taken before the refresh-on-open handler so the gate sees every opening: a list the
+        // enumeration returns while the dropdown is open is applied once it has closed (AUD-7).
+        ComboDropDownGate.For(combo);
         combo.DropDownOpened += async (_, _) => await RefreshMicrophoneComboAsync(combo, resolvedBlock);
-        // AUD-7: apply whatever the open-triggered enumeration produced, now that the popup is
-        // gone. This is also what keeps refresh-on-open MEANINGFUL after the deferral: without
-        // it a snapshot taken while open would be dropped, and a device plugged in mid-session
-        // would never appear at all.
-        combo.DropDownClosed += (_, _) => ApplyPendingMicrophoneSnapshot(combo, resolvedBlock);
         Unloaded += (_, _) => _pageUnloaded = true;
         _ = RefreshMicrophoneComboAsync(combo, resolvedBlock);
 
@@ -595,34 +585,22 @@ public sealed class SettingsPage : Page
             if (_pageUnloaded) return;            // resumed after navigation away — stale UI
             if (gen != _micSelectionGen) return;  // user picked meanwhile — this snapshot is stale
 
-            // AUD-7: never swap under a live popup — it closes the dropdown. Park it instead;
-            // DropDownClosed applies it. If the user already closed the dropdown (or this is the
-            // build-time refresh), IsDropDownOpen is false and the swap lands immediately, which
-            // is the pre-AUD-7 path unchanged.
-            if (combo.IsDropDownOpen)
+            // AUD-7: never swap under a live popup (it shut the list on refresh-on-open; rows replaced
+            // under an open drop-down can also crash WinUI). The gate applies it after the close; both
+            // fences are re-checked then, because a pick from the open list closes it AND supersedes
+            // this snapshot.
+            void Apply()
             {
-                _micPendingSnapshot = (gen, items, selectedIndex, resolvedLabel);
-                return;
+                if (_pageUnloaded || gen != _micSelectionGen) return;
+                ApplyMicrophoneSnapshot(combo, resolvedBlock, items, selectedIndex, resolvedLabel);
             }
-
-            ApplyMicrophoneSnapshot(combo, resolvedBlock, items, selectedIndex, resolvedLabel);
+            if (ComboDropDownGate.For(combo).TryDefer(Apply)) return;
+            Apply();
         }
         catch (Exception ex)
         {
             Logger.Warning(ex, "Microphone list refresh failed");
         }
-    }
-
-    /// <summary>AUD-7: the deferred half of <see cref="RefreshMicrophoneComboAsync"/>. Re-checks
-    /// BOTH fences at apply time — the page may have unloaded while the popup was open, and a
-    /// selection made from the open dropdown bumps the generation, which must win over the
-    /// snapshot that was captured before it.</summary>
-    private void ApplyPendingMicrophoneSnapshot(ComboBox combo, TextBlock resolvedBlock)
-    {
-        if (_micPendingSnapshot is not { } pending) return;
-        _micPendingSnapshot = null;
-        if (_pageUnloaded || pending.Gen != _micSelectionGen) return;
-        ApplyMicrophoneSnapshot(combo, resolvedBlock, pending.Items, pending.SelectedIndex, pending.ResolvedLabel);
     }
 
     /// <summary>AUD-17: render the resolved-device line on the block the CALLER owns, or hide it.

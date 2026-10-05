@@ -3369,10 +3369,11 @@ public partial class App : Application, Services.IAppLifetime
         // Model dropdown
         var modelCombo = new ComboBox
         {
-            IsEditable = true,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             PlaceholderText = "Loading models..."
         };
+        // Its rows change after a fetch; never under an open or closing drop-down.
+        var modelGate = ComboDropDownGate.For(modelCombo);
 
         // Helper: refresh model list for selected provider.
         // Generation counter prevents stale results when user switches providers rapidly.
@@ -3418,20 +3419,28 @@ public partial class App : Application, Services.IAppLifetime
             var gen = ++refreshGen;
             userAdjustedModel = false;
             modelCombo.IsEnabled = false;
-            var providerName = providerCombo.SelectedItem as string ?? "";
-            if (!AIProviderDisplay.TryParse(providerName, out var selProvider))
+
+            // Never new rows under an open or closing drop-down (ComboDropDownGate): a change that
+            // arrives then is replayed after the close, unless a newer refresh owns the box by then.
+            void ClearModelRows()
             {
+                if (modelGate.TryDefer(() => { if (gen == refreshGen && !dialogClosed) ClearModelRows(); })) return;
                 suppressModelTracking = true;
                 try
                 {
                     // Single ItemsSource swap, never Items.Clear()+Add loop: churning a
-                    // live IsEditable combo's item collection corrupts native combo/popup
+                    // live combo's item collection corrupts native combo/popup
                     // state (the PR #163 0x80070490 class). ItemsSource=null empties it in
                     // one step.
                     modelCombo.ItemsSource = null;
-                    modelCombo.Text = "";
                 }
                 finally { suppressModelTracking = false; }
+            }
+
+            var providerName = providerCombo.SelectedItem as string ?? "";
+            if (!AIProviderDisplay.TryParse(providerName, out var selProvider))
+            {
+                ClearModelRows();
                 modelCombo.PlaceholderText = "Invalid provider";
                 modelCombo.IsEnabled = true;
                 modelsAvailable = false;
@@ -3439,17 +3448,11 @@ public partial class App : Application, Services.IAppLifetime
                 return;
             }
 
-            // Clear the editable Text too: free text typed for the PRIOR provider must not
-            // survive a provider switch (cross-provider model ids 404 — the same bug class
-            // PromptModelOverridePolicy fixed in the Configure dialog) nor satisfy the
-            // confirm gate while the new provider's list is still loading.
-            suppressModelTracking = true;
-            try
-            {
-                modelCombo.ItemsSource = null; // single swap (see above)
-                modelCombo.Text = "";
-            }
-            finally { suppressModelTracking = false; }
+            // Emptied, so the PRIOR provider's model cannot survive a provider switch
+            // (cross-provider model ids 404 — the same bug class PromptModelOverridePolicy
+            // fixed in the Configure dialog) nor satisfy the confirm gate while the new
+            // provider's list is still loading.
+            ClearModelRows();
             modelCombo.PlaceholderText = "Loading models...";
             // Disable confirm while a provider's models load so the user can't commit a stale
             // selection mid-switch; re-enabled below once the new model list arrives.
@@ -3465,6 +3468,7 @@ public partial class App : Application, Services.IAppLifetime
             // single ItemsSource swap, UX-1 pre-select, confirm gate, IMG-5 re-gate.
             void BindModels(IReadOnlyList<string> filtered)
             {
+                if (modelGate.TryDefer(() => { if (gen == refreshGen && !dialogClosed) BindModels(filtered); })) return;
                 suppressModelTracking = true;
                 try
                 {
@@ -3559,26 +3563,13 @@ public partial class App : Application, Services.IAppLifetime
 
         // UX-1 intent + confirm-gate wiring. SelectionChanged marks user intent only outside
         // programmatic mutations; it ALWAYS recomputes the confirm gate so programmatic
-        // selection updates button state too. TextSubmitted fires on Enter or focus move for
-        // typed text; LostFocus is the belt for typed-text-then-click-Generate (the first
-        // click lands on a still-disabled button, focus loss enables it).
+        // selection updates button state too.
         modelCombo.SelectionChanged += (_, _) =>
         {
             if (!suppressModelTracking)
                 userAdjustedModel = true;
             updateConfirmEnabled?.Invoke();
         };
-        modelCombo.TextSubmitted += (_, _) =>
-        {
-            userAdjustedModel = true;
-            updateConfirmEnabled?.Invoke();
-            // A typed model raises no SelectionChanged, so the option gating must re-run here too
-            // (IMG-5). Folded into this handler rather than a second TextSubmitted registration —
-            // one "model committed" event deserves one reaction (Kimi diff r4). Late-bound because
-            // the option controls do not exist yet at this point in the builder.
-            regateImageOptions?.Invoke();
-        };
-        modelCombo.LostFocus += (_, _) => updateConfirmEnabled?.Invoke();
 
         // Wire provider change → refresh models
         providerCombo.SelectionChanged += async (_, _) =>
@@ -3762,7 +3753,7 @@ public partial class App : Application, Services.IAppLifetime
             // PERSISTED model. On OpenRouter that let the dialog describe gpt-image-2 while the
             // generation ran krea.
             var model = ImageOptionGating.ResolveGatingModel(
-                modelCombo.SelectedItem as string ?? modelCombo.Text,
+                modelCombo.SelectedItem as string,
                 capturedContext.PreviousModel,
                 enhancement.ResolveEffectiveImageModel(capturedContext.Prompt, provider));
             return (provider, model);
@@ -4256,8 +4247,8 @@ public partial class App : Application, Services.IAppLifetime
         // UI-19: a re-gate that arrives while one of these rows has its dropdown OPEN is replayed
         // at that dropdown's close instead of swapping the rows under the popup — the cache-MISS
         // BindModels lands whenever the network answers, which on the first dialog of a session
-        // can be mid-pick. See ComboRegateDeferral.
-        var regateDeferral = new ComboRegateDeferral(aspectCombo, sizeCombo, qualityCombo);
+        // can be mid-pick. See ComboDropDownGate.
+        ComboDropDownGate.Watch(aspectCombo, sizeCombo, qualityCombo);
 
         // Refresh aspect / size / quality dropdowns + visibility for the current selection.
         // Called on initial show and on every provider/model change so the user only sees
@@ -4268,7 +4259,8 @@ public partial class App : Application, Services.IAppLifetime
                 || aspectLabel == null || sizeLabel == null || qualityLabel == null) return;
             // Fenced like every other post-await path in this builder: a Hide() with a dropdown
             // open raises its DropDownClosed, and the replay must not touch detached controls.
-            if (regateDeferral.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); })) return;
+            if (ComboDropDownGate.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); },
+                    aspectCombo, sizeCombo, qualityCombo)) return;
 
             // IMG-5: gate against the model the run will ACTUALLY use, and against what THAT model
             // publishes. `enhancement` is already resolved at the top of this method — no second
@@ -4352,10 +4344,6 @@ public partial class App : Application, Services.IAppLifetime
         regateImageOptions = RefreshImageOptionGating;
         providerCombo.SelectionChanged += (_, _) => RefreshImageOptionGating();
         modelCombo.SelectionChanged += (_, _) => RefreshImageOptionGating();
-        // A TYPED model raises no SelectionChanged (IMG-5, Codex plan review). Folded into the
-        // existing confirm-gate TextSubmitted handler above rather than registered separately —
-        // two subscriptions reacting to one "model committed" event is a readability trap
-        // (Kimi diff r4).
 
         // Height-flexible scroller: the form's natural height varies (reference thumbnail,
         // per-model option gating) and a bare StackPanel CLIPPED the button row when it exceeded
@@ -4430,7 +4418,7 @@ public partial class App : Application, Services.IAppLifetime
         // Composed confirm rule: models loaded AND non-empty input text (IMG-1 — the
         // text-first entry starts empty; a redo's pre-filled text satisfies it as before).
         bool HasUsableModelSelection() =>
-            !string.IsNullOrWhiteSpace(modelCombo.SelectedItem as string ?? modelCombo.Text);
+            !string.IsNullOrWhiteSpace(modelCombo.SelectedItem as string);
         updateConfirmEnabled = () =>
         {
             if (dialogRef != null)
@@ -4500,7 +4488,7 @@ public partial class App : Application, Services.IAppLifetime
         if (result != ContentDialogResult.Primary)
             return null; // user cancelled
 
-        var selectedModel = modelCombo.SelectedItem as string ?? modelCombo.Text;
+        var selectedModel = modelCombo.SelectedItem as string;
         if (string.IsNullOrWhiteSpace(selectedModel))
             return null; // no usable model (combo cleared / none loaded) — treat as cancel so
                          // callers never proceed with a provider/model mismatch

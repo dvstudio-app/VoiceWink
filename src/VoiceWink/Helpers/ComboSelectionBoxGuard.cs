@@ -47,9 +47,12 @@ namespace VoiceWink.Helpers;
 /// do it, the presenter part set directly — the same two properties WinUI's own code sets. Each step
 /// logs what it found.</para>
 ///
-/// <para><b>Ordering with a deferred re-gate.</b> <see cref="ComboRegateDeferral"/> replays a
+/// <para><b>Ordering with a deferred re-gate.</b> <see cref="ComboDropDownGate"/> replays a
 /// re-gate that arrived under an open dropdown at Normal priority from the same close, so the
-/// swap lands first and this Low-priority re-assert stays the last word on the box.</para>
+/// swap lands first and this Low-priority re-assert stays the last word on the box. A box
+/// reopened before the re-assert runs skips it: WinUI empties the closed box while the list is
+/// open, so a reading then would log a blank that is not there. The next close schedules
+/// another.</para>
 /// </summary>
 internal static class ComboSelectionBoxGuard
 {
@@ -64,9 +67,15 @@ internal static class ComboSelectionBoxGuard
     internal static void Attach(
         ComboBox combo, string name, global::System.Func<global::System.IDisposable>? populateScope = null)
     {
+        var gate = ComboDropDownGate.For(combo);
         combo.DropDownClosed += (_, _) =>
             combo.DispatcherQueue.TryEnqueue(
-                DispatcherQueuePriority.Low, () => Reassert(combo, name, populateScope));
+                DispatcherQueuePriority.Low, () =>
+                {
+                    // Reopened before this ran: the box is open again, and its next close
+                    // schedules another re-assert.
+                    if (!gate.IsBusy) Reassert(combo, name, populateScope);
+                });
     }
 
     private static void Reassert(
@@ -293,60 +302,5 @@ internal static class ComboSelectionBoxGuard
             if (found != null) return found;
         }
         return null;
-    }
-}
-
-/// <summary>
-/// Holds an image-option re-gate back while one of its rows has its dropdown OPEN, and replays it
-/// once that dropdown closes (UI-19).
-///
-/// <para><b>The scenario.</b> On the FIRST options dialog of a session the model list is not
-/// cached, so <c>BindModels</c> lands whenever the network answers — after the dialog is up, at a
-/// moment the user may be inside a dropdown. It then re-gates the aspect / size / quality rows,
-/// which swaps their <c>ItemsSource</c> under the open popup. The dialog's own comment on the
-/// cache-hit branch already names a swap under a live popup as the <c>0x800F1000</c> crash
-/// surface and keeps the BACKGROUND refresh away from it; the miss path had no such fence. Every
-/// later open binds from the cache, synchronously, before the dialog shows — which is why the
-/// owner met this on the first open only.</para>
-///
-/// <para>Deferred, not dropped: the replay runs at Normal priority from the closing dropdown's
-/// <c>DropDownClosed</c>, so the user's pick has landed and the re-gate carries it forward — an
-/// explicit Auto included, which is why both callers read the row through
-/// <c>AppTheme.TryGetSelectedIndicatorTag</c> (IMG-17): a replay right after a pick is exactly
-/// the state where the old <c>SelectedIndicatorTag ?? saved</c> chain re-seeded a just-cleared
-/// row from the saved tag. <see cref="ComboSelectionBoxGuard"/>'s Low-priority re-assert still
-/// runs after the replay. Repeat arrivals while the popup stays open coalesce into one replay,
-/// and each caller fences the replay on its dialog's closed flag — best-effort ordering, not a
-/// proven interlock: during <c>Hide()</c> the dropdown's <c>DropDownClosed</c> plausibly precedes
-/// <c>ContentDialog.Closed</c>, so a replay can still re-gate a dialog that is tearing down; the
-/// cost is one wasted repopulate of controls about to detach (Kimi, UI-19 round 1).</para>
-/// </summary>
-internal sealed class ComboRegateDeferral
-{
-    private readonly ComboBox?[] _rows;
-    private bool _pending;
-
-    internal ComboRegateDeferral(params ComboBox?[] rows) => _rows = rows;
-
-    /// <returns>True when the re-gate was deferred (the caller returns without re-gating).</returns>
-    internal bool TryDefer(global::System.Action regate)
-    {
-        ComboBox? open = null;
-        foreach (var row in _rows)
-        {
-            if (row is { IsDropDownOpen: true }) { open = row; break; }
-        }
-        if (open == null) return false;
-        if (_pending) return true;
-
-        _pending = true;
-        void OnClosed(object? _, object __)
-        {
-            open.DropDownClosed -= OnClosed;
-            _pending = false;
-            open.DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Normal, () => regate());
-        }
-        open.DropDownClosed += OnClosed;
-        return true;
     }
 }

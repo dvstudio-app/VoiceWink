@@ -13,8 +13,8 @@ namespace VoiceWink.Views.Pages;
 /// (owner, 2026-10-04: the single card holding every row read as one big block): a status icon, name
 /// and size, the Accuracy / Speed stars, and Download ⇄ Cancel, Select / Active, Delete on the right.
 /// Shown on the AI Enhancement page under "Built-in Models" and in setup's AI step.
-/// <para>The model <see cref="LocalModelRecommendation"/> picks for this PC comes first, tagged "Best
-/// for this PC"; the others follow largest first. Every decision lives in the catalog, the
+/// <para>The rows follow <see cref="LocalModelRecommendation.DisplayOrder"/> (most accurate first); the
+/// model the recommendation picks for this PC is tagged "Best for this PC" in place. Every decision lives in the catalog, the
 /// store, the recommendation and the engine host — a finished download starts its first-use check,
 /// a delete stops the engine first. Only plain controls the page already renders (Border, Grid,
 /// StackPanel, TextBlock, ProgressBar).</para>
@@ -23,13 +23,15 @@ internal static class LocalModelsSection
 {
     /// <param name="isSelected">Whether a model id is the provider's selected model.</param>
     /// <param name="select">Makes an installed model the selected one.</param>
-    /// <param name="changed">A download finished or a model was deleted.</param>
+    /// <param name="changed">A download finished (its model id) or a model was deleted (null).</param>
     /// <param name="measured">A first-use check settled: its time now decides the stars and the pick.</param>
     /// <param name="notice">The page's "speed ratings were updated" tracker; null shows no line.</param>
+    /// <param name="setupInUse">Setup's AI step: shows only the model for this PC plus the models this
+    /// says are in use, not all four. Null shows every model.</param>
     internal static UIElement Build(LocalModelStore store, LocalHardwareProfile profile,
         Func<string, bool> isSelected, Action<string> select,
-        OnThisPcEngine? engine = null, Action? changed = null, Action? measured = null,
-        SpeedRatingsNotice.Tracker? notice = null)
+        OnThisPcEngine? engine = null, Action<string?>? changed = null, Action? measured = null,
+        SpeedRatingsNotice.Tracker? notice = null, Func<string, bool>? setupInUse = null)
     {
         // Captured BEFORE the measurements are read, so a timing stored in between is not missed.
         var nextSpeedMeasured = engine?.NextSpeedMeasured;
@@ -72,7 +74,9 @@ internal static class LocalModelsSection
         if (measured is not null && nextSpeedMeasured is { } speedMeasured)
             RefreshWhenMeasured(speedMeasured, measured);
 
-        var ordered = LocalModelRecommendation.DisplayOrder(recommended);
+        var ordered = setupInUse is not null
+            ? LocalModelRecommendation.SetupOffer(recommended, setupInUse)
+            : LocalModelRecommendation.DisplayOrder();
         for (var i = 0; i < ordered.Count; i++)
         {
             var entry = ordered[i];
@@ -113,7 +117,7 @@ internal static class LocalModelsSection
         TextWrapping = TextWrapping.Wrap,
     };
 
-    private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action? changed, Action? measured,
+    private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action<string?>? changed, Action? measured,
         LocalModelEntry entry, bool isRecommended, string? floorNote, LocalModelRecommendation.TierSpeed tierSpeed,
         Func<string, bool> isSelected, Action<string> select)
     {
@@ -289,7 +293,7 @@ internal static class LocalModelsSection
                     engine?.StartFirstUseCheck(entry.Id);
                     if (measured is not null && engine?.WhenFirstUseCheckSettledAsync(entry.Id) is { } running)
                         RefreshWhenMeasured(running, measured);
-                    changed?.Invoke();
+                    changed?.Invoke(entry.Id);
                 }
             }
             catch (OperationCanceledException) when (attempt.IsCancellationRequested)
@@ -359,7 +363,7 @@ internal static class LocalModelsSection
                 : await Task.Run(() => engine.DeleteModelAsync(entry.Id, () => store.Delete(entry.Id)));
             ShowStatus(gone ? null : "Couldn't delete — the file is in use.");
             Render();
-            changed?.Invoke();
+            changed?.Invoke(null);
         };
 
         Render();

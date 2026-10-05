@@ -179,6 +179,16 @@ internal sealed class LlamaServerProcess
         }
     }
 
+    /// <summary>The live child: the model it serves, whether it shows GPU evidence, and its device
+    /// name; null when no child is running. Lock-free; a torn read can only refuse.</summary>
+    internal (string ModelIdentity, bool OnGpu, string? DeviceName)? LiveChild()
+    {
+        var resident = Volatile.Read(ref _resident);
+        if (resident is null || resident.Child.HasExited)
+            return null;
+        return (resident.ModelIdentity, resident.OnGpu, resident.Child.ObservedDevice?.Name);
+    }
+
     /// <summary>The live child's device evidence for <paramref name="generation"/>, or null when that
     /// generation is not the live one. Lock-free; a torn read can only refuse.</summary>
     internal (string? DeviceToken, string? DeviceName)? ObservedFor(int generation)

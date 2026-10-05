@@ -14,8 +14,8 @@ internal enum ImageModelSource
 
     /// <summary>
     /// The per-provider persisted setting (<c>AppDefaults.AiImageModelKey</c>). The ONLY healable
-    /// source — but note it is NOT the same as "not chosen by the user": the editable
-    /// "Select or type an image model" field and the options dialog's confirm path both write here.
+    /// source — but note it is NOT the same as "not chosen by the user": the AI Enhancement page's
+    /// image model box and the options dialog's confirm path both write here.
     /// </summary>
     PersistedProviderSetting,
 

@@ -360,7 +360,7 @@ public sealed class EnhancementPage : Page
             return (wrapper, combo);
         }
 
-        // ── Helper: create an editable model combo bound to a model list ──
+        // ── Helper: create a pick-only model combo bound to a model list ──
         ComboBox CreateModelCombo(
             string placeholder,
             Func<string> getCurrent,
@@ -370,7 +370,6 @@ public sealed class EnhancementPage : Page
         {
             var combo = new ComboBox
             {
-                IsEditable = true,
                 PlaceholderText = placeholder,
                 Width = 280,
                 HorizontalAlignment = HorizontalAlignment.Left
@@ -379,17 +378,33 @@ public sealed class EnhancementPage : Page
 
             var suppress = false;
 
+            // Stale fence for queued callbacks: the generation catches a BuildUI rebuild
+            // (bumped synchronously — IsLoaded lags, Unloaded dispatch is async), IsLoaded
+            // catches nav-away. A skipped refresh is recovered by the combo's own Loaded
+            // handler below, which re-runs the full suppressed refresh.
+            var generation = _uiGeneration;
+            bool IsStale() => generation != _uiGeneration || !combo.IsLoaded;
+
+            // A fetch or a key check can land while the list is open: the change then waits for
+            // the close and runs as a full refresh (ComboDropDownGate).
+            var dropDownGate = ComboDropDownGate.For(combo);
+            void RefreshAfterClose()
+            {
+                if (!IsStale()) RefreshItems();
+            }
+
             void ApplyCurrent()
             {
                 var cur = getCurrent();
-                if (combo.Items.Contains(cur))
-                    combo.SelectedItem = cur;
-                else
-                    combo.Text = cur;
+                combo.SelectedItem = combo.Items.Contains(cur) ? cur : null;
             }
 
             void ApplyCurrentSuppressed()
             {
+                if (dropDownGate.TryDefer(RefreshAfterClose)) return;
+                // A model the rows do not hold yet (a provider switch sets it before the list
+                // changes) needs the rows rebuilt so the box can show it.
+                if (!combo.Items.Contains(getCurrent())) { RefreshItems(); return; }
                 suppress = true;
                 try { ApplyCurrent(); }
                 finally { suppress = false; }
@@ -397,6 +412,7 @@ public sealed class EnhancementPage : Page
 
             void RefreshItems()
             {
+                if (dropDownGate.TryDefer(RefreshAfterClose)) return;
                 // Full-body suppress, ApplyCurrent included: the reselect is just as
                 // programmatic as the repopulate — unsuppressed it writes back into the
                 // VM's selected model mid-refresh.
@@ -404,24 +420,24 @@ public sealed class EnhancementPage : Page
                 try
                 {
                     // Single ItemsSource swap, never Items.Clear()+Add loop: churning a
-                    // live IsEditable combo's item collection corrupts native combo/popup
+                    // live combo's item collection corrupts native combo/popup
                     // state (the PR #163 0x80070490 class — this site was its LAST
                     // holdout, and crashed live on 2026-07-30 after a rapid provider
                     // cycle + first-key save; the coalescing below bounds how often a
                     // refresh runs, but only the atomic swap makes the refresh itself
                     // safe). Snapshot then assign once.
-                    combo.ItemsSource = models.ToList();
+                    var rows = models.ToList();
+                    // The box is pick-only, so a saved model the list does not hold (hidden by
+                    // curation, retired, typed before 2026-10-04, or a list still loading) is
+                    // kept as the first row: the box shows the model in use.
+                    var cur = getCurrent();
+                    if (!string.IsNullOrEmpty(cur) && !rows.Contains(cur))
+                        rows.Insert(0, cur);
+                    combo.ItemsSource = rows;
                     ApplyCurrent();
                 }
                 finally { suppress = false; }
             }
-
-            // Stale fence for queued callbacks: the generation catches a BuildUI rebuild
-            // (bumped synchronously — IsLoaded lags, Unloaded dispatch is async), IsLoaded
-            // catches nav-away. A skipped refresh is recovered by the combo's own Loaded
-            // handler below, which re-runs the full suppressed refresh.
-            var generation = _uiGeneration;
-            bool IsStale() => generation != _uiGeneration || !combo.IsLoaded;
 
             // Coalesce CollectionChanged bursts (a provider switch fires many: Clear at
             // switch + the fetch's repopulate) into ONE queued refresh — per-event
@@ -449,7 +465,6 @@ public sealed class EnhancementPage : Page
             // be lost for good — entering the tree always converges to the VM's current list.
             combo.Loaded += (_, _) => RefreshItems();
 
-            combo.TextSubmitted += (_, args) => setCurrent(args.Text);
             combo.SelectionChanged += (_, _) =>
             {
                 if (!suppress && combo.SelectedItem is string selected)
@@ -499,7 +514,7 @@ public sealed class EnhancementPage : Page
         };
 
         var modelCombo = CreateModelCombo(
-            "Select or type a model name",
+            "Select a model",
             () => _viewModel.SelectedModel,
             v => _viewModel.SelectedModel = v,
             _viewModel.AvailableModels,
@@ -585,7 +600,7 @@ public sealed class EnhancementPage : Page
         };
 
         var imageModelCombo = CreateModelCombo(
-            "Select or type an image model",
+            "Select an image model",
             () => _viewModel.SelectedImageModel,
             v => _viewModel.SelectedImageModel = v,
             _viewModel.AvailableImageModels,
@@ -678,9 +693,37 @@ public sealed class EnhancementPage : Page
         // The rows are built only while their host is on screen: building them records the shown
         // speed ratings, so a page built but never displayed (a failed attach, a queued refresh
         // after the user left) would spend the "updated" line unseen (Codex diff r2/r3).
+        // The Models page's status line under the GPU switch, here about the built-in AI model in use
+        // (owner, 2026-10-04): secondary text, collapsed when there is nothing to say.
+        var gpuStatusLine = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.TextSecondary),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+            Visibility = Visibility.Collapsed,
+        };
+        void ApplyGpuStatusLine()
+        {
+            var modelId = _enhancement.ActiveBuiltInModel();
+            var model = modelId is null ? null : LocalModelCatalog.Find(modelId)?.DisplayName;
+            var line = model is null || _viewModel.OnThisPc is not { } onThisPc
+                ? null
+                : BuiltInGpuStatus.Decide(model, _viewModel.GpuAccelerationEnabled, onThisPc.ComputeFacts(modelId!));
+            gpuStatusLine.Text = line ?? string.Empty;
+            gpuStatusLine.Visibility = line is null ? Visibility.Collapsed : Visibility.Visible;
+        }
         var localRowsShown = false;
-        localModelsHost.Loaded += (_, _) => { localRowsShown = true; ApplyOnThisPcRows(); };
-        localModelsHost.Unloaded += (_, _) => localRowsShown = false;
+        // The engine raises no event when its child loads or exits, so the line is re-read while the
+        // section is on screen (Codex diff r1: a dead child otherwise left the tick standing).
+        var gpuStatusRefresh = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        gpuStatusRefresh.Tick += (_, _) =>
+        {
+            if (localRowsShown && localRowsGeneration == _uiGeneration)
+                ApplyGpuStatusLine();
+        };
+        localModelsHost.Loaded += (_, _) => { localRowsShown = true; ApplyOnThisPcRows(); gpuStatusRefresh.Start(); };
+        localModelsHost.Unloaded += (_, _) => { localRowsShown = false; gpuStatusRefresh.Stop(); };
         void RebuildLocalModelRows()
         {
             if (!localRowsShown || localRowsGeneration != _uiGeneration)
@@ -692,7 +735,7 @@ public sealed class EnhancementPage : Page
                 id => _enhancement.SelectedProvider == AIProvider.OnThisPc
                       && string.Equals(_enhancement.SelectedModel, id, StringComparison.Ordinal),
                 _viewModel.UseBuiltInModel,
-                _viewModel.OnThisPc, _viewModel.RefreshOnThisPcModels,
+                _viewModel.OnThisPc, _ => _viewModel.RefreshOnThisPcModels(),
                 () => DispatcherQueue.TryEnqueue(ApplyOnThisPcRows),
                 speedNotice));
         }
@@ -714,6 +757,7 @@ public sealed class EnhancementPage : Page
             modelCombo.Visibility = keyRows;
             builtInActive.Visibility = builtInInUse ? Visibility.Visible : Visibility.Collapsed;
             providerActive.Visibility = builtInInUse ? Visibility.Collapsed : Visibility.Visible;
+            ApplyGpuStatusLine();
             RebuildLocalModelRows();
         }
         ApplyOnThisPcRows();
@@ -765,11 +809,15 @@ public sealed class EnhancementPage : Page
         {
             var gpuPresentation = GpuToggleAvailability.Decide(GpuToggleAvailability.Current, _viewModel.GpuAccelerationEnabled);
             sections.Children.Add(AppTheme.CreateSectionHeader("Built-in Models", builtInActive));
-            sections.Children.Add(AppTheme.CreateCard(GpuAccelerationRow.Build(gpuPresentation, isOn => GpuAccelerationRow.Apply(isOn,
+            var gpuCardContent = new StackPanel { Spacing = 4 };
+            gpuCardContent.Children.Add(GpuAccelerationRow.Build(gpuPresentation, isOn => GpuAccelerationRow.Apply(isOn,
                 () => _viewModel.GpuAccelerationEnabled,
                 value => _viewModel.GpuAccelerationEnabled = value,
                 _viewModel.AppRestart,
-                () => XamlRoot))));
+                () => XamlRoot,
+                ApplyGpuStatusLine)));
+            gpuCardContent.Children.Add(gpuStatusLine);
+            sections.Children.Add(AppTheme.CreateCard(gpuCardContent));
             sections.Children.Add(localModelsHost);
             sections.Children.Add(AppTheme.CreateSectionHeader("Cloud or Your Own Server", providerActive));
         }
@@ -2056,20 +2104,11 @@ public sealed class EnhancementPage : Page
             const string defaultModelLabel = "(Default \u2014 uses main selection)";
             var modelCombo = new ComboBox
             {
-                IsEditable = true,
                 PlaceholderText = defaultModelLabel,
                 Width = 320
             };
             AppTheme.AllowParentScroll(modelCombo);
-
-            var modelHint = new TextBlock
-            {
-                Text = "Select (Default) or clear the text to use the main model. Pick or type a model to override.",
-                FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.DimText),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 4, 0, 0)
-            };
+            var modelGate = ComboDropDownGate.For(modelCombo);
 
             // ── Image Aspect ────────────────────────────────────────────────
             var aspectLabel = new TextBlock
@@ -2164,14 +2203,14 @@ public sealed class EnhancementPage : Page
             // "unknown" — capability defaults will apply per the provider's typical model).
             string? EffectiveModel()
             {
-                var raw = modelCombo.SelectedItem as string ?? modelCombo.Text;
+                var raw = modelCombo.SelectedItem as string;
                 if (string.IsNullOrEmpty(raw) || raw == defaultModelLabel) return null;
                 return raw;
             }
 
             // UI-19: RefreshModelOptions re-gates after its fetch, which can land while one of
-            // these rows has its dropdown open; the replay waits for that close. See ComboRegateDeferral.
-            var regateDeferral = new ComboRegateDeferral(aspectCombo, sizeCombo, qualityCombo);
+            // these rows has its dropdown open; the replay waits for that close (ComboDropDownGate).
+            ComboDropDownGate.Watch(aspectCombo, sizeCombo, qualityCombo);
 
             // Re-filter the aspect / size / quality dropdowns based on the resolved provider+model.
             // Also toggles visibility of the Size + Quality sub-sections when the model doesn't
@@ -2179,7 +2218,8 @@ public sealed class EnhancementPage : Page
             void RefreshImageOptionGating()
             {
                 if (typeCombo.SelectedIndex != 1) return; // only meaningful on the image branch
-                if (regateDeferral.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); })) return;
+                if (ComboDropDownGate.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); },
+                        aspectCombo, sizeCombo, qualityCombo)) return;
                 var provider = EffectiveProvider();
                 // IMG-5: "(Default)" must gate against the model the RUNTIME would pick, not the
                 // provider's hardcoded default. Resolved with a NULL prompt deliberately — that is
@@ -2309,9 +2349,6 @@ public sealed class EnhancementPage : Page
             // applies — re-filter on every change.
             providerCombo.SelectionChanged += (_, _) => RefreshImageOptionGating();
             modelCombo.SelectionChanged    += (_, _) => RefreshImageOptionGating();
-            // NOTE: typed models are handled by the TextSubmitted handler further down, which
-            // already re-gates AND updates pendingModelOverride. Do not add a second registration
-            // here — it fires the same idempotent refresh twice per commit.
 
             // ── Model list refresh logic ─────────────────────────────────
             // The dialog tracks its LIVE model choice (pendingModelOverride) and routes
@@ -2344,34 +2381,17 @@ public sealed class EnhancementPage : Page
 
             // User-driven changes update the pending choice; programmatic mutations
             // during a refresh are excluded via suppressModelTracking (the ItemsSource
-            // swap / SelectedIndex / Text assignments raise SelectionChanged too).
+            // swap and the SelectedIndex / SelectedItem assignments raise SelectionChanged too).
             modelCombo.SelectionChanged += (_, _) =>
             {
                 if (suppressModelTracking) return;
                 pendingModelOverride = NormalizeModel(modelCombo.SelectedItem as string);
-            };
-            // Editable combo: typed (unlisted) models arrive via TextSubmitted, which
-            // also affects the image aspect/tier/quality gating.
-            modelCombo.TextSubmitted += (_, args) =>
-            {
-                if (suppressModelTracking) return;
-                pendingModelOverride = NormalizeModel(args.Text);
-                RefreshImageOptionGating();
             };
 
             async void RefreshModelOptions()
             {
                 int gen = ++refreshGeneration;
                 var nextContext = CurrentContext();
-
-                // Fold the combo's LIVE state (typed-but-uncommitted text included —
-                // TextSubmitted only fires on commit) into the pending value before
-                // deciding, so a provider/type switch mid-edit judges what the user
-                // actually sees (Codex diff round 1). Skipped while the combo is
-                // still unpopulated (the dialog's very first refresh): the empty
-                // combo would wipe the saved override before it is ever shown.
-                if (modelCombo.Items.Count > 0)
-                    pendingModelOverride = NormalizeModel(modelCombo.SelectedItem as string ?? modelCombo.Text);
 
                 List<string> models;
                 if (nextContext.ProviderOverride is not { } provider)
@@ -2381,12 +2401,18 @@ public sealed class EnhancementPage : Page
                 }
                 else
                 {
-                    // Fetch models for the overridden provider
+                    // Fetch models for the overridden provider, greyed out meanwhile so the previous
+                    // provider's rows cannot be picked (the image options dialog does the same).
                     modelCombo.PlaceholderText = "Loading models\u2026";
+                    modelCombo.IsEnabled = false;
                     models = await _viewModel.FetchModelsForProviderAsync(provider, nextContext.IsImage);
                     if (gen != refreshGeneration || dialogClosed) return; // stale switch, or dialog dismissed mid-fetch
                     modelCombo.PlaceholderText = defaultModelLabel;
                 }
+
+                // Never new rows under an open or closing drop-down (ComboDropDownGate): the whole
+                // refresh runs again once it has closed.
+                if (modelGate.TryDefer(() => { if (!dialogClosed) RefreshModelOptions(); })) return;
 
                 // Decide the selection under the new context BEFORE mutating the combo;
                 // a stale override (different provider or text/image domain, absent from
@@ -2399,27 +2425,30 @@ public sealed class EnhancementPage : Page
                 try
                 {
                     // Single ItemsSource swap, never Items.Clear()+Add loop: churning a
-                    // live IsEditable combo's item collection corrupts native combo/popup
+                    // live combo's item collection corrupts native combo/popup
                     // state (the PR #163 0x80070490 class). Build the list (sentinel
                     // first) then assign once.
-                    var items = new List<string>(models.Count + 1) { defaultModelLabel };
+                    var items = new List<string>(models.Count + 2) { defaultModelLabel };
                     items.AddRange(EngineModelLabel.Labels(ListProvider(lastContext), models));
-                    modelCombo.ItemsSource = items;
 
                     var pendingLabel = pendingModelOverride is null
                         ? null
                         : EngineModelLabel.Label(ListProvider(lastContext), pendingModelOverride);
+                    // Pick-only: a saved override the list does not hold stays visible as a row.
+                    if (!string.IsNullOrEmpty(pendingLabel) && !items.Contains(pendingLabel))
+                        items.Insert(1, pendingLabel);
+                    modelCombo.ItemsSource = items;
+
                     if (string.IsNullOrEmpty(pendingLabel))
                         modelCombo.SelectedIndex = 0; // "(Default — uses main selection)"
-                    else if (items.Contains(pendingLabel))
-                        modelCombo.SelectedItem = pendingLabel;
                     else
-                        modelCombo.Text = pendingLabel;
+                        modelCombo.SelectedItem = pendingLabel;
                 }
                 finally
                 {
                     suppressModelTracking = false;
                 }
+                modelCombo.IsEnabled = true;
 
                 // IMG-5: this fetch is what fills the capability cache, so re-gate against it.
                 // SelectionChanged is NOT sufficient (the same reason App.xaml.cs re-gates
@@ -2551,7 +2580,7 @@ public sealed class EnhancementPage : Page
                     qualityLabel, qualityCombo, qualityHint,
                     askSizeLabel, askSizeToggle, askSizeHint,
                     providerLabel, providerCombo, providerHint,
-                    modelLabel, modelCombo, modelHint,
+                    modelLabel, modelCombo,
                     languageLabel, languageCombo, languageHint
                 }
             };
@@ -2576,7 +2605,7 @@ public sealed class EnhancementPage : Page
                                        && AIProviderDisplay.TryParse(providerCombo.SelectedItem as string, out var chosenProvider)
                     ? chosenProvider.ToString()
                     : null;
-                var modelRaw = modelCombo.SelectedItem as string ?? modelCombo.Text;
+                var modelRaw = modelCombo.SelectedItem as string;
                 var modelOverride = NormalizeModel(modelRaw);
                 // We persist the dropdown's current selection regardless of visibility — if the
                 // user has set up a "2K" preference on gpt-image-2 and now flips the provider to

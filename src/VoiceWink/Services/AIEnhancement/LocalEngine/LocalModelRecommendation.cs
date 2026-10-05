@@ -171,13 +171,22 @@ internal static class LocalModelRecommendation
         };
     }
 
-    /// <summary>The order the model rows are shown in: the pick for this PC first, then the rest
-    /// largest to smallest (the Models page's Whisper order). Display only —
-    /// <see cref="LocalModelCatalog.All"/> keeps the default first, which the "first installed
-    /// model" fallback relies on.</summary>
-    internal static IReadOnlyList<LocalModelEntry> DisplayOrder(LocalModelTier? recommended)
+    /// <summary>The order the model rows are shown in: highest Accuracy first, the larger model first
+    /// on a tie (owner, 2026-10-05: always the same order; "Best for this PC" marks its row and no
+    /// longer moves it). Display only — <see cref="LocalModelCatalog.All"/> keeps the default first,
+    /// which the "first installed model" fallback relies on.</summary>
+    internal static IReadOnlyList<LocalModelEntry> DisplayOrder()
         => LocalModelCatalog.All
-            .OrderBy(e => e.Tier == recommended ? 0 : 1)
+            .OrderByDescending(e => e.Accuracy)
             .ThenByDescending(e => e.Tier)
             .ToList();
+
+    /// <summary>What setup's AI step offers (owner, 2026-10-05: one model, as the transcription step
+    /// offers one): the pick for this PC, or the catalog default (<see cref="LocalModelCatalog.Standard"/>)
+    /// when nothing can be picked, plus the model already in use when that is another one.</summary>
+    internal static IReadOnlyList<LocalModelEntry> SetupOffer(LocalModelTier? recommended, Func<string, bool> isSelected)
+    {
+        var pick = recommended ?? LocalModelCatalog.Standard.Tier;
+        return DisplayOrder().Where(e => e.Tier == pick || isSelected(e.Id)).ToList();
+    }
 }

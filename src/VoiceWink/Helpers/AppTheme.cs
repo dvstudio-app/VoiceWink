@@ -779,7 +779,7 @@ public static class AppTheme
                     // being removed. Cost of always nudging: two SelectionChanged events. The
                     // quality row's tracker is scoped by every caller's BeginPopulate, and it is the
                     // only one of the three rows with a subscriber at all (verified in both files).
-                    // ComboRegateDeferral keeps both re-gate paths off an open dropdown.
+                    // ComboDropDownGate keeps both re-gate paths off an open dropdown.
                     // try/finally, the same shape ComboSelectionBoxGuard.ReassertCore carries for
                     // this identical operation: a SelectionChanged subscriber throwing on the −1
                     // phase must not leave the row AT −1, because the confirm path reads it and the

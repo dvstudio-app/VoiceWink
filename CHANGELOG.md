@@ -17,6 +17,15 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.107.403] - 2026-10-05
+
+- The AI Enhancement page now shows whether the built-in AI model runs on your graphics card.
+- Built-in AI models are always listed from most to least accurate.
+- Setup offers the one built-in AI model that suits your PC.
+- Fixed crashes in the AI model lists when switching providers quickly.
+- AI model boxes are now pick-only lists; model names can no longer be typed in.
+- Setup no longer loses a saved API key when you change provider while a key is being checked.
+
 ## [1.106.402] - 2026-10-04
 
 - VoiceWink Engine is now called Built-in models, with its own card on the AI Enhancement page and in setup.
