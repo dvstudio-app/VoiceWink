@@ -902,15 +902,15 @@ Apache 2.0 §4(d) additionally requires that a `NOTICE` file, **where the work h
    limitations under the License.
 ```
 
----
+<!-- Maintainers: how to update this file. Kept in a comment because the in-app
+     Third-party licenses dialog hides comments and must not show these instructions.
+     From the repo root:
 
-## How to update this file
+         dotnet list src/VoiceWink/VoiceWink.csproj package --include-transitive --format json > /tmp/packages.json
 
-```pwsh
-# From the repo root
-dotnet list src/VoiceWink/VoiceWink.csproj package --include-transitive --format json > /tmp/packages.json
-# Compare the package list to the tables above; add/remove/version-bump rows as needed.
-# Re-confirm SPDX identifiers against each package's nupkg <license> element.
-```
+     Compare the package list to the tables above; add/remove/version-bump rows as needed.
+     Re-confirm SPDX identifiers against each package's nupkg <license> element.
 
-Update this file whenever a new top-level dependency is added or an existing one bumps a major version. Transitive-only version bumps generally do not require an update unless the licence changes.
+     Update this file whenever a new top-level dependency is added or an existing one bumps a
+     major version. Transitive-only version bumps generally do not require an update unless the
+     licence changes. -->

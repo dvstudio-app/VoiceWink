@@ -37,8 +37,8 @@ public enum LocalOutputVerdict
 /// either text holds a script written without spaces — <see cref="CountWords"/> counts those per
 /// character, so a faithful Chinese→English translation reads 11 words → 3 and an English→Chinese
 /// one grows (Codex plan review, LAI-4 B3).</item>
-/// <item>Custom (Assistant, an edited shipped prompt, the user's own) — never checked: an answer or a
-/// summary may be any length.</item>
+/// <item>Custom (an edited shipped prompt, the user's own) and Assistant (LAI-12) — never checked: an
+/// answer or a summary may be any length.</item>
 /// </list>
 /// <para><b>The shrink line is deliberately far out: only near-total loss.</b> The envelope TELLS the
 /// model to drop retracted wording ("…let's meet Tuesday in the big room, no scratch that, let's do
@@ -75,7 +75,9 @@ internal static class LocalOutputGuard
     /// <summary>The class's two length checks over <paramref name="input"/> → <paramref name="output"/>.</summary>
     internal static LocalOutputVerdict Check(LocalPromptClass promptClass, string input, string output)
     {
-        if (promptClass == LocalPromptClass.Custom)
+        // An answer has no length relation to its question (LAI-12): "366" answers a 16-word
+        // question, and a request for a list can run to paragraphs.
+        if (promptClass is LocalPromptClass.Custom or LocalPromptClass.Assistant)
             return LocalOutputVerdict.Pass;
         // A translation to or from a script counted per character has no comparable word count.
         if (promptClass == LocalPromptClass.Translate && (HasUnspacedScript(input) || HasUnspacedScript(output)))

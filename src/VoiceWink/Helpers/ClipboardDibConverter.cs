@@ -35,11 +35,23 @@ internal static class ClipboardDibConverter
     /// would suggest. An earlier comment here claimed 32 MP capped the operation near 256 MB by
     /// counting only two of the four buffers (caught in review).</para>
     ///
-    /// <para>16 MP is still ~2× a 4K generation (8.3 MP), which is the realistic ceiling for
-    /// provider output, while keeping the whole chain inside a few hundred MB. Generated payloads
-    /// come from arbitrary provider models, so this is a real bound rather than a formality.</para>
+    /// <para>16 MP is ~2× a 3840×2160 frame (8.3 MP) and keeps the whole chain inside a few hundred
+    /// MB. It is NOT a ceiling on provider output: Gemini's "4K" tier returns up to ~17–18 MP
+    /// (5632×3072 at Auto, measured 2026-10-07, IMG-19). An image above this bound is therefore
+    /// DOWNSCALED to fit — WIC hands back the smaller size, so the four buffers this method and
+    /// the clipboard hold stay within the bound — and the file in History keeps its full
+    /// resolution. A decoder that must decode the whole frame before scaling (WebP, AVIF/HEIF,
+    /// interlaced PNG, by assumption) still holds the full-size frame inside WIC for that moment;
+    /// <see cref="MaxSourcePixels"/> bounds it.</para>
     /// </summary>
     internal const long MaxClipboardPixels = 16_000_000;
+
+    /// <summary>
+    /// Source-size refusal: an image whose header claims more than this is not decoded at all. It
+    /// is the normalizer's single-decode bound (100 MP), far above anything a provider returns, and
+    /// exists so an odd or hostile payload still fails instead of being scaled.
+    /// </summary>
+    internal const long MaxSourcePixels = 100_000_000;
 
     private const int BitmapInfoHeaderSize = 40;
 
@@ -66,21 +78,59 @@ internal static class ClipboardDibConverter
         var height = checked((int)decoder.PixelHeight);
         if (width <= 0 || height <= 0)
             throw new InvalidOperationException("Image has no pixels");
-        if ((long)width * height > MaxClipboardPixels)
+        if ((long)width * height > MaxSourcePixels)
             throw new InvalidOperationException(
                 $"Image dimensions ({width}x{height}) exceed the clipboard processing bound");
+
+        var (outWidth, outHeight) = FitWithinPixels(width, height, MaxClipboardPixels);
+        var transform = outWidth == width && outHeight == height
+            ? new BitmapTransform()
+            : new BitmapTransform
+            {
+                ScaledWidth = (uint)outWidth,
+                ScaledHeight = (uint)outHeight,
+                InterpolationMode = BitmapInterpolationMode.Fant,
+            };
 
         using var bitmap = await decoder.GetSoftwareBitmapAsync(
             BitmapPixelFormat.Bgra8,
             BitmapAlphaMode.Straight,
-            new BitmapTransform(),
+            transform,
             ExifOrientationMode.IgnoreExifOrientation,
             ColorManagementMode.ColorManageToSRgb);
 
-        var pixels = new byte[checked(width * height * 4)];
+        // The buffer is sized from what WIC actually returned, never from the request: a smaller
+        // bitmap would leave part of a request-sized buffer unfilled and paste a torn image.
+        if (bitmap.PixelWidth != outWidth || bitmap.PixelHeight != outHeight)
+            throw new InvalidOperationException(
+                $"Decoder returned {bitmap.PixelWidth}x{bitmap.PixelHeight}, expected {outWidth}x{outHeight}");
+        var pixels = new byte[checked(outWidth * outHeight * 4)];
         bitmap.CopyToBuffer(pixels.AsBuffer());
 
-        return new ClipboardDib(BuildDib(pixels, width, height), width, height);
+        return new ClipboardDib(BuildDib(pixels, outWidth, outHeight), outWidth, outHeight);
+    }
+
+    /// <summary>
+    /// The largest size with the same aspect whose pixel count is at most
+    /// <paramref name="maxPixels"/>; an image already within it is returned unchanged. Each side is
+    /// rounded DOWN (so the product never exceeds the bound) and never below 1.
+    /// </summary>
+    internal static (int Width, int Height) FitWithinPixels(int width, int height, long maxPixels)
+    {
+        if ((long)width * height <= maxPixels)
+            return (width, height);
+
+        var scale = Math.Sqrt((double)maxPixels / ((double)width * height));
+        var w = Math.Max(1, (int)Math.Floor(width * scale));
+        var h = Math.Max(1, (int)Math.Floor(height * scale));
+        // Rounding, or a side clamped up to 1, can leave the product over the bound: trim the
+        // longer side to fit in one step.
+        if ((long)w * h > maxPixels)
+        {
+            if (w >= h) w = Math.Max(1, (int)(maxPixels / h));
+            else h = Math.Max(1, (int)(maxPixels / w));
+        }
+        return (w, h);
     }
 
     /// <summary>

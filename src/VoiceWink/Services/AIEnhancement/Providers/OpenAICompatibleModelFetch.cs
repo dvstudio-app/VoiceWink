@@ -5,7 +5,8 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 
 /// <summary>
 /// Shared model-list fetcher for providers that expose an OpenAI-compatible /models endpoint.
-/// Gemini wraps this with extra validation since its compatible endpoint doesn't enforce auth.
+/// Gemini wraps this with a native-endpoint key check first: its compatible endpoint answers a bad
+/// key with a prose-only 400, while the native one names the key in a structured reason (ENH-29).
 /// </summary>
 internal static class OpenAICompatibleModelFetch
 {

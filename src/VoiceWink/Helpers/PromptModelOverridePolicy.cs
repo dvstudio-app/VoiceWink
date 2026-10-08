@@ -56,4 +56,34 @@ internal static class PromptModelOverridePolicy
 
         return nextModels.Contains(pending) ? pending : null;
     }
+
+    /// <summary>
+    /// The model override Save persists (IMG-18 review round 1). Before this, Save read the
+    /// model combo's selection whatever the combo held — so a Save clicked while a provider
+    /// override's model list was still loading saved "(Default)" over the prompt's override,
+    /// and one clicked during a provider SWITCH saved the old provider's model under the new one.
+    /// <list type="bullet">
+    /// <item>Rows bound for another context (<paramref name="rowsContext"/> is the context the
+    /// combo's rows were last bound for): the switch's own rule, <see cref="NextSelection"/>,
+    /// with no list yet — a stale override resets to "(Default)".</item>
+    /// <item>Rows for this context but not bound yet (the first fetch): the pending choice, which
+    /// on an unchanged context is the saved override.</item>
+    /// <item>Otherwise the combo's selection.</item>
+    /// </list>
+    /// </summary>
+    internal static string? ValueToSave(
+        OverrideContext rowsContext,
+        OverrideContext current,
+        bool rowsBound,
+        string? pending,
+        string? comboSelection)
+    {
+        if (rowsContext != current)
+            return NextSelection(rowsContext, current, pending, Array.Empty<string>());
+
+        if (!rowsBound)
+            return string.IsNullOrWhiteSpace(pending) ? null : pending;
+
+        return comboSelection;
+    }
 }

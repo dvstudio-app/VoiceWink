@@ -2082,6 +2082,8 @@ public sealed class EnhancementPage : Page
             {
                 providerCombo.SelectedIndex = 0;
             }
+            // IMG-18: the provider the saved ModelOverride belongs to.
+            var savedProviderItem = providerCombo.SelectedItem;
 
             var providerHint = new TextBlock
             {
@@ -2226,9 +2228,14 @@ public sealed class EnhancementPage : Page
                 // the "no override" view (persisted-for-provider, else provider default). Passing
                 // the real prompt would honour prompt.ModelOverride, which is STALE mid-edit: the
                 // user's in-progress pick lives in the combo and hasn't been saved yet.
-                var model = ImageOptionGating.ResolveGatingModel(
+                // IMG-18: until the model rows are bound, the saved override is the pick the dialog
+                // is about to show — see ResolveEditorGatingModel.
+                var model = ImageOptionGating.ResolveEditorGatingModel(
                     EffectiveModel(),
-                    previousModel: null,
+                    modelRowsBound: modelCombo.ItemsSource != null,
+                    savedContextUnchanged: prompt.IsImageGeneration
+                        && Equals(providerCombo.SelectedItem, savedProviderItem),
+                    prompt.ModelOverride,
                     _enhancement.ResolveEffectiveImageModel(null, provider));
                 var gating = ImageOptionGating.Decide(
                     provider, model, _enhancement.ImageCapabilitiesFor(provider, model));
@@ -2606,7 +2613,11 @@ public sealed class EnhancementPage : Page
                     ? chosenProvider.ToString()
                     : null;
                 var modelRaw = modelCombo.SelectedItem as string;
-                var modelOverride = NormalizeModel(modelRaw);
+                // IMG-18: never read the combo while its rows are loading or belong to the
+                // previous provider — see PromptModelOverridePolicy.ValueToSave.
+                var modelOverride = PromptModelOverridePolicy.ValueToSave(
+                    lastContext, CurrentContext(), rowsBound: modelCombo.ItemsSource != null,
+                    pendingModelOverride, NormalizeModel(modelRaw));
                 // We persist the dropdown's current selection regardless of visibility — if the
                 // user has set up a "2K" preference on gpt-image-2 and now flips the provider to
                 // gemini-2.5-flash-image (no tier), hiding the dropdown shouldn't *erase* the

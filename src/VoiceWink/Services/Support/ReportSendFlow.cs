@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Serilog;
 using VoiceWink.Helpers;
@@ -78,8 +77,13 @@ public sealed class ReportSendFlow
 
     // Injectable seams — production defaults; tests substitute.
     internal Func<string, string, string, string?, bool> SendViaMapi { get; set; } = MapiMailService.TrySend;
-    internal Action<string> LaunchMailto { get; set; } =
-        uri => Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
+    // Still throws on a refused launch — the dialog's catch shows "Couldn't open your email app" — but
+    // with a fixed message: the shell's own names the whole mailto, the user's description included.
+    internal Action<string> LaunchMailto { get; set; } = uri =>
+    {
+        if (!ShellLink.TryOpen(uri))
+            throw new InvalidOperationException("The shell refused the mailto link.");
+    };
     internal Action<string> RevealInExplorer { get; set; } = path => ShellFolder.Reveal(path);
     // REL-25 item 3 (owner UAT 2026-08-17, §32.5 Fail: "two zip files were still in the reports
     // folder"). The delete stays best-effort -- a MAPI client can still hold the file open when the

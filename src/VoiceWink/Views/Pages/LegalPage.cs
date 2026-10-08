@@ -1,10 +1,8 @@
-using global::System.Diagnostics;
 using global::System.Globalization;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
-using Serilog;
 using VoiceWink.Helpers;
 using VoiceWink.Services.Legal;
 
@@ -22,8 +20,6 @@ public enum LegalDocument { Eula, Privacy }
 /// </summary>
 public sealed class LegalPage : Page
 {
-    private static ILogger Logger => Log.ForContext<LegalPage>();
-
     private readonly LegalAcceptanceService _service;
     private readonly LegalDocument _initial;
     private ContentControl? _paneHost;
@@ -202,18 +198,7 @@ public sealed class LegalPage : Page
             Foreground = AppTheme.Brush(AppTheme.AccentBlue),
             Margin = new Thickness(0, 12, 0, 0),
         };
-        browserLink.Tapped += (_, _) =>
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo($"https://voicewink.app/legal/{slug}-v{doc.Version}")
-                { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning(ex, "Failed to open browser link for {Slug}", slug);
-            }
-        };
+        browserLink.Tapped += (_, _) => ShellLink.TryOpen($"https://voicewink.app/legal/{slug}-v{doc.Version}");
         browserLink.PointerEntered += (_, _) => browserLink.Opacity = 0.8;
         browserLink.PointerExited += (_, _) => browserLink.Opacity = 1.0;
         ToolTipService.SetToolTip(browserLink, $"https://voicewink.app/legal/{slug}-v{doc.Version}");

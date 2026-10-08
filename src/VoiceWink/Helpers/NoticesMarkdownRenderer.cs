@@ -213,7 +213,7 @@ public static class NoticesMarkdownRenderer
     /// Removes <c>&lt;!-- … --&gt;</c> spans, which may open and close mid-line and may run over
     /// several lines. <paramref name="inComment"/> carries that state across lines.
     /// </summary>
-    private static string StripComments(string line, ref bool inComment)
+    internal static string StripComments(string line, ref bool inComment)
     {
         if (!inComment && !line.Contains("<!--", StringComparison.Ordinal)) return line;
 

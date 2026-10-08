@@ -489,6 +489,18 @@ public static class AppDefaults
     public const string InstallSourceReport = "installSourceReport";
     public const string InstallSourceReportAttempts = "installSourceReportAttempts";
 
+    /// <summary>
+    /// LNC-14: how many distinct local days VoiceWink was used on (<see cref="UsageDayCount"/>, an int)
+    /// and the last day counted (<see cref="UsageLastDay"/>, <c>yyyy-MM-dd</c>), written only by
+    /// <c>Services.Data.UsageDays</c>; and whether the one-time Microsoft Store rating line on Home has
+    /// been shown (<see cref="StoreRatingLineShown"/>), written only by <c>StoreRatingPrompt</c>.
+    /// App-managed — NOT in <see cref="Defaults"/>, so "Reset all settings" keeps them and a settings
+    /// export or import never carries them.
+    /// </summary>
+    public const string UsageDayCount = "usageDayCount";
+    public const string UsageLastDay = "usageLastDay";
+    public const string StoreRatingLineShown = "storeRatingLineShown";
+
     // AI Enhancement
     public const string AiEnhancementEnabled = "aiEnhancementEnabled";
     public const string AiProvider = "aiProvider";

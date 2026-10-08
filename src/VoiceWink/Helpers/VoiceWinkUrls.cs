@@ -64,6 +64,27 @@ internal static class VoiceWinkUrls
     public const string SupportEmail = "support@dvstudio.app";
 
     /// <summary>
+    /// VoiceWink's Microsoft Store listing, opened in the Store app — the target of the one-time
+    /// "Rate VoiceWink in the Microsoft Store" line and of "Leave a review" (LNC-14). The LISTING, not
+    /// the <c>ms-windows-store://review/</c> URI: Microsoft documents that URI by Store ID with MSIX
+    /// examples only, and no Microsoft page shows it opening the rating dialog for an MSI/EXE product
+    /// like this one, so the owner's rule was to link the listing (where the rating sits) until a test
+    /// on a Store install shows otherwise. The product id is the one the install-source classifier
+    /// matches, never retyped.
+    /// </summary>
+    public const string StoreListing =
+        $"ms-windows-store://pdp/?ProductId={Services.Updates.InstallSourceClassifier.StoreProductId}";
+
+    /// <summary>The same listing on the web — opened when the Store app cannot be started (an edition
+    /// without the Store, where the website installer is the only way in).</summary>
+    public const string StoreListingWeb =
+        $"https://apps.microsoft.com/detail/{Services.Updates.InstallSourceClassifier.StoreProductId}";
+
+    /// <summary>The public source repository — the About card's "Source code (GPL v3)" link and the
+    /// License page's "Star on GitHub" (LNC-14).</summary>
+    public const string GitHubRepository = "https://github.com/dvstudio-app/VoiceWink";
+
+    /// <summary>
     /// LemonSqueezy self-serve order lookup — where users recover a lost license key
     /// via the email they purchased with.
     /// </summary>

@@ -353,6 +353,9 @@ public sealed class LicensePage : Page
         // them changes.
         var plan = LicensePanelPlan.Resolve(
             _vm.Status, _vm.ActivateFormRequested, _vm.TryoutEnded, _vm.StoredKeyExpired);
+        // LNC-14: which feedback links this panel carries — the same pure-decision shape, beside the
+        // plan, so this method still decides nothing itself.
+        var feedback = FeedbackLinks.ForLicensePanel(plan, _vm.DaysOfUse);
 
         // The refresh icon shows exactly where a key is stored (LIC-25) — the plan's call, not the
         // page's. Collapsed, not hidden: the activity text slides left into its place, and the row's
@@ -362,16 +365,16 @@ public sealed class LicensePage : Page
 
         _statePanelHost.Content = plan.Kind switch
         {
-            LicensePanelKind.KeyEntry          => BuildKeyEntryPanel(plan),
+            LicensePanelKind.KeyEntry          => BuildKeyEntryPanel(plan, feedback),
             LicensePanelKind.Tryout            => BuildFirstRunGracePanel(),
-            LicensePanelKind.Activated         => BuildActivatedPanel(),
+            LicensePanelKind.Activated         => BuildActivatedPanel(feedback),
             LicensePanelKind.OfflineGrace      => BuildOfflineGracePanel(),
             LicensePanelKind.NeedsRevalidation => BuildNeedsRevalidationPanel(),
             LicensePanelKind.Invalid           => BuildInvalidPanel(plan),
             LicensePanelKind.Disabled          => BuildDisabledReadOnlyPanel(),
             // Unreachable via Resolve, which maps an unknown status to KeyEntry itself; present so a
             // new LicensePanelKind cannot compile into a blank page.
-            _                                  => BuildKeyEntryPanel(plan),
+            _                                  => BuildKeyEntryPanel(plan, feedback),
         };
     }
 
@@ -388,7 +391,7 @@ public sealed class LicensePage : Page
     /// tells them apart. Nothing here re-reads the status: the decisions were all made in
     /// <see cref="LicensePanelPlan.Resolve"/> so they could be tested.
     /// </summary>
-    private UIElement BuildKeyEntryPanel(LicensePanelPlan plan)
+    private UIElement BuildKeyEntryPanel(LicensePanelPlan plan, LicenseFeedbackPlan feedback)
     {
         // The trial's length is derived, never typed (TryoutWindowCopy via the VM): "7 days" since
         // LIC-21 PR A, null only above the 60-day ceiling — see the onboarding License step.
@@ -458,8 +461,37 @@ public sealed class LicensePage : Page
         AppendErrorBannerIfAny(panel);
         panel.Children.Add(buttonRow);
         if (freePathExplanation != null) panel.Children.Add(freePathExplanation);
+        // LNC-14 (c): the used-up free trial's key box asks why, once, as a mail the user writes.
+        if (feedback.AsksWhyNotBuying)
+            panel.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.WhyNotBuyingText,
+                () => _vm.OpenWhyNotBuyingMailCommand.Execute(null), SupportMailTooltip));
         panel.Children.Add(CreateForgotKeyLink());
         return panel;
+    }
+
+    /// <summary>The support mails' tooltip — where the mail goes (LNC-14).</summary>
+    private const string SupportMailTooltip = "Email to " + VoiceWinkUrls.SupportEmail;
+
+    /// <summary>
+    /// LNC-14 (b): the purchased licence's links, one wrapping row under the Activated panel's buttons.
+    /// Plain links — each opens the user's mail app, the browser or the Store, and the user finishes it
+    /// there; "Leave a review" only after enough days of use (the plan says when).
+    /// </summary>
+    private FlowPanel BuildPurchaseLinks(LicenseFeedbackPlan feedback)
+    {
+        var row = new FlowPanel { HorizontalSpacing = 16, VerticalSpacing = 4 };
+        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.FoundUsText,
+            () => _vm.OpenFoundUsMailCommand.Execute(null), SupportMailTooltip));
+        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.StarOnGitHubText,
+            () => _vm.OpenGitHubCommand.Execute(null), VoiceWinkUrls.GitHubRepository));
+        if (feedback.ShowsReview)
+            row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.LeaveReviewText,
+                () => _vm.OpenReviewCommand.Execute(null), "Microsoft Store"));
+        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.TellAFriendText,
+            () => _vm.TellAFriendCommand.Execute(null), "Opens your email app"));
+        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.CopyLinkText,
+            () => _ = _vm.CopyShareLinkCommand.ExecuteAsync(null), VoiceWinkUrls.Marketing));
+        return row;
     }
 
     /// <summary>
@@ -513,7 +545,7 @@ public sealed class LicensePage : Page
         return panel;
     }
 
-    private UIElement BuildActivatedPanel()
+    private UIElement BuildActivatedPanel(LicenseFeedbackPlan feedback)
     {
         var keyLine = BodyText($"Activated key: {_vm.MaskedKey ?? "(unknown)"}");
         keyLine.FontFamily = new FontFamily("Consolas");
@@ -553,6 +585,7 @@ public sealed class LicensePage : Page
         // user cannot see is no warning at all.
         AppendErrorBannerIfAny(panel);
         panel.Children.Add(buttonRow);
+        if (feedback.ShowsPurchaseLinks) panel.Children.Add(BuildPurchaseLinks(feedback));
         return panel;
     }
 

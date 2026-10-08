@@ -64,7 +64,8 @@ public sealed class TranscriptionRetryOptionsDialog : ContentDialog
         AppTheme.AllowParentScroll(_modelCombo);
 
         // Null preselect is a REAL answer, not a reason to fall back to index 0: the model the
-        // attempt used is no longer runnable (deleted from disk, key removed), and silently
+        // attempt used is no longer runnable (its cloud key removed, its local engine unable to run
+        // here — a local model deleted from disk is still offered and downloads, NET-7), and silently
         // committing a different one is what the UX-1 rule forbids. The note below says which.
         if (request.PreselectedModelName != null)
         {

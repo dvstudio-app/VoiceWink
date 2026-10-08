@@ -135,6 +135,16 @@ internal sealed class LocalServerClient
 
         using var _ = doc;
         var root = doc.RootElement;
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            // LAI-14: where the time went - counts and durations only, never the reply's text.
+            // Before the length refusal, so a reply that ran out of tokens (thinking that leaked
+            // through think:false would) is accounted for too.
+            var stats = OllamaReplyStats.Read(root);
+            Logger.Information(
+                "Local server reply ({Model}): {EvalTokens} tokens in {EvalMs} ms, prompt {PromptTokens} tokens in {PromptMs} ms, load {LoadMs} ms, thinking {ThinkingChars} raw chars",
+                model, stats.EvalTokens, stats.EvalMs, stats.PromptTokens, stats.PromptMs, stats.LoadMs, stats.ThinkingChars);
+        }
         if (root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("done_reason", out var doneReason)
             && doneReason.ValueKind == JsonValueKind.String
@@ -151,6 +161,45 @@ internal sealed class LocalServerClient
             && content.ValueKind is JsonValueKind.String or JsonValueKind.Null)
             return content.GetString() ?? "";
         throw NotThisKindOfServer(LocalServerApi.Ollama, "message", json);
+    }
+
+    /// <summary>
+    /// LAI-14: Ollama's own accounting of one <c>/api/chat</c> reply — tokens generated and the time
+    /// spent generating, reading the prompt and loading the model (Ollama reports nanoseconds; these
+    /// are milliseconds), plus how much thinking text came back despite <c>think:false</c>. Exists
+    /// because a slow reply (18 s for a paragraph on an RTX 3080, Codex UAT 235.1) could be a large
+    /// output, a slow prompt read, a reload or thinking, and nothing logged could tell them apart.
+    /// Every field is null when absent or of the wrong kind — diagnostics never fail a good reply.
+    /// </summary>
+    internal readonly record struct OllamaReplyStats(
+        long? EvalTokens, long? EvalMs, long? PromptTokens, long? PromptMs, long? LoadMs, int? ThinkingChars)
+    {
+        internal static OllamaReplyStats Read(JsonElement root)
+        {
+            if (root.ValueKind != JsonValueKind.Object)
+                return default;
+            int? thinking = root.TryGetProperty("message", out var message)
+                && message.ValueKind == JsonValueKind.Object
+                && message.TryGetProperty("thinking", out var t)
+                && t.ValueKind == JsonValueKind.String
+                // The raw (escaped) length: GetString() throws on a lone surrogate escape, and a
+                // diagnostic must never fail a good reply. Includes the two quotes; close enough.
+                ? t.GetRawText().Length
+                : null;
+            return new OllamaReplyStats(
+                Number(root, "eval_count"),
+                Millis(root, "eval_duration"),
+                Number(root, "prompt_eval_count"),
+                Millis(root, "prompt_eval_duration"),
+                Millis(root, "load_duration"),
+                thinking);
+        }
+
+        private static long? Number(JsonElement root, string name)
+            => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : null;
+
+        private static long? Millis(JsonElement root, string name)
+            => Number(root, name) is { } ns ? ns / 1_000_000 : null;
     }
 
     /// <summary>

@@ -3,9 +3,9 @@ using VoiceWink.Services.AIEnhancement;
 namespace VoiceWink.Helpers;
 
 /// <summary>
-/// How a provider dropdown is laid out (owner, 2026-09-30): the providers that run on this PC first -
-/// The built-in models, then Local server - under an "On this PC" heading, then the cloud providers
-/// under "Cloud", in enum order. Headings appear only when both groups do; a list with one group
+/// How a provider dropdown is laid out (owner, 2026-09-30): the local providers first - the built-in
+/// models, then Local server - under a "Local" heading (not "On this PC": a local server can run on
+/// another device, owner 2026-10-06), then the cloud providers under "Cloud", in enum order. Headings appear only when both groups do; a list with one group
 /// (the image providers, all cloud) shows no heading at all.
 /// </summary>
 /// <remarks>Pure, so the order and the headings are pinned by <c>ProviderListLayoutTests</c>; the
@@ -13,7 +13,7 @@ namespace VoiceWink.Helpers;
 /// disabled item and never a selectable one.</remarks>
 internal static class ProviderListLayout
 {
-    internal const string LocalHeading = "On this PC";
+    internal const string LocalHeading = "Local";
     internal const string CloudHeading = "Cloud";
 
     /// <summary>A heading (Provider null) or a provider (Heading null).</summary>

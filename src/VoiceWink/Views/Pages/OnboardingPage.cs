@@ -83,6 +83,8 @@ public sealed class OnboardingPage : Page
     // the caching logic automatically adapts when a step is added or removed.
     private const int DoneStepIndex = TotalSteps - 1;
 
+    private const int AiEnhancementStepIndex = 6;
+
     /// <summary>Raised when the user completes the onboarding wizard.</summary>
     public event Action? OnboardingCompleted;
 
@@ -227,7 +229,7 @@ public sealed class OnboardingPage : Page
             case 3: BuildLanguageStep(); break;
             case 4: BuildTranscriptionChoiceStep(); break;
             case 5: BuildTranscriptionConfigStep(); break;
-            case 6: BuildAiEnhancementStep(); break;
+            case AiEnhancementStepIndex: BuildAiEnhancementStep(); break;
             case 7: BuildHotkeyStep(); break;
             case 8: BuildClipboardStep(); break;
             case 9: BuildStartupStep(); break;
@@ -1875,10 +1877,15 @@ public sealed class OnboardingPage : Page
             }
 
             var rowsHost = new StackPanel();
-            var rowsShown = false;
+            // Rebuilt while this step is the wizard's current one, read from the step itself (ONB-10):
+            // ShowStep moves this step into its cache wrapper while it is already on screen, and that
+            // move's Unloaded arrives after its Loaded, so a flag kept from the two ended false with
+            // the rows showing and every rebuild was skipped. Off this step nothing rebuilds: a
+            // finished setup leaves the page on its last step, so its rows stop re-watching
+            // downloads started later on the AI page (a finished one would be taken into use here).
             void RebuildRows()
             {
-                if (!rowsShown) return;
+                if (_step != AiEnhancementStepIndex) return;
                 rowsHost.Children.Clear();
                 rowsHost.Children.Add(LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
                     id => StoredTextProvider() == Services.AIEnhancement.AIProvider.OnThisPc
@@ -1893,8 +1900,7 @@ public sealed class OnboardingPage : Page
                                       || string.Equals(enhancement.ActiveBuiltInModel(), id, StringComparison.Ordinal)));
             }
             refreshBuiltInRows = RebuildRows;
-            rowsHost.Loaded += (_, _) => { rowsShown = true; RebuildRows(); };
-            rowsHost.Unloaded += (_, _) => rowsShown = false;
+            rowsHost.Loaded += (_, _) => RebuildRows();
 
             var builtInCard = new StackPanel { Spacing = 12 };
             builtInCard.Children.Add(AppTheme.CreateCardTitle(Services.AIEnhancement.AIProviderDisplay.OnThisPcLabel, builtInActive));

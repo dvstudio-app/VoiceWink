@@ -88,6 +88,32 @@ public readonly record struct ImageOptionGating(
         return string.IsNullOrWhiteSpace(runtimeResolvedModel) ? null : runtimeResolvedModel;
     }
 
+    /// <summary>
+    /// IMG-18: the model the prompt EDITOR (EnhancementPage's Configure dialog) gates against.
+    ///
+    /// <para>The editor's first gatings (the builder and <c>ContentDialog.Opened</c>) run before its
+    /// model rows are bound — and for a provider override, before the model fetch lands — so the
+    /// combo holds no pick yet. Until then the saved <paramref name="savedModelOverride"/> IS the
+    /// model the dialog is about to show, as long as the provider and type are still the saved ones.
+    /// Gating against the runtime model instead (the provider's persisted image model) dropped a
+    /// saved ratio only the override accepts — <c>1:8</c> on <c>gemini-3.1-flash-image</c> under a
+    /// persisted <c>gemini-3-pro-image</c> — the row fell back to Auto, and every later gating
+    /// carried that Auto as if the user had picked it, so Save erased the saved aspect.</para>
+    ///
+    /// <para>Once the rows are bound the combo is the live choice and "(Default)" means the runtime
+    /// model, exactly as <see cref="ResolveGatingModel"/> already rules.</para>
+    /// </summary>
+    public static string? ResolveEditorGatingModel(
+        string? comboModel,
+        bool modelRowsBound,
+        bool savedContextUnchanged,
+        string? savedModelOverride,
+        string? runtimeResolvedModel)
+        => ResolveGatingModel(
+            comboModel,
+            previousModel: !modelRowsBound && savedContextUnchanged ? savedModelOverride : null,
+            runtimeResolvedModel);
+
     // IMG-12: a `QualitySelection` record plus `NextQualitySelection` / `ConfirmedQuality` lived here
     // between review rounds 1 and 2, inferring the user's edits by comparing the combo's tag against
     // what the dialog last displayed. They are GONE because that inference is unsound, not because

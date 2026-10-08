@@ -651,7 +651,7 @@ public static class AppTheme
     });
 
     /// <summary>Adds provider display labels in <see cref="ProviderListLayout"/> order, with its
-    /// "On this PC" / "Cloud" headings. Items stay the plain label strings every reader parses back
+    /// "Local" / "Cloud" headings. Items stay the plain label strings every reader parses back
     /// through <c>AIProviderDisplay.TryParse</c>.</summary>
     public static void AddProviderItems(ComboBox combo, IEnumerable<Services.AIEnhancement.AIProvider> providers)
     {

@@ -15,8 +15,11 @@ public enum LocalPromptClass
     EmailChat,
     /// <summary>One of the shipped translation prompts.</summary>
     Translate,
-    /// <summary>Assistant, an edited shipped prompt, or the user's own prompt.</summary>
+    /// <summary>An edited shipped prompt or the user's own prompt.</summary>
     Custom,
+    /// <summary>The shipped Assistant prompt, unedited (LAI-12: a local model gets the answer-only
+    /// system prompt for it, and its reply is never length-checked).</summary>
+    Assistant,
 }
 
 /// <summary>LAI-4: the local engine's view of one enhancement request (see <c>AIProviderConfig.LocalRequest</c>).</summary>
@@ -32,6 +35,7 @@ internal sealed record LocalRequestHints(LocalPromptClass PromptClass, string So
 internal static class LocalPromptClassifier
 {
     private static readonly string CleanupText = Normalize(PromptTemplates.ImproveAccuracyText);
+    private static readonly string AssistantText = Normalize(PromptTemplates.Assistant.PromptText);
     private static readonly string[] EmailChatTexts =
         [Normalize(PromptTemplates.Email.PromptText), Normalize(PromptTemplates.Chat.PromptText)];
     private static readonly string[] TranslateTexts =
@@ -50,6 +54,8 @@ internal static class LocalPromptClassifier
             return LocalPromptClass.EmailChat;
         if (Array.IndexOf(TranslateTexts, text) >= 0)
             return LocalPromptClass.Translate;
+        if (text == AssistantText)
+            return LocalPromptClass.Assistant;
         return LocalPromptClass.Custom;
     }
 

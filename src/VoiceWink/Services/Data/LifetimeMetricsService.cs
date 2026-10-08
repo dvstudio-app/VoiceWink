@@ -18,6 +18,9 @@ public sealed class LifetimeMetricsService
     private readonly SettingsService _settings;
     private readonly TranscriptionHistoryService _history;
     private readonly LocalDayBoundary _boundary;
+    // LNC-14: the days-of-use count, recorded here because this is where every finished dictation
+    // and image is recorded whether or not History is on. Same boundary, so tests seam both together.
+    private readonly UsageDays _usageDays;
     private readonly SemaphoreSlim _stateLock = new(1, 1);
 
     public event Action? MetricsChanged;
@@ -33,6 +36,7 @@ public sealed class LifetimeMetricsService
         _settings = settings;
         _history = history;
         _boundary = boundary;
+        _usageDays = new UsageDays(settings, boundary);
     }
 
     public Task InitializeAsync(CancellationToken ct = default) => EnsureInitializedAsync(ct);
@@ -81,6 +85,8 @@ public sealed class LifetimeMetricsService
             };
 
             WriteStateUnsafe(state);
+            // Under the same lock, so two completions landing together cannot both count a new day.
+            _usageDays.Record(metricsTimestampUtc);
         }
         finally
         {

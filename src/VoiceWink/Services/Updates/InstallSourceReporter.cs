@@ -106,6 +106,27 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     public static Uri BuildUri(string channel) =>
         new($"https://updates.voicewink.app/{channel}/{ReportPath}", UriKind.Absolute);
 
+    /// <summary>The installation identity a record is saved against: the install root's creation time,
+    /// UTC, round-trip format. One formatter for the writer below and <see cref="IsStoreInstallation"/>.</summary>
+    internal static string StampFor(DateTime installRootCreated)
+    {
+        var utc = installRootCreated.Kind == DateTimeKind.Utc ? installRootCreated : installRootCreated.ToUniversalTime();
+        return utc.ToString("O", CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// Whether the saved record says the Microsoft Store installed THIS installation — the source is
+    /// <c>msstore</c> AND the record's stamp is the current install root's (LNC-14: the one-time Store
+    /// rating line). Settings survive an uninstall, so a record from an earlier Store installation can
+    /// sit beside a later website install until an automatic check re-classifies it — or for good with
+    /// automatic checks off; the stamp is what tells the two apart. No install root (a dev or portable
+    /// copy), no record, or another installation's record: false. Reads only; never classifies or sends.
+    /// </summary>
+    public static bool IsStoreInstallation(SettingsService settings, DateTime? installRootCreatedUtc) =>
+        installRootCreatedUtc is { } created
+        && string.Equals(settings.GetString(AppDefaults.InstallSourceInstallStamp), StampFor(created), StringComparison.Ordinal)
+        && string.Equals(settings.GetString(AppDefaults.InstallSource), SourceMsStore, StringComparison.Ordinal);
+
     public async Task RunAsync(bool networkProven, CancellationToken ct)
     {
         if (!_feedIsPublic || _channel.Length == 0) return;
@@ -192,7 +213,7 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     {
         if (_installRootCreatedUtc() is not { } created) return null;
         var createdUtc = created.Kind == DateTimeKind.Utc ? created : created.ToUniversalTime();
-        var stamp = createdUtc.ToString("O", CultureInfo.InvariantCulture);
+        var stamp = StampFor(createdUtc);
 
         if (string.Equals(_settings.GetString(AppDefaults.InstallSourceInstallStamp), stamp, StringComparison.Ordinal))
             return ReadRecord(stamp);

@@ -7,8 +7,8 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 /// <summary>
 /// Gemini provider — text via OpenAI-compatible endpoint, image via the native Gemini image API
 /// (Imagen support removed ahead of Google's deprecation).
-/// The /openai/models endpoint doesn't validate keys, so we also hit the native /models endpoint
-/// to surface auth failures.
+/// The model fetch checks the key on the native /models endpoint before listing models from the
+/// OpenAI-compatible one — see <see cref="FetchAvailableModelsAsync"/>.
 /// </summary>
 public sealed class GeminiDescriptor : IAIProviderDescriptor
 {
@@ -55,23 +55,20 @@ public sealed class GeminiDescriptor : IAIProviderDescriptor
         bool unfiltered,
         CancellationToken ct)
     {
-        var models = await OpenAICompatibleModelFetch.FetchAsync(httpFactory, config, query, unfiltered, ct).ConfigureAwait(false);
-
-        // Gemini's OpenAI-compatible /models endpoint is public (doesn't enforce API keys).
-        // Hit the native endpoint so an invalid key produces a 401/403 here rather than
-        // silently returning a populated model list.
-        // Gated on the RAW count: whether the catalog was non-empty is what makes the key worth
-        // validating, and a filter emptying the display list must not skip that check.
-        if (models.RawCount > 0)
+        // Check the key on the NATIVE endpoint first. ENH-29: both endpoints answer an invalid key
+        // with HTTP 400 (measured 2026-10-07 — the OpenAI-compatible one no longer lets a bad key
+        // through), but only the native answer names the key in a structured reason, which
+        // ProviderApiException turns into a 401. Asking the OpenAI-compatible endpoint first
+        // threw its prose-only 400, which read as an outage, so the wrong key was saved.
+        var baseUrl = config.GetBaseUrl().TrimEnd('/');
+        using (var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models?pageSize=1"))
         {
-            var baseUrl = config.GetBaseUrl().TrimEnd('/');
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models?pageSize=1");
             request.Headers.Add("x-goog-api-key", config.ApiKey);
             var http = httpFactory.CreateClient("ai");
             using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
             await response.EnsureSuccessOrLogAndThrowAsync("Gemini native key validation", Logger, ct).ConfigureAwait(false);
         }
 
-        return models;
+        return await OpenAICompatibleModelFetch.FetchAsync(httpFactory, config, query, unfiltered, ct).ConfigureAwait(false);
     }
 }

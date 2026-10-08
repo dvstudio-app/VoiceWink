@@ -37,6 +37,20 @@ public sealed partial class MainWindow : Window
     private Border? _updatesBadge;
     private bool _updatesBadgeOn;
 
+    // LNC-14 (a): the one-time Microsoft Store rating line's session state. The WINDOW's, built once in
+    // the constructor from the settings it already reads, and handed to every Home page the factory
+    // builds — pages are rebuilt on every navigation, so a page could not remember that the line was
+    // shown in this session.
+    private readonly StoreRatingPrompt _storeRatingPrompt;
+
+    /// <summary>Whether this window is showing — not hidden to the tray, not minimized (LNC-14: the Store
+    /// rating line counts as seen only while it is).</summary>
+    private bool IsOnScreen()
+    {
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        return Helpers.NativeInterop.IsWindowVisible(hwnd) && !Helpers.NativeInterop.IsIconic(hwnd);
+    }
+
     private record NavEntry(string Label, string Glyph, string Tag);
 
     private static readonly NavEntry[] NavEntries =
@@ -80,6 +94,8 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
 
         var settings = App.Services.GetRequiredService<Services.System.SettingsService>();
+        // Before BuildUI: building the UI navigates to Home, whose factory arm hands this over.
+        _storeRatingPrompt = new StoreRatingPrompt(settings, IsOnScreen);
         if (settings.GetBool(AppDefaults.HasCompletedOnboarding))
         {
             BuildUI();
@@ -775,7 +791,7 @@ public sealed partial class MainWindow : Window
         // constructor-args-bearing instance instead of using static handshakes.
         var page = prebuilt ?? tag switch
         {
-            "home" => (Page?)new HomePage(),
+            "home" => (Page?)new HomePage(_storeRatingPrompt),
             "models" => new ModelsPage(),
             "history" => new HistoryPage(),
             "enhancement" => new EnhancementPage(),

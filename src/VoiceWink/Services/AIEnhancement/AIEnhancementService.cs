@@ -1108,13 +1108,13 @@ public sealed class AIEnhancementService
 
         prompt ??= PredefinedPrompts.Default;
 
-        // Both wire messages come from the single composition site (AIPrompts) so the
-        // normal and redo paths can never drift apart. Pinned by captured-request
-        // parity rows in AIEnhancementServiceTests.
-        var systemPrompt = AIPrompts.BuildSystemPrompt(prompt.PromptText, vocabularyTerms);
-        var userPrompt = AIPrompts.BuildUserPrompt(transcribedText);
-
         var providerOverride = ParseProviderOverride(prompt.ProviderOverride);
+
+        // Both wire messages come from the single composition site (LocalPromptComposition over
+        // AIPrompts) so the normal and redo paths can never drift apart. Pinned by captured-request
+        // parity rows in AIEnhancementServiceTests.
+        var (systemPrompt, userPrompt) = Helpers.LocalPromptComposition.Compose(
+            providerOverride ?? SelectedProvider, prompt, transcribedText, vocabularyTerms);
         Logger.Information("AI Enhancement: provider={Provider}, model={Model} userTerm={Prompt}",
             providerOverride ?? SelectedProvider, model,
             global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title));
@@ -1394,7 +1394,8 @@ public sealed class AIEnhancementService
                 try
                 {
                     if (ActiveOnThisPcPrompt() is { } active)
-                        onThisPc.Prepare(active.Model, AIPrompts.BuildSystemPrompt(active.Prompt.PromptText, vocabularyTerms: null));
+                        onThisPc.Prepare(active.Model, Helpers.LocalPromptComposition.Compose(
+                            AIProvider.OnThisPc, active.Prompt, transcribedText: "", vocabularyTerms: null).System);
                     else if (unloadWhenUnused)
                         await onThisPc.UnloadWhenIdleAsync(() => ActiveOnThisPcPrompt() is null).ConfigureAwait(false);
                 }
@@ -2351,11 +2352,11 @@ public sealed class AIEnhancementService
 
         prompt ??= PredefinedPrompts.Default;
 
-        // Same single composition site as EnhanceAsync — parity is test-pinned.
-        var systemPrompt = AIPrompts.BuildSystemPrompt(prompt.PromptText, vocabularyTerms);
-        var userPrompt = AIPrompts.BuildUserPrompt(transcribedText);
-
         var provider = providerOverride ?? SelectedProvider;
+
+        // Same single composition site as EnhanceAsync — parity is test-pinned.
+        var (systemPrompt, userPrompt) = Helpers.LocalPromptComposition.Compose(
+            provider, prompt, transcribedText, vocabularyTerms);
         Logger.Information("AI Enhancement (redo): provider={Provider}, model={Model} userTerm={Prompt}",
             provider, modelId,
             global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title));

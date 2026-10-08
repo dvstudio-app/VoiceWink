@@ -1,10 +1,11 @@
-using global::System.Diagnostics;
 using global::System.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Serilog;
 using VoiceWink.Helpers;
+using VoiceWink.Services.Data;
 using VoiceWink.Services.Licensing;
+using VoiceWink.Services.System;
 
 namespace VoiceWink.ViewModels;
 
@@ -22,6 +23,12 @@ public partial class LicenseViewModel : ObservableObject
     private static ILogger Logger => Log.ForContext<LicenseViewModel>();
 
     private readonly LicenseService _license;
+
+    // LNC-14: the days-of-use count behind "Leave a review", and the clipboard behind "Copy link". Null
+    // only through the one-argument constructor the tests use (no review link, a copy that reports
+    // failure); the DI constructor supplies both.
+    private readonly UsageDays? _usageDays;
+    private readonly ClipboardService? _clipboard;
 
     // Cross-command in-flight flag. Interlocked so concurrent entry from two different
     // commands (e.g., an OnLoaded refresh + a user-clicked Activate) is fully serialized.
@@ -153,9 +160,19 @@ public partial class LicenseViewModel : ObservableObject
     /// </summary>
     public static string? TryoutLengthDescription => TryoutWindowCopy.Describe(LicenseService.FirstRunGraceDuration);
 
-    public LicenseViewModel(LicenseService license)
+    /// <summary>The tests' constructor: no review link, a copy that reports failure. Internal, so the
+    /// container can only ever take the one below — a missing registration then fails loudly at resolve
+    /// time instead of quietly losing "Leave a review" and "Copy link".</summary>
+    internal LicenseViewModel(LicenseService license) : this(license, usageDays: null, clipboard: null)
+    {
+    }
+
+    /// <summary>The DI constructor.</summary>
+    public LicenseViewModel(LicenseService license, UsageDays? usageDays, ClipboardService? clipboard)
     {
         _license = license;
+        _usageDays = usageDays;
+        _clipboard = clipboard;
         // Read-only state first so the page can render without waiting for network.
         // Status is seeded from the synchronous GetCachedStatus so a freshly-resolved
         // VM doesn't briefly flash "Unlicensed" to the user before the async refresh
@@ -789,6 +806,58 @@ public partial class LicenseViewModel : ObservableObject
     [RelayCommand]
     public void ForgotKey() => OpenUrl(VoiceWinkUrls.LostKey);
 
+    // ── LNC-14: rating, review and feedback links ───────────────────
+    //
+    // None of these touches licence state, so none enters the busy gate, and none writes
+    // AttemptMessage or SeatNotice (LIC-19 ownership). Each opens something the USER finishes — the
+    // Store, the browser, their own mail app — and reports on the activity line only when the shell
+    // refused, the LIC-15 rule that a user-initiated command never ends in silence.
+
+    /// <summary>
+    /// Days of use so far (<see cref="UsageDays"/>), read live. Deliberately NOT an observable rebuild
+    /// trigger: it changes at most once a day, and a rebuild mid-keystroke resets the key box (LIC-15's
+    /// reason for leaving <see cref="IsBusy"/> out too); the panel picks it up at its next rebuild.
+    /// </summary>
+    public int DaysOfUse => _usageDays?.Count ?? 0;
+
+    private const string SupportMailFailure = "Couldn't open your email app. Write to " + VoiceWinkUrls.SupportEmail + ".";
+
+    [RelayCommand]
+    public void OpenFoundUsMail() =>
+        OpenOrReport(FeedbackLinks.BuildFoundUsMailto(AboutInfo.CurrentVersion), SupportMailFailure);
+
+    [RelayCommand]
+    public void OpenWhyNotBuyingMail() =>
+        OpenOrReport(FeedbackLinks.BuildWhyNotBuyingMailto(AboutInfo.CurrentVersion), SupportMailFailure);
+
+    [RelayCommand]
+    public void OpenGitHub() => OpenOrReport(VoiceWinkUrls.GitHubRepository, "Couldn't open your browser.");
+
+    [RelayCommand]
+    public void OpenReview()
+    {
+        if (!ShellLink.TryOpenStoreListing())
+            Announce("Couldn't open the Microsoft Store.", LicenseActivityKind.Failure);
+    }
+
+    [RelayCommand]
+    public void TellAFriend() =>
+        OpenOrReport(FeedbackLinks.BuildTellAFriendMailto(), "Couldn't open your email app.");
+
+    [RelayCommand]
+    public async Task CopyShareLinkAsync()
+    {
+        var copied = _clipboard is not null && await _clipboard.SetClipboardAsync(VoiceWinkUrls.Marketing);
+        if (copied) Announce("Link copied.", LicenseActivityKind.Success);
+        else Announce("Couldn't copy the link.", LicenseActivityKind.Failure);
+    }
+
+    private void OpenOrReport(string target, string failure)
+    {
+        if (!ShellLink.TryOpen(target))
+            Announce(failure, LicenseActivityKind.Failure);
+    }
+
     private void RefreshLocalState()
     {
         MaskedKey = _license.GetMaskedLicenseKey();
@@ -855,17 +924,9 @@ public partial class LicenseViewModel : ObservableObject
     private static string? FormatInstanceLine(string? label) =>
         string.IsNullOrWhiteSpace(label) ? null : $"This device: {label}";
 
-    private static void OpenUrl(string url)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning(ex, "Failed to open URL {Url}", url);
-        }
-    }
+    // Fail-soft and silent, as before: Buy, View my order and the lost-key link carry their destination
+    // in a tooltip. The launch itself is ShellLink's, shared with the LNC-14 links.
+    private static void OpenUrl(string url) => ShellLink.TryOpen(url);
 }
 
 /// <summary>

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Serilog;
@@ -77,7 +76,7 @@ public sealed class AboutPage : Page
         var repoLink = new HyperlinkButton
         {
             Content = "Source code (GPL v3)",
-            NavigateUri = new Uri("https://github.com/dvstudio-app/VoiceWink"),
+            NavigateUri = new Uri(VoiceWinkUrls.GitHubRepository),
         };
 
         // What's new (REL-4) — opens the full changelog history (does not advance the last-seen marker).
@@ -289,7 +288,7 @@ public sealed class AboutPage : Page
             }
         });
 
-        // Shown only when the launch itself throws — the shell refusing the mailto (no app
+        // Shown only when the launch fails — the shell refusing the mailto (no app
         // associated with it, a policy block, a broken handler command) — the one case where the
         // click would otherwise do nothing visible. Selectable because on this path the address
         // IS the remedy.
@@ -303,21 +302,9 @@ public sealed class AboutPage : Page
             Visibility = Visibility.Collapsed,
         };
         var suggestButton = AppTheme.CreateSecondaryButton("Suggest an improvement", (_, _) =>
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo(AboutInfo.BuildSuggestionMailto(AboutInfo.CurrentVersion))
-                {
-                    UseShellExecute = true,
-                });
-                suggestStatus.Visibility = Visibility.Collapsed;
-            }
-            catch (Exception ex)
-            {
-                Logger.Warning(ex, "Failed to open the suggestion email");
-                suggestStatus.Visibility = Visibility.Visible;
-            }
-        });
+            suggestStatus.Visibility = ShellLink.TryOpen(AboutInfo.BuildSuggestionMailto(AboutInfo.CurrentVersion))
+                ? Visibility.Collapsed
+                : Visibility.Visible);
 
         // Same wrapping row as the About card's links: two buttons side by side, the second
         // dropping under the first on a narrow window instead of clipping.

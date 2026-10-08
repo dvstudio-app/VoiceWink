@@ -52,13 +52,16 @@ public sealed class ReportProblemDialog : ContentDialog
     private string? _pendingBundlePath;
     private bool _pendingHadAttachment;
 
-    // REL-29: one send at a time. Both handlers take a deferral and then block off-thread on a
-    // compose window that can stay open for minutes, and nothing in this file has measured
-    // whether ContentDialog suppresses further button clicks while a deferral is pending. Without
-    // this flag a second press would re-enter OnSubmit from the top (a second bundle, a second
-    // compose window) or interleave the manual fallback with an in-flight retry that then DELETES
+    // REL-29: one send at a time. OnSubmit takes no deferral since REL-41 (a pending deferral
+    // disables every button, Cancel included) and blocks off-thread on a compose window that can
+    // stay open for minutes, so a second press CAN run; it disables Open email itself, and this
+    // flag is the guard behind that. Without it a second press would re-enter OnSubmit from the
+    // top (a second bundle, a second compose window) or interleave the manual fallback with an in-flight retry that then DELETES
     // the very file the fallback just told the user to attach (self-review, both lenses).
     private bool _sendInFlight;
+
+    // REL-41: set when the dialog closes, so a hand-off that answers after Cancel touches nothing.
+    private bool _closed;
 
     public ReportProblemDialog()
     {
@@ -182,6 +185,7 @@ public sealed class ReportProblemDialog : ContentDialog
         Content = AppTheme.CreateDialogScroller(form);
 
         PrimaryButtonClick += OnSubmit;
+        Closed += (_, _) => _closed = true;
         // REL-29: the secondary button exists only in the declined state — its text is set there,
         // and a ContentDialog renders no secondary button while the text is empty. This is the
         // app's FIRST use of a ContentDialog secondary button and of assigning its text after
@@ -237,22 +241,28 @@ public sealed class ReportProblemDialog : ContentDialog
     /// </summary>
     private async void OnSubmit(ContentDialog sender, ContentDialogButtonClickEventArgs args)
     {
-        // Async work needs a deferral so the dialog stays open until we know the outcome; we only
-        // Cancel (keep it open) on failure.
-        var deferral = args.GetDeferral();
+        // REL-41: NO deferral. A pending deferral disables every button, Cancel included, and the
+        // MAPI hand-off below blocks until the mail app's compose window closes — a mail app that
+        // never showed one held this dialog open with no way out for minutes (Codex UAT,
+        // 2026-10-07). The dialog is kept open here, synchronously, and closed with Hide() once
+        // the mail app has taken the message; Cancel stays usable and abandons the wait.
+        args.Cancel = true;
         // Kimi diff r1 Blocker: only the invocation that ACQUIRED the flag may clear it. A press
         // rejected by the guard also reaches the finally, and an unconditional clear there would
         // let the NEXT press run concurrently with the send still blocked on the compose window.
         var acquiredSend = false;
+        var secondaryWasEnabled = IsSecondaryButtonEnabled;
         try
         {
             if (_sendInFlight)
-            {
-                args.Cancel = true;
                 return;
-            }
             _sendInFlight = true;
             acquiredSend = true;
+
+            IsPrimaryButtonEnabled = false;
+            IsSecondaryButtonEnabled = false;
+            _status.Text = "Preparing the email…";
+            _status.Visibility = Visibility.Visible;
 
             ReportSendResult result;
             ReportSendFlow flow;
@@ -328,17 +338,26 @@ public sealed class ReportProblemDialog : ContentDialog
             }
 
             // Back on the UI thread (await resumes on WinUI's SynchronizationContext).
+            if (_closed)
+            {
+                // Cancel closed the dialog while the mail app had the hand-off. Nothing here may
+                // touch it now; a kept bundle is removed by the Reports sweep.
+                Logger.Information("Report dialog closed before the email app answered ({Outcome})", result.Outcome);
+                return;
+            }
+            IsPrimaryButtonEnabled = true;
+            IsSecondaryButtonEnabled = secondaryWasEnabled;
             switch (result.Outcome)
             {
                 case ReportSendOutcome.SentViaMapi:
                     // Compose window opened with the attachment already in place (bundle
                     // deleted); the dialog closes.
+                    Hide();
                     return;
 
                 case ReportSendOutcome.BundleFailed when !isRetry:
                     _status.Text = "Couldn't prepare the report file. Uncheck the include options to send without it.";
                     _status.Visibility = Visibility.Visible;
-                    args.Cancel = true;
                     return;
 
                 case ReportSendOutcome.BundleFailed:
@@ -353,14 +372,12 @@ public sealed class ReportProblemDialog : ContentDialog
                     IsPrimaryButtonEnabled = false;
                     SecondaryButtonText = "Open email anyway";
                     IsSecondaryButtonEnabled = true;
-                    args.Cancel = true;
                     return;
 
                 case ReportSendOutcome.MapiDeclined:
                     // REL-29: the mail client was asked and did not take the message. A choice, not
                     // a consequence — see EnterDeclinedState for the copy rules.
                     EnterDeclinedState(flow, subject, body, footer, result.BundlePath, hadAttachment, again: isRetry);
-                    args.Cancel = true;
                     return;
 
                 case ReportSendOutcome.MailtoFallback:
@@ -368,7 +385,6 @@ public sealed class ReportProblemDialog : ContentDialog
                     // so no retry is offered — the pre-REL-29 result, presented as REL-25 item 1
                     // asked (say in place which path ran).
                     ShowManualFallbackResult(result, hadAttachment);
-                    args.Cancel = true;
                     return;
 
                 default:
@@ -376,22 +392,24 @@ public sealed class ReportProblemDialog : ContentDialog
                     // (self-review, dialog lens) — keep it open with a generic line.
                     _status.Text = $"Couldn't open your email app. Please email {VoiceWinkUrls.SupportEmail} directly.";
                     _status.Visibility = Visibility.Visible;
-                    args.Cancel = true;
                     return;
             }
         }
         catch (Exception ex)
         {
             Logger.Warning(ex, "Failed to open problem report");
-            _status.Text = $"Couldn't open your email app. Please email {VoiceWinkUrls.SupportEmail} directly.";
-            _status.Visibility = Visibility.Visible;
-            args.Cancel = true;
+            if (!_closed)
+            {
+                IsPrimaryButtonEnabled = true;
+                IsSecondaryButtonEnabled = secondaryWasEnabled;
+                _status.Text = $"Couldn't open your email app. Please email {VoiceWinkUrls.SupportEmail} directly.";
+                _status.Visibility = Visibility.Visible;
+            }
         }
         finally
         {
             if (acquiredSend)
                 _sendInFlight = false;
-            deferral.Complete();
         }
     }
 

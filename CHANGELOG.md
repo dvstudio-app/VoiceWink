@@ -17,6 +17,21 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.109.405] - 2026-10-07
+
+- Very large generated images, such as Gemini 4K, now copy to the clipboard.
+- After a full disk stops a model download, Retry downloads the model once space is freed.
+- Report a problem: Cancel now works while waiting for your email app.
+- The Assistant prompt on built-in and local-server models now answers the question instead of repeating it.
+- The AI provider list's "On this PC" heading is now "Local".
+- After purchase, the License page has links to say how you found VoiceWink, star it on GitHub, leave a review or tell a friend.
+- After about a week of use, Microsoft Store installs show a one-time link to rate VoiceWink in the Store.
+- After the free trial ends, the License page has a link to say why you're not buying.
+- A Gemini API key that Google rejects is no longer saved; the previous key is kept.
+- An image prompt's Gemini-only aspect ratio (such as 1:8) and model override no longer reset when Configure is reopened or saved early.
+- Setup's AI step marks only the built-in model in use as Active.
+- The Third-party licenses dialog no longer shows the file's maintenance notes.
+
 ## [1.108.404] - 2026-10-05
 
 - A built-in AI model no longer stays on the processor after being checked while another app was using the graphics card.

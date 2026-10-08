@@ -2331,6 +2331,14 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        // NET-7: resolved here, ahead of the runnable list, because the list now offers this
+        // model when it still has to download.
+        var attemptModel = Helpers.RetryAttemptResolution.Model(
+            userPick: ctx.UserModelPick,
+            appModeOverride: ctx.ModelOverride,
+            globalSelectedModel: _settings.GetString(
+                AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel));
+
         // TRN-17: what this retry COULD run with, decided before the dialog slot is taken so a
         // refusal never holds it.
         //
@@ -2342,13 +2350,16 @@ public partial class MainViewModel : ObservableObject
         IReadOnlyList<TranscriptionModelInfo> runnable;
         try
         {
-            runnable = Helpers.RunnableTranscriptionModels.Resolve(
-                _modelDownloader.GetDownloadedModels(),
-                _transcriptionRegistry.HasKeyFor,
-                // Health, not ownership: a downloaded Parakeet on a build with the lever off (or a
-                // CPU under its floor) is installed and cannot run, and PrepareOutcome.Unavailable
-                // only arrives after the user has picked it.
-                m => _localModels.TryResolve(m.Name)?.Runtime.IsAvailable ?? false);
+            // Health, not ownership: a downloaded Parakeet on a build with the lever off (or a
+            // CPU under its floor) is installed and cannot run, and PrepareOutcome.Unavailable
+            // only arrives after the user has picked it.
+            Func<TranscriptionModelInfo, bool> isHealthy =
+                m => _localModels.TryResolve(m.Name)?.Runtime.IsAvailable ?? false;
+            runnable = Helpers.RunnableTranscriptionModels.WithRetryTarget(
+                Helpers.RunnableTranscriptionModels.Resolve(
+                    _modelDownloader.GetDownloadedModels(), _transcriptionRegistry.HasKeyFor, isHealthy),
+                attemptModel,
+                isHealthy);
         }
         catch (Exception ex)
         {
@@ -2443,11 +2454,6 @@ public partial class MainViewModel : ObservableObject
                 ResetPasteTargetAppName();
             }
 
-            var attemptModel = Helpers.RetryAttemptResolution.Model(
-                userPick: ctx.UserModelPick,
-                appModeOverride: ctx.ModelOverride,
-                globalSelectedModel: _settings.GetString(
-                    AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel));
             var attemptLanguage = Helpers.RetryAttemptResolution.Language(
                 userPick: ctx.UserLanguagePick,
                 capturedLanguage: ctx.LanguageOverride,

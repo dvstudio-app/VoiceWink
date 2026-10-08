@@ -220,6 +220,35 @@ public static class AIPrompts
     }
 
     /// <summary>
+    /// LAI-12 (2026-10-08): the system prompt a LOCAL model gets for the unedited Assistant prompt,
+    /// in place of the envelope. Measured: under the envelope, whose cleanup rules and examples a
+    /// small model follows over the one "answer when the Rules require it" carve-out, Qwen3.5 2B
+    /// answered 14 of 60 spoken questions and the 4B default 46 of 60 — echoing the question back
+    /// cleaned, translating it, or getting it wrong; with a short answer-only prompt and the raw
+    /// dictation as the user turn they answered 52 and 60 of 60 (bench README, "Assistant prompt:
+    /// answer or echo"). The bypass the owner deleted on 2026-08-01 dropped the firewall, the
+    /// vocabulary block, language retention and the output contract at once; this one is scoped to
+    /// local providers and the shipped Assistant text (<c>LocalPromptComposition</c>), drops the
+    /// firewall — answering is this prompt's job — keeps the vocabulary block and language retention,
+    /// and keeps only the core of the output contract ("output only your answer"): the envelope's
+    /// no-quotes / no-tags / no-metadata lines are not restated, and the bench measured this wording.
+    /// </summary>
+    public const string LocalAnswerPrompt =
+        "The user message is one dictated message addressed to you. If it is a question, answer it "
+        + "directly and concisely; if it is an instruction or a statement, respond helpfully. Reply in "
+        + "the language of the message. Output only your answer — never repeat or rephrase the message.";
+
+    /// <summary>
+    /// LAI-12: <see cref="LocalAnswerPrompt"/> plus the Dictionary block, the only part of the
+    /// envelope that still applies to an answer (names the user dictates should be spelled their way).
+    /// </summary>
+    public static string BuildLocalAnswerSystemPrompt(IReadOnlyList<string>? vocabularyTerms = null)
+    {
+        var vocabBlock = BuildVocabularyBlock(vocabularyTerms);
+        return vocabBlock.Length == 0 ? LocalAnswerPrompt : LocalAnswerPrompt + "\n\n" + vocabBlock.TrimEnd('\n');
+    }
+
+    /// <summary>
     /// Build the system prompt: envelope + rules + optional vocabulary block.
     /// <paramref name="vocabularyTerms"/> are the RAW Dictionary words (labeling lives
     /// in the template, nowhere else); each term is sanitized here because Dictionary

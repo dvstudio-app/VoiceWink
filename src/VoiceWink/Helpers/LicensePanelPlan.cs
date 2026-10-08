@@ -55,13 +55,18 @@ public enum LicensePanelKind
 /// offered exactly on the five keyed panels and never on the key box or the trial panel, where the
 /// machine has nothing to check and an inert icon would invite a dead click. Keyed on the KIND, so the
 /// activate-form override over a live trial hides it too, and the unmapped fallback shows none.</para>
+///
+/// <para><see cref="TrialEndedKeyBox"/> (LNC-14) is the key box once the free trial has been used up on
+/// this device with no key — the first half of <see cref="BuyIsPrimary"/>, and where the "Not buying?"
+/// link appears (<see cref="FeedbackLinks.ForLicensePanel"/>), so the two read one decision.</para>
 /// </summary>
 public readonly record struct LicensePanelPlan(
     LicensePanelKind Kind,
     bool OfferKeyFreeStart,
     bool ReturnToTryout,
     bool BuyIsPrimary,
-    bool ShowsCheckNow)
+    bool ShowsCheckNow,
+    bool TrialEndedKeyBox)
 {
     /// <param name="status">The cached licence status (<c>LicenseViewModel.Status</c>).</param>
     /// <param name="activateFormRequested">
@@ -123,9 +128,11 @@ public readonly record struct LicensePanelPlan(
         // window 7 days (Kimi diff round, 2026-09-04). Until LIC-21 (2026-09-06) this slot
         // promoted the Lemon Squeezy trial KEY instead; that key no longer exists — the local free
         // trial is the only try path — so Buy is what follows it.
-        var buyIsPrimary =
-            (kind == LicensePanelKind.KeyEntry && tryoutEnded && status == LicenseStatus.Unlicensed)
-            || (kind == LicensePanelKind.Invalid && storedKeyExpired);
+        //
+        // The trial-ended half is its own field since LNC-14: the key box's "Not buying?" link reads the
+        // same fact, so it is decided once, here, skew guard included.
+        var trialEndedKeyBox = kind == LicensePanelKind.KeyEntry && tryoutEnded && status == LicenseStatus.Unlicensed;
+        var buyIsPrimary = trialEndedKeyBox || (kind == LicensePanelKind.Invalid && storedKeyExpired);
 
         // The refresh icon is the one "Check now" on the page (LIC-25). It shows where a key is
         // STORED — the five keyed panels — and nowhere else: the key box and the trial panel have
@@ -138,6 +145,6 @@ public readonly record struct LicensePanelPlan(
             or LicensePanelKind.Invalid
             or LicensePanelKind.Disabled;
 
-        return new LicensePanelPlan(kind, offerKeyFreeStart, returnToTryout, buyIsPrimary, showsCheckNow);
+        return new LicensePanelPlan(kind, offerKeyFreeStart, returnToTryout, buyIsPrimary, showsCheckNow, trialEndedKeyBox);
     }
 }

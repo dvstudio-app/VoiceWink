@@ -39,7 +39,8 @@ namespace VoiceWink.Helpers;
 /// <para>Pill surfaces are already protected: they route through
 /// <c>MainViewModel.ProviderPillSafeText</c>, which never shows a status-bearing exception message.</para>
 /// Subclasses <see cref="HttpRequestException"/> with <c>StatusCode</c>
-/// preserved, so every existing 401/403 catch filter keeps working.
+/// preserved, so every existing 401/403 catch filter keeps working. One exception, ENH-29: a 400
+/// that <see cref="ProviderInvalidKeyClassifier"/> reads as an invalid key carries 401.
 /// </summary>
 internal sealed class ProviderApiException : HttpRequestException
 {
@@ -110,7 +111,13 @@ internal sealed class ProviderApiException : HttpRequestException
         // ordinary local exception text that is useful in Sentry). The phrase moves to a dedicated
         // property that IS allowlisted, so the local file sink keeps it and Sentry does not.
         var message = $"{providerName}: HTTP {(int)response.StatusCode}";
-        return new ProviderApiException(message, response.StatusCode, ProviderErrorMessage.Extract(body),
+        // ENH-29: a 400 that names an invalid key IS a key rejection — carry it as 401 so every
+        // existing 401/403 catch filter refuses the key, as it does for every other provider. The
+        // message keeps the wire status, so the log still says what the provider actually sent.
+        var status = ProviderInvalidKeyClassifier.IsInvalidKey(response.StatusCode, body)
+            ? HttpStatusCode.Unauthorized
+            : response.StatusCode;
+        return new ProviderApiException(message, status, ProviderErrorMessage.Extract(body),
             ProviderQuotaClassifier.IsOutOfCredits(body))
         {
             ReasonPhrase = response.ReasonPhrase,

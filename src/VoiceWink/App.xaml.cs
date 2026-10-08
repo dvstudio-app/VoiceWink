@@ -945,6 +945,8 @@ public partial class App : Application, Services.IAppLifetime
             () => Helpers.ReferenceDedupKey.GetOrCreate(sp.GetRequiredService<SettingsService>())));
         services.AddSingleton<TranscriptionHistoryService>();
         services.AddSingleton<LifetimeMetricsService>();
+        // LNC-14: the days-of-use count, read by LicenseViewModel ("Leave a review").
+        services.AddSingleton<UsageDays>();
         services.AddSingleton<CsvExportService>();
         // REL-17: sweep roots are ctor-REQUIRED (a real-location default let tests sweep
         // real user data — the DataErasureService lesson, applied here too).

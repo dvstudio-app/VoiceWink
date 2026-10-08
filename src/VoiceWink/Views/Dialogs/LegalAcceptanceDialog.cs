@@ -1,4 +1,3 @@
-using global::System.Diagnostics;
 using global::System.Globalization;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -140,8 +139,6 @@ public sealed class LegalAcceptanceDialog : ContentDialog
 /// </summary>
 public sealed class LegalBundleCorruptedDialog : ContentDialog
 {
-    private static ILogger Logger => Log.ForContext<LegalBundleCorruptedDialog>();
-
     public LegalBundleCorruptedDialog()
     {
         Title = "VoiceWink can't load its terms";
@@ -176,16 +173,8 @@ public sealed class LegalBundleCorruptedDialog : ContentDialog
         PrimaryButtonClick += OnExitAndReinstall;
     }
 
-    private void OnExitAndReinstall(ContentDialog sender, ContentDialogButtonClickEventArgs args)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo(VoiceWinkUrls.Reinstall)
-            { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning(ex, "Failed to open reinstall link");
-        }
-    }
+    // The app exits when this dialog closes, so a refused launch has nowhere to be shown;
+    // ShellLink logs it.
+    private void OnExitAndReinstall(ContentDialog sender, ContentDialogButtonClickEventArgs args) =>
+        ShellLink.TryOpen(VoiceWinkUrls.Reinstall);
 }

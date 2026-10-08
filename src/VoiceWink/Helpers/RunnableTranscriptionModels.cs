@@ -84,6 +84,46 @@ internal static class RunnableTranscriptionModels
     }
 
     /// <summary>
+    /// <paramref name="runnable"/> plus the failed attempt's OWN local model when it is a catalogue
+    /// row whose engine is healthy but whose files are not on disk — so Retry can download it.
+    ///
+    /// <para><b>Why (NET-7, Codex UAT 221.7, 2026-10-07).</b> A recording whose model still had to
+    /// download hit a full disk; the Retry pill promised "free space and retry", but the picker
+    /// listed only INSTALLED models, so the model the user picked was missing, the picker said it
+    /// "can't run right now" and Retry stayed disabled until another model was chosen. The retry
+    /// path itself already downloads a missing model (<c>EnsureModelLoadedAsync</c>); only the
+    /// picker kept it out.</para>
+    ///
+    /// <para><b>Only the attempt's own model</b> — "what can run right now" still means installed for
+    /// every other row. A cloud model, a name no catalogue row owns, or a local row whose engine
+    /// cannot run here is not added.</para>
+    /// </summary>
+    internal static IReadOnlyList<TranscriptionModelInfo> WithRetryTarget(
+        IReadOnlyList<TranscriptionModelInfo> runnable,
+        string? attemptModel,
+        Func<TranscriptionModelInfo, bool> isLocalRuntimeHealthy)
+    {
+        ArgumentNullException.ThrowIfNull(runnable);
+        ArgumentNullException.ThrowIfNull(isLocalRuntimeHealthy);
+
+        if (string.IsNullOrWhiteSpace(attemptModel) || Preselect(runnable, attemptModel) is not null)
+            return runnable;
+
+        var canonical = ParakeetCatalog.CanonicalName(attemptModel);
+        var target = PredefinedModels.Models.FirstOrDefault(
+            m => ModelDiskReconciliation.IsSameModel(m.Name, canonical));
+        if (target is null || !isLocalRuntimeHealthy(target))
+            return runnable;
+
+        // Locals stay in catalogue order with the target in its own place; cloud rows follow.
+        var result = PredefinedModels.Models
+            .Where(m => ReferenceEquals(m, target) || runnable.Any(r => ReferenceEquals(r, m)))
+            .ToList();
+        result.AddRange(runnable.Where(r => !PredefinedModels.Models.Any(m => ReferenceEquals(m, r))));
+        return result;
+    }
+
+    /// <summary>
     /// The catalogue name to pre-select, or <c>null</c> when <paramref name="requested"/> is not in
     /// <paramref name="runnable"/>.
     ///
@@ -94,7 +134,7 @@ internal static class RunnableTranscriptionModels
     /// that way.</para>
     ///
     /// <para><b>Null is a real answer and callers must not substitute index 0.</b> A model the user
-    /// can no longer run (deleted from disk, key removed) must leave the picker unselected, which is
+    /// can no longer run (its cloud key removed, its local engine unable to run here) must leave the picker unselected, which is
     /// the UX-1 rule: never silently commit a model the pre-select could not vouch for. Handing over
     /// "the first one" would pick whatever presentation order happens to put at the top.</para>
     /// </summary>
