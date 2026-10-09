@@ -17,6 +17,10 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.110.406] - 2026-10-09
+
+- The Assistant prompt now answers the question on cloud models too, instead of repeating it.
+
 ## [1.109.405] - 2026-10-07
 
 - Very large generated images, such as Gemini 4K, now copy to the clipboard.

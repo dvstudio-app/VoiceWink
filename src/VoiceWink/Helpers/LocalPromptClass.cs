@@ -17,8 +17,8 @@ public enum LocalPromptClass
     Translate,
     /// <summary>An edited shipped prompt or the user's own prompt.</summary>
     Custom,
-    /// <summary>The shipped Assistant prompt, unedited (LAI-12: a local model gets the answer-only
-    /// system prompt for it, and its reply is never length-checked).</summary>
+    /// <summary>The shipped Assistant prompt, unedited (LAI-12: every provider gets the answer-only
+    /// system prompt for it, and a local reply to it is never length-checked).</summary>
     Assistant,
 }
 
