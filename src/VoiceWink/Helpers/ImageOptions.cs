@@ -22,7 +22,7 @@ public static class ImageOptions
     public const string Aspect4x5   = "4:5";
     public const string Aspect5x4   = "5:4";
     public const string Aspect21x9  = "21:9";
-    // Extreme ratios — only the gemini-3.1 flash-image family accepts these (all > 3:1, so
+    // Extreme ratios — only the gemini-3.1 flash-image family and Nano Banana 2.1 accept these (all > 3:1, so
     // they violate the gpt-image-2 / 2.5 ratio constraint and are rejected there).
     public const string Aspect1x4   = "1:4";
     public const string Aspect4x1   = "4:1";
@@ -41,7 +41,7 @@ public static class ImageOptions
         Aspect3x4, Aspect2x3, Aspect9x16, Aspect4x5,
     };
 
-    /// <summary>Extreme ratios — only the <c>gemini-3.1</c> flash-image family accepts these.</summary>
+    /// <summary>Extreme ratios — only the <c>gemini-3.1</c> flash-image family and Nano Banana 2.1 accept these.</summary>
     public static readonly string[] ExtremeAspects =
     {
         Aspect4x1, Aspect8x1, Aspect1x4, Aspect1x8,
@@ -132,7 +132,7 @@ public static class ImageOptions
         ("9:16",  Aspect9x16, 11, 20),
         ("1:2",   Aspect1x2, 11, 22),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
         ("9:21",  Aspect9x21, 10, 23), // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
-        // Extreme ratios (gemini-3.1 flash-image family only). Capped at 24 long edge.
+        // Extreme ratios (gemini-3.1 flash-image family and Nano Banana 2.1 only). Capped at 24 long edge.
         ("4:1",   Aspect4x1, 24,  6),  // 24/6 = 4 ✓
         ("8:1",   Aspect8x1, 24,  3),  // 24/3 = 8 ✓
         ("1:4",   Aspect1x4,  6, 24),
@@ -432,7 +432,7 @@ public static class ImageOptions
     /// <summary>
     /// The STATIC rules — the fallback since IMG-5, and the whole answer for OpenAI/Gemini-direct.
     /// Baseline <see cref="CommonAspects"/>; adds <see cref="ExtremeAspects"/> only on the
-    /// gemini-3.1 flash-image family and <see cref="GptImage2ExtraAspects"/> only on
+    /// gemini-3.1 flash-image family and Nano Banana 2.1, and <see cref="GptImage2ExtraAspects"/> only on
     /// OPENAI-DIRECT flexible-size models (<see cref="HasFlexibleSize"/> — IMG-2, widened to
     /// gpt-image-2.5 by IMG-13); the OpenRouter gpt-image families get their
     /// catalog-exact sets and gpt-5*-image* gets none. <paramref name="model"/> may be
@@ -446,7 +446,8 @@ public static class ImageOptions
         // underlying model, and the classifiers strip the slug before matching.
         // IMG-5 Phase B: the ASPECT family includes flash-LITE (probe-proven 2026-08-02); the tier
         // rule below deliberately does not — see IsGemini31FlashAspectFamily.
-        if ((provider == AIProvider.Gemini || provider == AIProvider.OpenRouter) && IsGemini31FlashAspectFamily(model))
+        if ((provider == AIProvider.Gemini || provider == AIProvider.OpenRouter)
+            && (IsGemini31FlashAspectFamily(model) || IsNanoBanana21(model)))
             return Concat(CommonAspects, ExtremeAspects);
         if (provider == AIProvider.OpenAI && HasFlexibleSize(model))
             return Concat(CommonAspects, GptImage2ExtraAspects);
@@ -544,6 +545,10 @@ public static class ImageOptions
 
             // gemini-3 pro-image: 1K/2K/4K.
             if (IsGeminiProImage(model))
+                return new[] { Tier1K, Tier2K, Tier4K };
+
+            // Nano Banana 2.1: 1K/2K/4K — Google's docs say 512 is NOT supported on it.
+            if (IsNanoBanana21(model))
                 return new[] { Tier1K, Tier2K, Tier4K };
 
             // Everything else — gemini-3.1-flash-lite-image (docs: 1K ONLY, "2K and 4K are
@@ -895,6 +900,36 @@ public static class ImageOptions
         var bare = Bare(model!);
         return bare.Equals("nano-banana-pro", System.StringComparison.OrdinalIgnoreCase)
             || bare.StartsWith("nano-banana-pro-", System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Nano Banana 2.1 (<c>gemini-nano-banana-2.1</c>, released 2026-10-06), on Gemini-direct and
+    /// as OpenRouter's <c>google/gemini-nano-banana-2.1</c> slug (where the catalog snapshot answers
+    /// first, IMG-5, so this rule matters there only without one). Its id shares no token with the
+    /// 3.1 flash rules, so it fell to the unknown-Gemini floor: 1K only and no extreme ratios.
+    ///
+    /// <para><b>Evidence (2026-10-11).</b> Tiers: Google's image-generation guide says 2.1 serves
+    /// 1K, 2K and 4K and that 512 is not supported on it — so this is NOT the 3.1 flash tier class,
+    /// and widening <see cref="IsGemini31FlashImage"/> would have offered a 512 Gemini rejects.
+    /// Aspects: the same guide's Nano Banana 2.1 table lists fourteen ratios — the common ten plus
+    /// 1:4, 4:1, 1:8 and 8:1 — at 1K, 2K and 4K, and OpenRouter's image catalog publishes the same
+    /// set.</para>
+    ///
+    /// <para>The exact id, a <c>-preview</c> alias, or a dated snapshot (<c>-</c> then a digit) —
+    /// nothing else. <c>gemini-nano-banana-2.10</c> and <c>-2.1x</c> never match, and neither does a
+    /// named sibling such as a future <c>gemini-nano-banana-2.1-lite</c>: flash-lite showed a "lite"
+    /// variant can reject the tiers its parent takes, so an unknown sibling keeps the floor.</para>
+    /// </summary>
+    private static bool IsNanoBanana21(string? model)
+    {
+        const string id = "gemini-nano-banana-2.1";
+        if (string.IsNullOrEmpty(model)) return false;
+        var bare = Bare(model!);
+        if (bare.Equals(id, System.StringComparison.OrdinalIgnoreCase)) return true;
+        if (!bare.StartsWith(id + "-", System.StringComparison.OrdinalIgnoreCase)) return false;
+        var suffix = bare.Substring(id.Length + 1);
+        return suffix.Equals("preview", System.StringComparison.OrdinalIgnoreCase)
+            || (suffix.Length > 0 && char.IsAsciiDigit(suffix[0]));
     }
 
     /// <summary>

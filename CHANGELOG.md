@@ -17,6 +17,10 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.112.409] - 2026-10-11
+
+- Nano Banana 2.1 on Gemini now offers 2K and 4K sizes and the 1:4, 4:1, 1:8 and 8:1 ratios.
+
 ## [1.111.408] - 2026-10-11
 
 - An invalid transcription API key is now refused instead of saved.

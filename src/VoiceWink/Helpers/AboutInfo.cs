@@ -6,7 +6,8 @@ namespace VoiceWink.Helpers;
 /// Publisher / copyright strings for the in-app About card (LGL-4), plus the support-mail
 /// helpers (the running version, the shared footer, the suggestion <c>mailto:</c>). Kept as a pure helper
 /// (no WinUI types) so the rendered text is unit-testable without constructing a Page.
-/// Mirrors the csproj <c>Company</c> / <c>Copyright</c> metadata and the LICENSE header.
+/// Mirrors the csproj <c>Company</c> / <c>Copyright</c> metadata and the attribution notice at the
+/// end of LICENSE.
 /// </summary>
 public static class AboutInfo
 {

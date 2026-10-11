@@ -669,7 +669,7 @@ public static class AppTheme
     /// When <paramref name="allowedAspects"/> is non-null, only those aspect tags are shown
     /// (Auto is always shown). Used by EnhancementPage / picker dialog to gate aspects per provider.
     /// The dropdown has three groups: square, landscape (widening), portrait (tallening), and the
-    /// 4 extreme ratios that only <c>gemini-3.1-flash-image-preview</c> accepts.
+    /// 4 extreme ratios (the gemini-3.1 flash-image family and Nano Banana 2.1).
     /// </summary>
     public static void PopulateImageAspectComboWithIndicators(
         ComboBox combo,
