@@ -17,6 +17,13 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.111.408] - 2026-10-11
+
+- An invalid transcription API key is now refused instead of saved.
+- ElevenLabs and OpenAI keys limited to speech to text are now accepted.
+- An invalid OpenRouter key is now refused instead of saved.
+- The Models page no longer cuts off the provider name when a key is refused.
+
 ## [1.110.406] - 2026-10-09
 
 - The Assistant prompt now answers the question on cloud models too, instead of repeating it.

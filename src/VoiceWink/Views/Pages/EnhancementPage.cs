@@ -746,7 +746,14 @@ public sealed class EnhancementPage : Page
             // the STORED provider. A cloud provider picked without a key is shown in the combo (so a
             // key can be entered) but is not stored, and the built-in models stay in use until it
             // is (self-review).
-            var builtInInUse = _enhancement.ActiveTextProvider() == AIProvider.OnThisPc;
+            var inUse = _enhancement.ActiveTextProvider();
+            // The provider card is marked only while its box shows the provider in use (the box
+            // shows nothing while the built-in models are), and a cloud provider stored without a key
+            // (an older setup stored one) is not marked: it cannot clean a dictation until a key is saved.
+            var activeCard = ActiveTextCard.Resolve(inUse,
+                shown: _viewModel.IsOnThisPcSelected ? null : _viewModel.SelectedProvider,
+                requiresKey: _enhancement.RequiresApiKey(inUse),
+                hasKey: _viewModel.HasStoredApiKey(inUse));
             var keyRows = engine ? Visibility.Collapsed : Visibility.Visible;
             apiKeyLabel.Visibility = keyRows;
             saveBtnRow.Visibility = keyRows;
@@ -755,8 +762,8 @@ public sealed class EnhancementPage : Page
                 ? Visibility.Visible : Visibility.Collapsed;
             modelLabel.Visibility = keyRows;
             modelCombo.Visibility = keyRows;
-            builtInActive.Visibility = builtInInUse ? Visibility.Visible : Visibility.Collapsed;
-            providerActive.Visibility = builtInInUse ? Visibility.Collapsed : Visibility.Visible;
+            builtInActive.Visibility = activeCard == ActiveTextCardKind.BuiltIn ? Visibility.Visible : Visibility.Collapsed;
+            providerActive.Visibility = activeCard == ActiveTextCardKind.Provider ? Visibility.Visible : Visibility.Collapsed;
             ApplyGpuStatusLine();
             RebuildLocalModelRows();
         }

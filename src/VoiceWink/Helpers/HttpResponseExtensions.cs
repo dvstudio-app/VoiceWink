@@ -9,27 +9,6 @@ namespace VoiceWink.Helpers;
 internal static class HttpResponseExtensions
 {
     /// <summary>
-    /// Issue an authorized GET to <paramref name="url"/> and return whether the credentials are valid.
-    /// 401/403 → <c>false</c>. Any other non-2xx → throws via <c>EnsureSuccessStatusCode</c>.
-    /// Used by transcription provider clients to implement <c>ValidateKeyAsync</c> uniformly —
-    /// each provider differs only in URL and how its auth header is applied.
-    /// </summary>
-    public static async Task<bool> ValidateAuthorizedGetAsync(
-        this HttpClient http,
-        string url,
-        Action<HttpRequestMessage> applyAuth,
-        CancellationToken ct = default)
-    {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        applyAuth(request);
-        using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
-        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            return false;
-        response.EnsureSuccessStatusCode();
-        return true;
-    }
-
-    /// <summary>
     /// Send an image-generation request, translating an HttpClient-timeout
     /// <see cref="TaskCanceledException"/> (thrown with the CALLER's token unsignaled —
     /// .NET surfaces total-timeout expiry this way) into an explicit

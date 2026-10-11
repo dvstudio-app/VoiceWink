@@ -246,9 +246,30 @@ public sealed class ElevenLabsClient : ITranscriptionService
         return normalized.IndexOfAny(ForbiddenKeytermChars) >= 0 ? null : normalized;
     }
 
-    public Task<bool> ValidateKeyAsync(CancellationToken ct = default) =>
-        _http.ValidateAuthorizedGetAsync(
-            "https://api.elevenlabs.io/v1/user",
-            req => req.Headers.Add("xi-api-key", _apiKey),
-            ct);
+    /// <summary>
+    /// Checks the key against the speech-to-text endpoint the app uses, not <c>/v1/user</c>:
+    /// ElevenLabs keys are restricted per feature, and a key with Speech to Text but without the
+    /// "User" permission was refused by the old check while it transcribed fine (owner report
+    /// 2026-10-10). The request carries a model but no audio, so it is rejected after the key is
+    /// checked and nothing is transcribed or billed.
+    /// </summary>
+    public async Task<ApiKeyCheckResult> CheckKeyAsync(CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl);
+        request.Headers.Add("xi-api-key", _apiKey);
+        request.Content = new MultipartFormDataContent { { new StringContent(_model), "model_id" } };
+        return await _http.CheckApiKeyAsync(request, IsMissingAudioRejection, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The rejection a key that passed ElevenLabs' check gets for the audio-less probe — measured
+    /// 2026-10-10 with a Speech-to-Text-only key: HTTP 400,
+    /// <c>detail.type = "validation_error"</c>, <c>detail.code = "invalid_parameters"</c> ("Must
+    /// provide either file or a URL parameter."). The same probe answers a key ID with 400
+    /// <c>authentication_error</c>, a made-up key with 400 <c>authentication_error</c>, and an
+    /// empty form with a string <c>detail</c> before the key is looked at — none of which match.
+    /// Field values only, never the message.
+    /// </summary>
+    internal static bool IsMissingAudioRejection(string? body)
+        => ApiKeyCheck.HasStringFields(body, "detail", ("type", "validation_error"), ("code", "invalid_parameters"));
 }

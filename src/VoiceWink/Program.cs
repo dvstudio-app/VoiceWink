@@ -40,7 +40,10 @@ public static class Program
         // disables the module initializer that would otherwise auto-fire at
         // VoiceWink.dll load time.
         //
-        // Inside the OnAfterInstall fast callback:
+        // Inside the OnAfterInstall fast callback (AfterInstallHook.Run):
+        //   0. InstallerReport.Start() — the Store channel build's one-attempt
+        //      installer's report (Privacy §4.5), started FIRST and run in
+        //      parallel; it returns at once and never throws.
         //   1. UpdateExeSelfHeal.EnsureDeployed() — workaround for the
         //      Velopack 0.0.1298 signed-install bug where Update.exe sometimes
         //      fails to extract at the install root.
@@ -48,14 +51,16 @@ public static class Program
         //      Runtime install with a tight budget so we stay well under
         //      Velopack's 30s fast-callback ceiling, leaving headroom after
         //      the self-heal step.
+        //   3. The report is joined for at most what is left of its 5 s since
+        //      step 0 — nothing when step 2 took 5 s or more — and writes its
+        //      one install.log line. The hook's worst case is unchanged.
         // ─────────────────────────────────────────────────────────────────────
         VelopackApp.Build()
                    .SetArgs(args)
                    .SetAutoApplyOnStartup(false)
                    .OnAfterInstallFastCallback(_ =>
                    {
-                       UpdateExeSelfHeal.EnsureDeployed();
-                       PrereqInstaller.InstallAlwaysWithBudget(25_000);
+                       Services.Updates.AfterInstallHook.Run();
                    })
                    .OnBeforeUninstallFastCallback(_ =>
                    {

@@ -87,9 +87,10 @@ public interface ITranscriptionService
     bool IsReady { get; }
 
     /// <summary>
-    /// Validate the API key by making a lightweight request.
-    /// Returns true if key is valid, false if invalid (401/403).
-    /// Throws HttpRequestException for network errors.
+    /// Check the API key with one lightweight request, classified by <see cref="Helpers.ApiKeyCheck"/>.
+    /// Never throws for a network failure or a timeout (those are <c>Unverified</c>); only caller
+    /// cancellation propagates. Engines that need no key answer <c>Valid</c>.
     /// </summary>
-    Task<bool> ValidateKeyAsync(CancellationToken ct = default) => Task.FromResult(true);
+    Task<Helpers.ApiKeyCheckResult> CheckKeyAsync(CancellationToken ct = default)
+        => Task.FromResult(new Helpers.ApiKeyCheckResult(Helpers.ApiKeyCheckOutcome.Valid, null, Helpers.ApiKeyCheck.ReasonAccepted));
 }

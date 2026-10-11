@@ -128,9 +128,26 @@ public sealed class OpenAITranscriptionClient : ITranscriptionService
         return doc.RootElement.TryGetProperty("text", out var textProp) ? textProp.GetString() ?? "" : "";
     }
 
-    public Task<bool> ValidateKeyAsync(CancellationToken ct = default) =>
-        _http.ValidateAuthorizedGetAsync(
-            "https://api.openai.com/v1/models",
-            req => req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey),
-            ct);
+    /// <summary>
+    /// Checks the key against the transcription endpoint the app uses, not <c>/v1/models</c>: an
+    /// OpenAI key restricted to "Model capabilities" without "List models" got 403 there while it
+    /// transcribed fine (measured 2026-10-10). The request carries a model but no audio, so it is
+    /// rejected after the key is checked and nothing is transcribed or billed.
+    /// </summary>
+    public async Task<ApiKeyCheckResult> CheckKeyAsync(CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+        request.Content = new MultipartFormDataContent { { new StringContent(_model), "model" } };
+        return await _http.CheckApiKeyAsync(request, IsMissingAudioRejection, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The rejection a key that passed OpenAI's check gets for the audio-less probe — measured
+    /// 2026-10-10 with a normal key and a restricted one (List models: None): HTTP 400,
+    /// <c>error.type = "invalid_request_error"</c> (the missing-file validation error). A made-up
+    /// key gets 401 <c>invalid_api_key</c> before that. Field values only, never the message.
+    /// </summary>
+    internal static bool IsMissingAudioRejection(string? body)
+        => ApiKeyCheck.HasStringFields(body, "error", ("type", "invalid_request_error"));
 }

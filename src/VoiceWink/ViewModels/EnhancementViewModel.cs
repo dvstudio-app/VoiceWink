@@ -250,6 +250,9 @@ public partial class EnhancementViewModel : ObservableObject
         _enhancement.SyncOnThisPcResidency();
     }
 
+    /// <summary>A key is stored for <paramref name="provider"/> (the page's "Active" marker).</summary>
+    internal bool HasStoredApiKey(AIProvider provider) => _apiKeys.HasApiKey(provider.ToString().ToLowerInvariant());
+
     partial void OnSelectedProviderChanged(AIProvider value)
     {
         // Only persist provider to settings if it is USABLE: it has an API key, or it needs none

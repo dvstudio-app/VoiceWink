@@ -61,13 +61,9 @@ public sealed class GeminiDescriptor : IAIProviderDescriptor
         // ProviderApiException turns into a 401. Asking the OpenAI-compatible endpoint first
         // threw its prose-only 400, which read as an outage, so the wrong key was saved.
         var baseUrl = config.GetBaseUrl().TrimEnd('/');
-        using (var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/models?pageSize=1"))
-        {
-            request.Headers.Add("x-goog-api-key", config.ApiKey);
-            var http = httpFactory.CreateClient("ai");
-            using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
-            await response.EnsureSuccessOrLogAndThrowAsync("Gemini native key validation", Logger, ct).ConfigureAwait(false);
-        }
+        await OpenAICompatibleModelFetch.EnsureKeyAcceptedAsync(httpFactory, $"{baseUrl}/models?pageSize=1",
+            req => req.Headers.Add("x-goog-api-key", config.ApiKey),
+            "Gemini native key validation", ct).ConfigureAwait(false);
 
         return await OpenAICompatibleModelFetch.FetchAsync(httpFactory, config, query, unfiltered, ct).ConfigureAwait(false);
     }

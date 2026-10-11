@@ -2177,6 +2177,13 @@ public sealed class AIEnhancementService
                 return (new List<string>(), 0, null);
             ThrowIfOffline(config);
 
+            // OpenRouter's catalogs are public and answer ANY key (measured 2026-10-10), so the list
+            // below cannot judge one: check the candidate on OpenRouter's key endpoint first. Only
+            // here, on the save path — catalog reads (capability hydration, page loads) stay
+            // independent of it, so a key-endpoint outage cannot block the public catalog.
+            if (provider == AIProvider.OpenRouter)
+                await Providers.OpenAICompatibleModelFetch.EnsureOpenRouterKeyAcceptedAsync(_httpFactory, config, ct).ConfigureAwait(false);
+
             var fetched = await _providers.Get(provider)
                 .FetchAvailableModelsAsync(_httpFactory, config, query, showAll, ct).ConfigureAwait(false);
 

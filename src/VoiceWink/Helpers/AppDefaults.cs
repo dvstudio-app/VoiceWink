@@ -478,7 +478,8 @@ public static class AppDefaults
     /// The one-time install-source record (dvstudio-metrics #85; Privacy §4.5), written only by
     /// <c>InstallSourceReporter</c>. <see cref="InstallSourceInstallStamp"/> is the Velopack install
     /// root's creation time ("O") the record belongs to — a different stamp means a new installation;
-    /// <see cref="InstallSource"/> is <c>msstore</c> | <c>not-detected</c>;
+    /// <see cref="InstallSource"/> is <c>msstore</c> (since store funnel Part 2 written only by a Store
+    /// channel build) | <c>not-detected</c> (written by the event-log versions 1.100.395 onward, read only);
     /// <see cref="InstallSourceReport"/> is <c>pending</c> | <c>sent</c> | <c>gave-up</c> | <c>none</c>;
     /// <see cref="InstallSourceReportAttempts"/> counts attempts as a decimal string. App-managed — NOT in
     /// <see cref="Defaults"/>, and deliberately untouched by "Reset all settings": clearing them would

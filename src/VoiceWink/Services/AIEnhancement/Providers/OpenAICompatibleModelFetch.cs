@@ -12,6 +12,38 @@ internal static class OpenAICompatibleModelFetch
 {
     private static ILogger Logger => Log.ForContext(typeof(OpenAICompatibleModelFetch));
 
+    /// <summary>
+    /// Sends one authenticated GET that exists only to check the key, and throws the usual typed
+    /// provider exception when it is refused (a 401 — or Gemini's key-naming 400 — reaches every
+    /// caller's key-rejection arm). Used where the model list cannot judge a key: Gemini (its
+    /// OpenAI-compatible list answers a bad key with a prose-only 400) and OpenRouter (its catalogs
+    /// are public and answer ANY key, measured 2026-10-10). Logs the status only, never the body:
+    /// a refused key's response can echo it.
+    /// </summary>
+    public static async Task EnsureKeyAcceptedAsync(
+        IHttpClientFactory httpFactory, string url, Action<HttpRequestMessage> applyAuth, string label, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        applyAuth(request);
+        var http = httpFactory.CreateClient("ai");
+        using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
+        if (response.IsSuccessStatusCode)
+            return;
+
+        string? body = null;
+        try { body = await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { }
+
+        Logger.Warning("{Provider} API key check returned {Status}", label, (int)response.StatusCode);
+        throw ProviderApiException.From(label, response, body);
+    }
+
+    /// <summary>OpenRouter's key check, <c>GET {base}/key</c> (see <see cref="EnsureKeyAcceptedAsync"/>).</summary>
+    public static Task EnsureOpenRouterKeyAcceptedAsync(IHttpClientFactory httpFactory, AIProviderConfig config, CancellationToken ct)
+        => EnsureKeyAcceptedAsync(httpFactory, $"{config.GetBaseUrl().TrimEnd('/')}/key",
+            req => req.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.ApiKey),
+            "OpenRouter key validation", ct);
+
     public static async Task<ProviderModelList> FetchAsync(
         IHttpClientFactory httpFactory,
         AIProviderConfig config,

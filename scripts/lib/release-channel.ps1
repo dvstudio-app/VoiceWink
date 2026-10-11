@@ -33,6 +33,41 @@ function Test-IsPublicReleaseChannel {
     return $Channel.Trim().EndsWith('-stable', [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Get-StoreReleaseChannel {
+    <#
+    .SYNOPSIS
+    The Microsoft Store's own update channel, by EXACT name.
+
+    .DESCRIPTION
+    Store funnel Part 2 (privacy A39, 2026-10-10): the installer the Microsoft Store listing pins is
+    built for its own public channel, so the build and its download path name their source. It is a
+    second public feed of the SAME soaked tag under the same version - not a third cohort - and its
+    class is 'Public' by the '-stable' suffix rule above, with everything that follows from that
+    (ungated, credential-free, keep 10, the legal and UAT gates).
+
+    This function is the ONLY spelling of the name in the repository's code. The update-feed generator
+    asks Test-IsStoreReleaseChannel and emits `UpdateFeedConfig.IsStoreChannel`, so no src/ file names a
+    channel (a C# literal would sit in EVERY build's metadata and defeat the bake gate's byte scan), and
+    every script and self-test derives the name from here.
+    #>
+    return 'win-x64-store-stable'
+}
+
+function Test-IsStoreReleaseChannel {
+    <#
+    .SYNOPSIS
+    Whether a channel is the Microsoft Store's own update channel.
+
+    .DESCRIPTION
+    Exact and ordinal (case-SENSITIVE), like Get-GatedReleaseChannels and for the same reason: the name
+    becomes the R2 prefix and the report path verbatim, so a case variant is a different channel, never
+    the Store's. No trimming either - a padded name is not the name. An empty channel is not the Store's.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Channel)
+
+    return [string]::Equals($Channel, (Get-StoreReleaseChannel), [StringComparison]::Ordinal)
+}
+
 function Get-GatedReleaseChannels {
     <#
     .SYNOPSIS

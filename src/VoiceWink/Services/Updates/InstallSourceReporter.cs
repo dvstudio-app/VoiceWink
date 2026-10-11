@@ -10,39 +10,46 @@ using VoiceWink.Services.System;
 
 namespace VoiceWink.Services.Updates;
 
-/// <summary>Decides and sends the one-time install-source report (dvstudio-metrics #85).</summary>
+/// <summary>Decides and sends the one-time first-check install report (Privacy Policy §4.5).</summary>
 public interface IInstallSourceReporter
 {
     /// <summary>
-    /// Called by the update scheduler on every automatic tick. Classifies this installation once
-    /// (reading the Store's event log), and — when a matching Store event was found and
-    /// <paramref name="networkProven"/> — makes one bounded attempt at the report. Never throws.
+    /// Called by the update scheduler on every automatic tick. Records this installation once when the
+    /// build is the Microsoft Store's own channel, and — when a report is pending and
+    /// <paramref name="networkProven"/> — makes one bounded attempt at it. Never throws.
     /// </summary>
     Task RunAsync(bool networkProven, CancellationToken ct);
 }
 
 /// <summary>
-/// The once-per-installation install-source report (dvstudio-metrics #85; Privacy Policy §4.5;
-/// addenda A36).
+/// The once-per-installation first-check report (Privacy Policy §4.5; addenda A36, A39).
+///
+/// <para><b>Decided by the build, not by the machine (store funnel Part 2).</b> A copy built for the
+/// Microsoft Store's own update channel (<c>UpdateFeedConfig.IsStoreChannel</c>) records
+/// <c>msstore</c>/<c>pending</c> for its installation and sends the report; nothing on the device is read
+/// to decide it. Every other build decides nothing new: it only completes a report that an EARLIER
+/// version of the same installation had decided to send (the A36 event-log copies, 1.100.395+) — the
+/// saved record for the current install stamp wins, whoever wrote it. The report goes to the build's own
+/// channel, so a Store-channel copy reports on its channel and a legacy record finishes on
+/// <c>win-x64-stable</c>.</para>
 ///
 /// <para><b>Gates it rides.</b> It is called only from the update scheduler's automatic tick, so the
 /// <c>UPDATE_CHECK_ENABLED</c> build flag, the automatic-check toggle and the LGL-1 legal gate all apply
 /// before this type runs at all; the manual "Check for updates" button never reaches it. On top of
-/// those: only a PUBLIC, configured feed (the Store carries stable only, and a tester build must not put
-/// its token on a new code path) — otherwise neither the log is read nor anything sent.</para>
+/// those: only a PUBLIC, configured feed (a tester build must not put its token on a new code path).</para>
 ///
-/// <para><b>Once, keyed on the installation.</b> The result is saved against the Velopack install
-/// root's creation time (<see cref="InstallRoot"/>); the same stamp is never re-classified, a new stamp
-/// (a reinstall) is. A Store result starts <c>pending</c>; each attempt is counted and persisted BEFORE
-/// the request, so <see cref="MaxAttempts"/> holds across crashes; any HTTP response of any status is
-/// <c>sent</c>; an exhausted budget is <c>gave-up</c>. Every write is read back, because
-/// <see cref="SettingsService.SetManyAndFlushOrThrow"/> returns silently while persistence is
-/// suppressed (data erasure) — an unverified write aborts the tick rather than sending on state that
-/// may not survive.</para>
+/// <para><b>Once, keyed on the installation.</b> The record is saved against the Velopack install
+/// root's creation time (<see cref="InstallRoot"/>); a new stamp (a reinstall) starts again. A pending
+/// report's attempts are counted and persisted BEFORE the request, so <see cref="MaxAttempts"/> holds
+/// across crashes; any HTTP response of any status is <c>sent</c>; an exhausted budget is
+/// <c>gave-up</c>. Every write is read back, because <see cref="SettingsService.SetManyAndFlushOrThrow"/>
+/// returns silently while persistence is suppressed (data erasure) — an unverified write aborts the tick
+/// rather than sending on state that may not survive.</para>
 ///
-/// <para><b>Stated limits</b> (also in the policy): a lost response makes a retry a duplicate; a GDPR
-/// erasure deletes the record, so a second report is possible; the figure the metrics repo reads is
-/// reports received per day, not installations completed that day.</para>
+/// <para><b>Stated limits</b> (also in the policy): a lost response makes a retry a duplicate; deleting
+/// the settings (a GDPR erasure included) deletes the record, so a further report is possible; the
+/// figure the metrics side reads is reports received per day, not installations completed that day.
+/// The installer's own report at install time is <see cref="InstallerReport"/>, a separate path.</para>
 /// </summary>
 public sealed class InstallSourceReporter : IInstallSourceReporter
 {
@@ -51,7 +58,7 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     /// <summary>The named HttpClient (see <c>VoiceWinkHttpClients</c>).</summary>
     public const string HttpClientName = "install-source";
 
-    /// <summary>The path under the channel folder the metrics repo counts. FROZEN once shipped.</summary>
+    /// <summary>The path under the channel folder the metrics side counts. FROZEN once shipped.</summary>
     public const string ReportPath = "install-source/msstore";
 
     /// <summary>Fixed, version-free User-Agent, so the metrics side can drop browser and bot traffic.</summary>
@@ -60,6 +67,7 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     public const int MaxAttempts = 3;
 
     internal const string SourceMsStore = "msstore";
+    /// <summary>Written only by the earlier event-log versions; a record carrying it is read, never written.</summary>
     internal const string SourceNotDetected = "not-detected";
     internal const string ReportPending = "pending";
     internal const string ReportSent = "sent";
@@ -67,47 +75,47 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     internal const string ReportNone = "none";
 
     private readonly SettingsService _settings;
-    private readonly IStoreInstallEventSource _events;
     private readonly IHttpClientFactory _httpFactory;
     private readonly Func<DateTime?> _installRootCreatedUtc;
     private readonly bool _feedIsPublic;
     private readonly string _channel;
+    private readonly bool _isStoreChannel;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     public InstallSourceReporter(SettingsService settings, IHttpClientFactory httpFactory)
         : this(
             settings,
-            new StoreInstallEventLogSource(),
             httpFactory,
             static () => InstallRoot.CreationTimeUtc(AppContext.BaseDirectory),
             UpdateFeedConfig.IsConfigured && !UpdateFeedConfig.FeedIsGated,
-            UpdateFeedConfig.Channel)
+            UpdateFeedConfig.Channel,
+            UpdateFeedConfig.IsStoreChannel)
     {
     }
 
     internal InstallSourceReporter(
         SettingsService settings,
-        IStoreInstallEventSource events,
         IHttpClientFactory httpFactory,
         Func<DateTime?> installRootCreatedUtc,
         bool feedIsPublic,
-        string channel)
+        string channel,
+        bool isStoreChannel)
     {
         _settings = settings;
-        _events = events;
         _httpFactory = httpFactory;
         _installRootCreatedUtc = installRootCreatedUtc;
         _feedIsPublic = feedIsPublic;
         _channel = channel ?? string.Empty;
+        _isStoreChannel = isStoreChannel;
     }
 
-    /// <summary>The report's address for <paramref name="channel"/>, e.g.
-    /// <c>https://updates.voicewink.app/win-x64-stable/install-source/msstore</c>.</summary>
+    /// <summary>The report's address for <paramref name="channel"/>:
+    /// <c>https://updates.voicewink.app/&lt;channel&gt;/install-source/msstore</c>.</summary>
     public static Uri BuildUri(string channel) =>
         new($"https://updates.voicewink.app/{channel}/{ReportPath}", UriKind.Absolute);
 
     /// <summary>The installation identity a record is saved against: the install root's creation time,
-    /// UTC, round-trip format. One formatter for the writer below and <see cref="IsStoreInstallation"/>.</summary>
+    /// UTC, round-trip format. One formatter for the writer below and <see cref="IsStoreInstallation(SettingsService, DateTime?)"/>.</summary>
     internal static string StampFor(DateTime installRootCreated)
     {
         var utc = installRootCreated.Kind == DateTimeKind.Utc ? installRootCreated : installRootCreated.ToUniversalTime();
@@ -115,17 +123,21 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     }
 
     /// <summary>
-    /// Whether the saved record says the Microsoft Store installed THIS installation — the source is
-    /// <c>msstore</c> AND the record's stamp is the current install root's (LNC-14: the one-time Store
-    /// rating line). Settings survive an uninstall, so a record from an earlier Store installation can
-    /// sit beside a later website install until an automatic check re-classifies it — or for good with
-    /// automatic checks off; the stamp is what tells the two apart. No install root (a dev or portable
-    /// copy), no record, or another installation's record: false. Reads only; never classifies or sends.
+    /// Whether THIS installation is a Microsoft Store one (LNC-14: the one-time Store rating line). A
+    /// Store-channel build with an install root is; so is an installation whose saved record says
+    /// <c>msstore</c> under the CURRENT install root's stamp (the A36 record an earlier version wrote).
+    /// Settings survive an uninstall, so an earlier Store installation's record can sit beside a later
+    /// website install; the stamp is what tells the two apart. No install root (a dev or portable copy):
+    /// false. Reads only; never records or sends.
     /// </summary>
     public static bool IsStoreInstallation(SettingsService settings, DateTime? installRootCreatedUtc) =>
+        IsStoreInstallation(settings, installRootCreatedUtc, UpdateFeedConfig.IsStoreChannel);
+
+    internal static bool IsStoreInstallation(SettingsService settings, DateTime? installRootCreatedUtc, bool isStoreChannel) =>
         installRootCreatedUtc is { } created
-        && string.Equals(settings.GetString(AppDefaults.InstallSourceInstallStamp), StampFor(created), StringComparison.Ordinal)
-        && string.Equals(settings.GetString(AppDefaults.InstallSource), SourceMsStore, StringComparison.Ordinal);
+        && (isStoreChannel
+            || (string.Equals(settings.GetString(AppDefaults.InstallSourceInstallStamp), StampFor(created), StringComparison.Ordinal)
+                && string.Equals(settings.GetString(AppDefaults.InstallSource), SourceMsStore, StringComparison.Ordinal)));
 
     public async Task RunAsync(bool networkProven, CancellationToken ct)
     {
@@ -135,10 +147,10 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
         try
         {
             // The tick checked the toggle before its update check; the user may have turned
-            // automatic checks off while that check ran. Off means the log is not read either (§4.5).
+            // automatic checks off while that check ran. Off means nothing is recorded either (§4.5).
             if (!AutomaticChecksOn()) return;
 
-            var record = EnsureClassified();
+            var record = EnsureRecord();
             if (record is null || record.Value.Report != ReportPending) return;
 
             if (record.Value.Attempts >= MaxAttempts)
@@ -168,7 +180,7 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
                 using var response = await client
                     .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
                     .ConfigureAwait(false);
-                // Any status reached the endpoint and was counted there — 404 is the expected answer.
+                // Any status reached the endpoint and was counted there.
                 if (!Persist(reserved with { Report = ReportSent }))
                     Logger.Information("Install-source report: the delivery could not be saved; a later check may report again");
                 Logger.Information("Install-source report sent (HTTP {Status}, attempt {Attempt}/{Max})",
@@ -207,45 +219,22 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
 
     internal readonly record struct Record(string Stamp, string Source, string Report, int Attempts);
 
-    /// <summary>The saved record for THIS installation, classifying it first when there is none. Null
-    /// when this is not a Velopack install or the classification could not be saved.</summary>
-    private Record? EnsureClassified()
+    /// <summary>The saved record for THIS installation; for a Store-channel build with none yet, a new
+    /// pending record. Null when this is not a Velopack install, when a non-Store build has no record
+    /// for this installation (it decides nothing), or when a new record could not be saved.</summary>
+    private Record? EnsureRecord()
     {
         if (_installRootCreatedUtc() is not { } created) return null;
-        var createdUtc = created.Kind == DateTimeKind.Utc ? created : created.ToUniversalTime();
-        var stamp = StampFor(createdUtc);
+        var stamp = StampFor(created);
 
         if (string.Equals(_settings.GetString(AppDefaults.InstallSourceInstallStamp), stamp, StringComparison.Ordinal))
             return ReadRecord(stamp);
 
-        InstallSource source;
-        try
-        {
-            var (from, to) = InstallSourceClassifier.Window(createdUtc);
-            source = InstallSourceClassifier.Classify(createdUtc, _events.Read(from, to));
-        }
-        catch (global::System.Diagnostics.Eventing.Reader.EventLogNotFoundException)
-        {
-            // No Store log on this machine at all (e.g. a Windows edition without the Store): a
-            // permanent answer, so it is saved like any other.
-            source = InstallSource.NotDetected;
-            Logger.Information("Install source: this machine has no Microsoft Store event log");
-        }
-        catch (Exception ex)
-        {
-            // Anything else may be transient (a circular log overwriting the read position, a busy
-            // event service): save nothing, so the next automatic check reads again. The window is
-            // anchored to the install folder, so a later read judges the same installation.
-            Logger.Information("Install source: Store event log not readable ({Error:l}); will retry at the next automatic check",
-                ex.GetType().Name);
-            return null;
-        }
+        if (!_isStoreChannel) return null;
 
-        var record = source == InstallSource.MsStore
-            ? new Record(stamp, SourceMsStore, ReportPending, 0)
-            : new Record(stamp, SourceNotDetected, ReportNone, 0);
+        var record = new Record(stamp, SourceMsStore, ReportPending, 0);
         if (!Persist(record)) return null;
-        Logger.Information("Install source for this installation: {Source:l}", record.Source);
+        Logger.Information("Install source for this installation: {Source:l} (the Store channel's build)", record.Source);
         return record;
     }
 

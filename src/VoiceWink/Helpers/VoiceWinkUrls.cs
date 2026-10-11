@@ -69,16 +69,16 @@ internal static class VoiceWinkUrls
     /// the <c>ms-windows-store://review/</c> URI: Microsoft documents that URI by Store ID with MSIX
     /// examples only, and no Microsoft page shows it opening the rating dialog for an MSI/EXE product
     /// like this one, so the owner's rule was to link the listing (where the rating sits) until a test
-    /// on a Store install shows otherwise. The product id is the one the install-source classifier
-    /// matches, never retyped.
+    /// on a Store install shows otherwise.
     /// </summary>
-    public const string StoreListing =
-        $"ms-windows-store://pdp/?ProductId={Services.Updates.InstallSourceClassifier.StoreProductId}";
+    public const string StoreListing = $"ms-windows-store://pdp/?ProductId={StoreProductId}";
 
     /// <summary>The same listing on the web — opened when the Store app cannot be started (an edition
     /// without the Store, where the website installer is the only way in).</summary>
-    public const string StoreListingWeb =
-        $"https://apps.microsoft.com/detail/{Services.Updates.InstallSourceClassifier.StoreProductId}";
+    public const string StoreListingWeb = $"https://apps.microsoft.com/detail/{StoreProductId}";
+
+    /// <summary>VoiceWink's Microsoft Store product ID — the ONE spelling, behind both listing links.</summary>
+    public const string StoreProductId = "XP9K0LN0WBCPT0";
 
     /// <summary>The public source repository — the About card's "Source code (GPL v3)" link and the
     /// License page's "Star on GitHub" (LNC-14).</summary>

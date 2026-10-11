@@ -142,7 +142,7 @@ internal static class LocalModelsSection
         title.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = entry.DisplayName });
         title.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
         {
-            Text = $"  {FormatSize(entry.Model.SizeBytes)}",
+            Text = $"  {FormatSize(entry.Model.SizeBytes).Replace(' ', '\u00A0')}",
             FontSize = 12,
             FontWeight = FontWeights.Normal,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
@@ -151,7 +151,9 @@ internal static class LocalModelsSection
         {
             title.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
             {
-                Text = "  Best for this PC",
+                // Non-breaking spaces: on a narrow page the tag moves to the next line whole
+                // instead of splitting after "this" (owner, 2026-10-09).
+                Text = "  Best\u00A0for\u00A0this\u00A0PC",
                 FontSize = 12,
                 Foreground = AppTheme.Brush(AppTheme.AccentGreen),
             });

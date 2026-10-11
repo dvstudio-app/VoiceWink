@@ -816,7 +816,8 @@ public sealed class OnboardingPage : Page
         // Signup link
         var signupLink = new HyperlinkButton
         {
-            Content = "Get a free Groq API key \u2192",
+            // The same text a provider change shows (it read "free" only until the first change).
+            Content = ApiKeyLinkText.For(ModelProvider.Groq.ToString()),
             NavigateUri = new Uri(signupUrls[ModelProvider.Groq]),
             FontSize = 12,
             HorizontalAlignment = HorizontalAlignment.Left,
@@ -855,7 +856,7 @@ public sealed class OnboardingPage : Page
         {
             if (signupUrls.TryGetValue(provider, out var url))
             {
-                signupLink.Content = $"Get a {provider} API key \u2192";
+                signupLink.Content = ApiKeyLinkText.For(provider.ToString());
                 signupLink.NavigateUri = new Uri(url);
                 signupLink.Visibility = Visibility.Visible;
             }
@@ -916,29 +917,16 @@ public sealed class OnboardingPage : Page
 
                 SetKeyStatus("\uE946", "Validating...", AppTheme.TextSecondary, true);
 
-                bool isValid = false;
-                bool couldNotValidate = false;
+                Helpers.ApiKeyCheckResult check;
                 lockProviderBox();
                 try
                 {
                     var http = App.Services.GetRequiredService<IHttpClientFactory>().CreateClient("transcription");
-                    ITranscriptionService? client = providerKey switch
-                    {
-                        "groq" => new GroqClient(http, key),
-                        "deepgram" => new DeepgramClient(http, key),
-                        "elevenlabs" => new ElevenLabsClient(http, key),
-                        "openai" => new OpenAITranscriptionClient(http, key),
-                        _ => null
-                    };
-                    isValid = client != null ? await client.ValidateKeyAsync() : true;
+                    check = await TranscriptionKeyCheck.RunAsync(http, providerKey, key);
                 }
-                catch (HttpRequestException ex) when (ex.StatusCode is global::System.Net.HttpStatusCode.Unauthorized
-                                                           or global::System.Net.HttpStatusCode.Forbidden)
-                {
-                    isValid = false;
-                }
-                catch (Exception) { couldNotValidate = true; }
                 finally { unlockProviderBox(); }
+                var isValid = check.Outcome == Helpers.ApiKeyCheckOutcome.Valid;
+                var couldNotValidate = check.Outcome == Helpers.ApiKeyCheckOutcome.Unverified;
 
                 if (isValid)
                 {
@@ -1824,13 +1812,20 @@ public sealed class OnboardingPage : Page
         var cloudActive = AppTheme.CreateActiveBadge();
         Action clearCloudChoice = () => { };
         Action refreshBuiltInRows = () => { };
+        // What the cloud card's Provider box shows: the stored cloud provider at first, then each pick;
+        // null once a built-in model empties it. The card is marked only while it shows what is in use.
+        Services.AIEnhancement.AIProvider? shownCloud =
+            StoredTextProvider() is { } initial && Array.IndexOf(allProviders, initial) >= 0 ? initial : null;
         void ApplyActive()
         {
             // What dictations use: the active prompt's provider override first (Codex diff r1).
-            // Nothing stored marks neither card.
+            // Nothing stored marks neither card, and a cloud provider without a key is not marked.
             var inUse = StoredTextProvider() is null ? (Services.AIEnhancement.AIProvider?)null : enhancement.ActiveTextProvider();
-            builtInActive.Visibility = inUse == Services.AIEnhancement.AIProvider.OnThisPc ? Visibility.Visible : Visibility.Collapsed;
-            cloudActive.Visibility = inUse is { } p && Array.IndexOf(allProviders, p) >= 0 ? Visibility.Visible : Visibility.Collapsed;
+            var card = ActiveTextCard.Resolve(inUse, shownCloud,
+                requiresKey: inUse is { } r && enhancement.RequiresApiKey(r),
+                hasKey: inUse is { } k && _apiKeys.HasApiKey(k.ToString().ToLowerInvariant()));
+            builtInActive.Visibility = card == ActiveTextCardKind.BuiltIn ? Visibility.Visible : Visibility.Collapsed;
+            cloudActive.Visibility = card == ActiveTextCardKind.Provider ? Visibility.Visible : Visibility.Collapsed;
         }
 
         if (Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered && _enhancementModels.LocalModels is { } localModels)
@@ -1841,6 +1836,7 @@ public sealed class OnboardingPage : Page
                 enhancement.SelectedModel = id;
                 enhancement.SyncOnThisPcResidency();
                 clearCloudChoice();
+                shownCloud = null;
                 ApplyActive();
                 refreshBuiltInRows();
             }
@@ -1912,6 +1908,14 @@ public sealed class OnboardingPage : Page
                 TextWrapping = TextWrapping.Wrap
             });
             builtInCard.Children.Add(rowsHost);
+            // The two sections are alternatives, which their layout alone did not say (owner, 2026-10-09).
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Pick one: a built-in model or a cloud provider.",
+                FontSize = 13,
+                Foreground = AppTheme.Brush(AppTheme.TextSecondary),
+                TextWrapping = TextWrapping.Wrap
+            });
             // Not wrapped in a card: each model is its own card, as on the Models page.
             panel.Children.Add(builtInCard);
         }
@@ -1929,16 +1933,28 @@ public sealed class OnboardingPage : Page
         // Only pre-select a provider the user previously chose from this list.
         var textProviderInit = StoredTextProvider() is { } tp && Array.IndexOf(allProviders, tp) >= 0 ? tp : (Services.AIEnhancement.AIProvider?)null;
 
+        // A cloud provider is stored only once it has a key — picked without one, it is shown so a
+        // key can be entered, and whatever was in use stays in use (the AI Enhancement page's rule).
+        // Storing it keyless marked it "Active" and kept a new install off the built-in models.
+        void UseCloud(Services.AIEnhancement.AIProvider provider)
+        {
+            enhancement.SelectedProvider = provider;
+            enhancement.SyncOnThisPcResidency();
+            ApplyActive();
+            refreshBuiltInRows();
+        }
         var validateTextKey = BuildProviderKeyRow(textCard, allProviders, signupUrls, textProviderInit,
             provider =>
             {
-                enhancement.SelectedProvider = provider;
-                enhancement.SyncOnThisPcResidency();
-                ApplyActive();
-                refreshBuiltInRows();
+                shownCloud = provider;
+                if (_apiKeys.HasApiKey(provider.ToString().ToLowerInvariant()))
+                    UseCloud(provider);
+                else
+                    ApplyActive(); // the box no longer shows the provider in use
             },
             out clearCloudChoice,
-            isImageModels: false);
+            isImageModels: false,
+            onKeySaved: UseCloud);
         ApplyActive();
         panel.Children.Add(AppTheme.CreateCard(textCard));
 
@@ -1966,7 +1982,16 @@ public sealed class OnboardingPage : Page
         var validateImageKey = BuildProviderKeyRow(imageCard, imageProviders, signupUrls, imageProviderInit,
             provider => enhancement.SelectedImageProvider = provider,
             out _,
-            isImageModels: true);
+            isImageModels: true,
+            // The key slot is shared, and Continue runs this validator after the text one: a key saved
+            // here stores the text provider when the text box shows the same provider (Grok + Kimi diff r1).
+            onKeySaved: provider =>
+            {
+                if (shownCloud == provider)
+                    UseCloud(provider);
+                else
+                    ApplyActive();
+            });
         panel.Children.Add(AppTheme.CreateCard(imageCard));
 
         // Store validators so the Continue button can trigger them
@@ -1976,7 +2001,8 @@ public sealed class OnboardingPage : Page
     /// <summary>
     /// Returns a validation function: saves any unsaved key, returns true if OK to proceed.
     /// <paramref name="clearSelection"/> empties the provider combo — the text card's, when a
-    /// built-in model is chosen instead.
+    /// built-in model is chosen instead. <paramref name="onKeySaved"/> runs once a key is saved for
+    /// the provider the row still shows.
     /// </summary>
     private Func<Task<bool>> BuildProviderKeyRow(
         StackPanel card,
@@ -1985,7 +2011,8 @@ public sealed class OnboardingPage : Page
         Services.AIEnhancement.AIProvider? currentProvider,
         Action<Services.AIEnhancement.AIProvider> onProviderChanged,
         out Action clearSelection,
-        bool isImageModels = false)
+        bool isImageModels = false,
+        Action<Services.AIEnhancement.AIProvider>? onKeySaved = null)
     {
         var providerCombo = new ComboBox
         {
@@ -2126,7 +2153,7 @@ public sealed class OnboardingPage : Page
         {
             if (signupUrls.TryGetValue(provider, out var url))
             {
-                signupLink.Content = $"Get a {provider} API key \u2192";
+                signupLink.Content = ApiKeyLinkText.For(provider.ToString());
                 signupLink.NavigateUri = new Uri(url);
                 signupLink.Visibility = Visibility.Visible;
             }
@@ -2185,7 +2212,12 @@ public sealed class OnboardingPage : Page
 
                 var previousKey = _apiKeys.GetApiKey(providerKey) ?? "";
                 if (key == previousKey)
-                    return true; // already saved — idempotence, not a rollback
+                {
+                    // Already saved — idempotence, not a rollback. The key may have been saved by the
+                    // other card (the image card shares the slot), so the provider is stored here too.
+                    onKeySaved?.Invoke(provider);
+                    return true;
+                }
 
                 // ENH-17: claim AFTER the idempotence check (Kimi review). A path that writes
                 // nothing must not burn a generation — pressing Continue with an unchanged key
@@ -2263,6 +2295,7 @@ public sealed class OnboardingPage : Page
                     }
                     committed = true;
                     if (!RowShows(provider)) return true; // the row no longer shows this provider
+                    onKeySaved?.Invoke(provider);
 
                     if (isValid)
                     {
@@ -2362,7 +2395,12 @@ public sealed class OnboardingPage : Page
             if (string.IsNullOrWhiteSpace(apiKeyBox.Password) && !_apiKeys.HasApiKey(pKey))
                 return true;
 
-            return await SaveAndValidateEnhKeyAsync();
+            var ok = await SaveAndValidateEnhKeyAsync();
+            // A key that reached the slot another way (the image card shares it) leaves the box empty,
+            // and the save above then returns early: the provider shown here is stored all the same.
+            if (ok && RowShows(provider) && _apiKeys.HasApiKey(pKey))
+                onKeySaved?.Invoke(provider);
+            return ok;
         };
     }
 

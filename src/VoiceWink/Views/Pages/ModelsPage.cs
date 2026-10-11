@@ -1010,6 +1010,15 @@ public sealed class ModelsPage : Page
             VerticalAlignment = VerticalAlignment.Center
         };
 
+        // The key check's status, on its own line under the header (see AddApiKeyEntry).
+        var keyStatusPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Visibility = Visibility.Collapsed
+        };
+
         // Link to the provider's own console, on the RIGHT with the other key affordances (owner
         // 2026-07-31) — added FIRST so it stays at the group's left edge in BOTH states: tapping
         // "Edit" removes the saved panel and APPENDS the key entry, so a link added last would
@@ -1065,7 +1074,7 @@ public sealed class ModelsPage : Page
             editLink.Tapped += (_, _) =>
             {
                 headerRight.Children.Remove(savedPanel);
-                AddApiKeyEntry(headerRight, providerKey, isEditing: true);
+                AddApiKeyEntry(headerRight, keyStatusPanel, providerKey, isEditing: true);
             };
 
             headerRight.Children.Add(savedPanel);
@@ -1073,7 +1082,7 @@ public sealed class ModelsPage : Page
         else
         {
             // Show inline API key entry
-            AddApiKeyEntry(headerRight, providerKey);
+            AddApiKeyEntry(headerRight, keyStatusPanel, providerKey);
         }
 
         var headerGrid = new Grid();
@@ -1085,6 +1094,7 @@ public sealed class ModelsPage : Page
         headerGrid.Children.Add(headerRight);
 
         groupPanel.Children.Add(headerGrid);
+        groupPanel.Children.Add(keyStatusPanel);
 
         // ── Model cards within this provider ────────────────────
         foreach (var model in models)
@@ -1206,9 +1216,12 @@ public sealed class ModelsPage : Page
     }
 
     /// <summary>
-    /// Adds an inline PasswordBox + Save button for API key entry to the given panel.
+    /// Adds an inline PasswordBox + Save button for API key entry to the given panel. The check's
+    /// status goes into <paramref name="statusPanel"/>, a line of its own under the header: in the
+    /// header row it took the width from the provider name, which shrank to "Ele" beside
+    /// "Invalid API key" (owner report 2026-10-10).
     /// </summary>
-    private void AddApiKeyEntry(StackPanel container, string providerKey, bool isEditing = false)
+    private void AddApiKeyEntry(StackPanel container, StackPanel statusPanel, string providerKey, bool isEditing = false)
     {
         var existingKey = _apiKeyManager.GetApiKey(providerKey);
         var passwordBox = new PasswordBox
@@ -1230,15 +1243,10 @@ public sealed class ModelsPage : Page
             FontSize = 12,
             VerticalAlignment = VerticalAlignment.Center
         };
-        var statusPanel = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 0, 0),
-            Visibility = Visibility.Collapsed,
-            Children = { statusIcon, statusLabel }
-        };
+        statusPanel.Children.Clear();
+        statusPanel.Children.Add(statusIcon);
+        statusPanel.Children.Add(statusLabel);
+        statusPanel.Visibility = Visibility.Collapsed;
 
         var saveBtn = AppTheme.CreateCompactButton("Save", isAccent: true);
         saveBtn.Tapped += async (_, _) =>
@@ -1279,34 +1287,10 @@ public sealed class ModelsPage : Page
                 statusLabel.Foreground = AppTheme.Brush(AppTheme.TextSecondary);
                 statusPanel.Visibility = Visibility.Visible;
 
-                bool isValid = false;
-                bool couldNotValidate = false;
-                try
-                {
-                    var http = App.Services.GetRequiredService<IHttpClientFactory>().CreateClient("transcription");
-                    ITranscriptionService? client = providerKey switch
-                    {
-                        "groq" => new GroqClient(http, key),
-                        "deepgram" => new DeepgramClient(http, key),
-                        "elevenlabs" => new ElevenLabsClient(http, key),
-                        "openai" => new OpenAITranscriptionClient(http, key),
-                        _ => null
-                    };
-
-                    if (client != null)
-                        isValid = await client.ValidateKeyAsync();
-                    else
-                        isValid = true; // Unknown provider — accept
-                }
-                catch (HttpRequestException ex) when (ex.StatusCode is global::System.Net.HttpStatusCode.Unauthorized
-                                                           or global::System.Net.HttpStatusCode.Forbidden)
-                {
-                    isValid = false;
-                }
-                catch (Exception)
-                {
-                    couldNotValidate = true;
-                }
+                var http = App.Services.GetRequiredService<IHttpClientFactory>().CreateClient("transcription");
+                var check = await TranscriptionKeyCheck.RunAsync(http, providerKey, key);
+                var isValid = check.Outcome == Helpers.ApiKeyCheckOutcome.Valid;
+                var couldNotValidate = check.Outcome == Helpers.ApiKeyCheckOutcome.Unverified;
 
                 if (isValid)
                 {
@@ -1380,7 +1364,6 @@ public sealed class ModelsPage : Page
 
         container.Children.Add(passwordBox);
         container.Children.Add(saveBtn);
-        container.Children.Add(statusPanel);
 
         if (isEditing)
         {

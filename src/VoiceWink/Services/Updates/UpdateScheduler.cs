@@ -242,13 +242,12 @@ public sealed class UpdateScheduler : IUpdateScheduler, IDisposable
                 }
             }
 
-            // dvstudio-metrics #85 (Privacy §4.5): the one-time install-source report rides THIS
+            // dvstudio-metrics #85 (Privacy §4.5): the one-time first-check report rides THIS
             // path — an automatic check, so the build flag, the toggle and the LGL-1 gate already
-            // hold; a manual check never reaches it. It runs on every automatic tick: it classifies
-            // the installation once whatever the check's outcome (the Store log rolls over within
-            // days, so an offline first launch must still record it), and sends only when this
-            // check just reached the server. Awaited after the update events, and contained, so it
-            // can neither delay an install hand-off nor kill the tick.
+            // hold; a manual check never reaches it. It runs on every automatic tick: a Store
+            // channel build records its installation whatever the check's outcome, and the report
+            // is sent only when this check just reached the server. Awaited after the update
+            // events, and contained, so it can neither delay an install hand-off nor kill the tick.
             if (_installSource is { } installSource)
             {
                 var networkProven = result.Outcome is UpdateCheckOutcome.UpToDate or UpdateCheckOutcome.UpdateAvailable;

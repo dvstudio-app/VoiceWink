@@ -30,12 +30,9 @@ namespace VoiceWink.Helpers;
 /// <c>EnsureSuccessStatusCode()</c> composes "Response status code does not indicate success: 503
 /// (&lt;phrase&gt;)" itself, which we cannot sanitise. The provider path no longer calls it
 /// (<c>EnsureSuccessOrLogAndThrowAsync</c>'s body-read-failure fallback throws this type instead), but
-/// <c>ImageGenerationClient</c>'s image-URL download and <c>ModelDownloadManager</c> still do — as does
-/// <c>HttpResponseExtensions.ValidateAuthorizedGetAsync</c> in this very file, which backs
-/// <c>ValidateKeyAsync</c> for all four transcription clients. That last one is a DEAD channel today
-/// (both callers swallow the exception without logging it), which is why it is recorded on SEC-5
-/// rather than fixed here — but it is on the provider path, so do not read this paragraph as saying
-/// the provider path is entirely clear.</para>
+/// <c>ImageGenerationClient</c>'s image-URL download and <c>ModelDownloadManager</c> still do. (The
+/// transcription key check called it too until 2026-10-10; <c>ApiKeyCheck</c> replaced it and reads
+/// the status itself.)</para>
 /// <para>Pill surfaces are already protected: they route through
 /// <c>MainViewModel.ProviderPillSafeText</c>, which never shows a status-bearing exception message.</para>
 /// Subclasses <see cref="HttpRequestException"/> with <c>StatusCode</c>

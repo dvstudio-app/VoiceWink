@@ -140,17 +140,26 @@ internal static class VoiceWinkHttpClients
         services.AddHttpClient("downloads", c => c.Timeout = TimeSpan.FromMinutes(10));
         services.AddHttpClient("licensing", c => c.Timeout = TimeSpan.FromSeconds(30))
             .AddHttpMessageHandler<RetryingHandler>();
-        // dvstudio-metrics #85: the one-time install-source report (Privacy §4.5). One GET to
+        // dvstudio-metrics #85: the one-time first-check report (Privacy §4.5). One GET to
         // updates.voicewink.app whose ANY response ends it. No retry handler — InstallSourceReporter
         // owns the three-attempt budget and counts each attempt before sending, so a handler replay
-        // would be an uncounted duplicate report. No redirects: a 3xx must never carry the request
-        // (and the user's IP) to another host. No cookies: nothing may make it linkable.
+        // would be an uncounted duplicate report. Socket policy: ConfigureInstallReportHandler.
         services.AddHttpClient(Services.Updates.InstallSourceReporter.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(15))
-            .UseSocketsHttpHandler((h, _) =>
-            {
-                h.ConnectTimeout = ConnectTimeout;
-                h.AllowAutoRedirect = false;
-                h.UseCookies = false;
-            });
+            .UseSocketsHttpHandler((h, _) => ConfigureInstallReportHandler(h, ConnectTimeout));
+    }
+
+    /// <summary>
+    /// The socket policy of BOTH install reports (Privacy §4.5): the first-check report's named client
+    /// above and the installer's report (<c>InstallerReport</c>), which runs inside Velopack's install
+    /// hook where no DI container exists — one source, so the two cannot drift. No redirects: a 3xx
+    /// must never carry the request (and the user's IP) to another host. No cookies: nothing may make
+    /// a report linkable. Connect-bounded by <paramref name="connectTimeout"/>.
+    /// </summary>
+    internal static SocketsHttpHandler ConfigureInstallReportHandler(SocketsHttpHandler handler, TimeSpan connectTimeout)
+    {
+        handler.ConnectTimeout = connectTimeout;
+        handler.AllowAutoRedirect = false;
+        handler.UseCookies = false;
+        return handler;
     }
 }

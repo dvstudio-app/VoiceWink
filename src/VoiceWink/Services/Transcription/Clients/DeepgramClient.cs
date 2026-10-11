@@ -133,11 +133,17 @@ public sealed class DeepgramClient : ITranscriptionService
         throw new InvalidOperationException("Deepgram API response missing 'results.channels[0].alternatives[0].transcript'");
     }
 
-    public Task<bool> ValidateKeyAsync(CancellationToken ct = default) =>
-        _http.ValidateAuthorizedGetAsync(
-            "https://api.deepgram.com/v1/projects",
-            req => req.Headers.Authorization = new AuthenticationHeaderValue("Token", _apiKey),
-            ct);
+    /// <summary>
+    /// Deepgram's own documented key check, <c>/v1/auth/token</c>, rather than <c>/v1/projects</c>:
+    /// a key can be created without the project permission the old check needed while still
+    /// transcribing (2026-10-10). A made-up key gets 401 here (measured).
+    /// </summary>
+    public async Task<ApiKeyCheckResult> CheckKeyAsync(CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.deepgram.com/v1/auth/token");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Token", _apiKey);
+        return await _http.CheckApiKeyAsync(request, ct: ct).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Optional-metadata observability (owner request 2026-07-26): when the request ran

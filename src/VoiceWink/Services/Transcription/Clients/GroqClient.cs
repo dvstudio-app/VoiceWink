@@ -86,9 +86,10 @@ public sealed class GroqClient : ITranscriptionService
         return doc.RootElement.TryGetProperty("text", out var textProp) ? textProp.GetString() ?? "" : "";
     }
 
-    public Task<bool> ValidateKeyAsync(CancellationToken ct = default) =>
-        _http.ValidateAuthorizedGetAsync(
-            "https://api.groq.com/openai/v1/models",
-            req => req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey),
-            ct);
+    public async Task<ApiKeyCheckResult> CheckKeyAsync(CancellationToken ct = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.groq.com/openai/v1/models");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+        return await _http.CheckApiKeyAsync(request, ct: ct).ConfigureAwait(false);
+    }
 }

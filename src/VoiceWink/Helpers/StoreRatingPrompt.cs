@@ -30,11 +30,12 @@ public enum StoreRatingObservation
 /// simply displayed again when due. One instance per main window — one per process — holds the session;
 /// <c>MainWindow</c> builds it and hands it to every Home page it creates.</para>
 ///
-/// <para>The Store test is <see cref="InstallSourceReporter.IsStoreInstallation"/>: the record the
-/// automatic update check writes (since 1.99.394), and only when it belongs to THIS installation — a
-/// record left by an earlier Store install does not make a later website install a Store one. A Store
-/// install with automatic checks off never gets a record and never sees the line: both fail toward not
-/// showing it.</para>
+/// <para>The Store test is <see cref="InstallSourceReporter.IsStoreInstallation(SettingsService, DateTime?)"/>:
+/// a build for the Microsoft Store's own update channel is a Store install; so is an installation whose
+/// record an earlier, event-log version wrote, and only when it belongs to THIS installation — a record
+/// left by an earlier Store install does not make a later website install a Store one. An earlier-version
+/// Store install with automatic checks off never got a record and never sees the line: that fails toward
+/// not showing it.</para>
 ///
 /// <para>Best effort, deliberately: the shown flag is an ordinary debounced settings write, so a crash in
 /// the next quarter-second, or a settings file that cannot be written, shows the line once more in a later
