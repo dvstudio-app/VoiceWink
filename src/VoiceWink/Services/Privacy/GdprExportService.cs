@@ -180,6 +180,7 @@ public sealed class GdprExportService
         r.ImageAspect,
         r.ImageSizeTier,
         r.ImageQuality,
+        r.ImageThinking,
         r.ImageVersionCount,
         ReferenceImageFiles = ReferenceBaseNames(r.ReferenceImagePath),
     };

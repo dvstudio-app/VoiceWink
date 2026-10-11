@@ -1506,6 +1506,7 @@ public partial class App : Application, Services.IAppLifetime
                         var selectedAspect = selection.Aspect;
                         var selectedSizeTier = selection.SizeTier;
                         var selectedQuality = selection.Quality;
+                        var selectedThinking = selection.Thinking;
 
                         if (ctx.Prompt != null)
                         {
@@ -1513,12 +1514,14 @@ public partial class App : Application, Services.IAppLifetime
                             clonedPrompt.ImageAspect = selectedAspect;
                             clonedPrompt.ImageSizeTier = selectedSizeTier;
                             clonedPrompt.ImageQuality = selectedQuality;
+                            clonedPrompt.ImageThinking = selectedThinking;
                             ctx = ctx with
                             {
                                 Prompt = clonedPrompt,
                                 PreviousImageAspect = selectedAspect,
                                 PreviousImageSizeTier = selectedSizeTier,
                                 PreviousImageQuality = selectedQuality,
+                                PreviousImageThinking = selectedThinking,
                             };
                         }
                         else
@@ -1539,10 +1542,12 @@ public partial class App : Application, Services.IAppLifetime
                                     ImageAspect = selectedAspect,
                                     ImageSizeTier = selectedSizeTier,
                                     ImageQuality = selectedQuality,
+                                    ImageThinking = selectedThinking,
                                 },
                                 PreviousImageAspect = selectedAspect,
                                 PreviousImageSizeTier = selectedSizeTier,
                                 PreviousImageQuality = selectedQuality,
+                                PreviousImageThinking = selectedThinking,
                             };
                         }
                     }
@@ -2842,6 +2847,7 @@ public partial class App : Application, Services.IAppLifetime
             AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ImageSizeTier TEXT");
             AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ReferenceImagePath TEXT");
             AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ImageVersionCount INTEGER");
+            AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ImageThinking TEXT");
 
             _ = db.WordReplacements.Any();
             _ = db.TranscriptionRecords.Any();
@@ -3620,11 +3626,22 @@ public partial class App : Application, Services.IAppLifetime
         // clamp permanent — see QualitySelectionTracker for the defects that produced.
         var qualityAsk = new QualitySelectionTracker(
             capturedContext.PreviousImageQuality ?? capturedContext.Prompt?.ImageQuality);
+        // The thinking row's request, tracked the same way (the tracker is generic).
+        ComboBox? thinkingCombo = null;
+        var thinkingAsk = new QualitySelectionTracker(
+            capturedContext.PreviousImageThinking ?? capturedContext.Prompt?.ImageThinking);
         if (isImageGeneration)
         {
             aspectCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
             sizeCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
             qualityCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
+            thinkingCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, Visibility = Visibility.Collapsed };
+            var thinkingComboRef = thinkingCombo;
+            thinkingCombo.SelectionChanged += (_, _) =>
+            {
+                if (thinkingAsk.IsPopulating) return;
+                thinkingAsk.NoteUserPick(AppTheme.SelectedIndicatorTag(thinkingComboRef));
+            };
             versionsCombo = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch };
             // UI-20: a plain list like the three indicator rows (which get it inside
             // PopulateIndicatorCombo) — Versions is filled with Items.Add and never goes through it.
@@ -3649,6 +3666,7 @@ public partial class App : Application, Services.IAppLifetime
             ComboSelectionBoxGuard.Attach(aspectCombo, "aspect");
             ComboSelectionBoxGuard.Attach(sizeCombo, "size");
             ComboSelectionBoxGuard.Attach(qualityCombo, "quality", () => qualityAsk.BeginPopulate());
+            ComboSelectionBoxGuard.Attach(thinkingCombo, "thinking", () => thinkingAsk.BeginPopulate());
             ComboSelectionBoxGuard.Attach(versionsCombo, "versions");
         }
 
@@ -3677,7 +3695,8 @@ public partial class App : Application, Services.IAppLifetime
         TextBlock? aspectLabel = null;
         TextBlock? sizeLabel = null;
         TextBlock? qualityLabel = null;
-        if (isImageGeneration && aspectCombo != null && sizeCombo != null && qualityCombo != null)
+        TextBlock? thinkingLabel = null;
+        if (isImageGeneration && aspectCombo != null && sizeCombo != null && qualityCombo != null && thinkingCombo != null)
         {
             aspectLabel = new TextBlock { Text = "Aspect ratio:", Foreground = AppTheme.Brush(AppTheme.TextPrimary), FontSize = 13, Margin = new Thickness(0, 4, 0, 0) };
             sizeLabel = new TextBlock { Text = "Size:", Foreground = AppTheme.Brush(AppTheme.TextPrimary), FontSize = 13, Margin = new Thickness(0, 4, 0, 0) };
@@ -3688,6 +3707,10 @@ public partial class App : Application, Services.IAppLifetime
             panel.Children.Add(sizeCombo);
             panel.Children.Add(qualityLabel);
             panel.Children.Add(qualityCombo);
+            // Hidden until the gating finds a model with documented thinking levels.
+            thinkingLabel = new TextBlock { Text = "Thinking:", Foreground = AppTheme.Brush(AppTheme.TextPrimary), FontSize = 13, Margin = new Thickness(0, 4, 0, 0), Visibility = Visibility.Collapsed };
+            panel.Children.Add(thinkingLabel);
+            panel.Children.Add(thinkingCombo);
         }
 
         // IMG-3: Versions picker (image generation only) — a per-run spend decision,
@@ -4250,7 +4273,11 @@ public partial class App : Application, Services.IAppLifetime
         // at that dropdown's close instead of swapping the rows under the popup — the cache-MISS
         // BindModels lands whenever the network answers, which on the first dialog of a session
         // can be mid-pick. See ComboDropDownGate.
-        ComboDropDownGate.Watch(aspectCombo, sizeCombo, qualityCombo);
+        ComboDropDownGate.Watch(aspectCombo, sizeCombo, qualityCombo, thinkingCombo);
+
+        // IMG-21: the last offer logged by this dialog, so a re-gate that changes nothing (three or
+        // four run per open) adds no line.
+        string? lastLoggedOffer = null;
 
         // Refresh aspect / size / quality dropdowns + visibility for the current selection.
         // Called on initial show and on every provider/model change so the user only sees
@@ -4258,20 +4285,34 @@ public partial class App : Application, Services.IAppLifetime
         void RefreshImageOptionGating()
         {
             if (!isImageGeneration || aspectCombo == null || sizeCombo == null || qualityCombo == null
-                || aspectLabel == null || sizeLabel == null || qualityLabel == null) return;
+                || thinkingCombo == null || aspectLabel == null || sizeLabel == null || qualityLabel == null
+                || thinkingLabel == null) return;
             // Fenced like every other post-await path in this builder: a Hide() with a dropdown
             // open raises its DropDownClosed, and the replay must not touch detached controls.
             if (ComboDropDownGate.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); },
-                    aspectCombo, sizeCombo, qualityCombo)) return;
+                    aspectCombo, sizeCombo, qualityCombo, thinkingCombo)) return;
 
             // IMG-5: gate against the model the run will ACTUALLY use, and against what THAT model
             // publishes. `enhancement` is already resolved at the top of this method — no second
             // lookup; the target resolution itself lives in ResolveImageGatingTarget so the
             // reference limits below gate against the same model these dropdowns describe.
             var (provider, model) = ResolveImageGatingTarget();
-            var gating = ImageOptionGating.Decide(
-                provider, model, enhancement.ImageCapabilitiesFor(provider, model));
+            var capabilities = enhancement.ImageCapabilitiesFor(provider, model);
+            var gating = ImageOptionGating.Decide(provider, model, capabilities);
             var supportedTiers = gating.Tiers;
+
+            // IMG-21: owner report, not reproduced — the Size row lacked 4K for a Tencent model
+            // after Grok Imagine (which publishes no 4K) had been used. One line per change of
+            // offer names the model the row was gated against and where its answer came from.
+            var capabilitySource = ImageOptionGating.DescribeSource(capabilities);
+            var tiersOffered = supportedTiers.Count == 0 ? "none" : string.Join(",", supportedTiers);
+            var offer = $"{provider}|{model}|{capabilitySource}|{tiersOffered}";
+            if (offer != lastLoggedOffer)
+            {
+                lastLoggedOffer = offer;
+                Log.Information("Image options offered: provider={Provider}, model={Model}, capabilities={CapabilitySource:l}, tiers={Tiers:l}",
+                    provider, model, capabilitySource, tiersOffered);
+            }
 
             // Aspect row: hide AND skip repopulation when the model publishes none.
             // PopulateIndicatorCombo atomically replaces the rows, preserving a supported tag and
@@ -4333,6 +4374,22 @@ public partial class App : Application, Services.IAppLifetime
                         qualityCombo,
                         ImageOptions.ClampQuality(qualityAsk.Requested, gating.Qualities),
                         gating.Qualities);
+                }
+            }
+
+            // Thinking (Gemini-direct only): the quality row's rules — hide AND skip repopulation
+            // when the model has no documented levels; display = the ask clamped down.
+            var tVis = gating.ShowThinking ? Visibility.Visible : Visibility.Collapsed;
+            thinkingLabel.Visibility = tVis;
+            thinkingCombo.Visibility = tVis;
+            if (gating.ShowThinking)
+            {
+                using (thinkingAsk.BeginPopulate())
+                {
+                    AppTheme.PopulateImageThinkingComboWithIndicators(
+                        thinkingCombo,
+                        ImageOptions.ClampThinking(thinkingAsk.Requested, gating.ThinkingLevels),
+                        gating.ThinkingLevels);
                 }
             }
 
@@ -4521,6 +4578,7 @@ public partial class App : Application, Services.IAppLifetime
         // clamps per run and History records what actually rendered, so carrying the ask forward
         // costs nothing and stops one narrow model from rewriting the redo chain.
         var selectedQuality = qualityAsk.Requested;
+        var selectedThinking = thinkingAsk.Requested; // the ask, for the same reason as quality
         // IMG-3: the Versions pick, clamped defensively (text dialogs have no combo → 1).
         var selectedCount = ImageBatchPolicy.ClampCount(
             (versionsCombo?.SelectedItem as ComboBoxItem)?.Tag as int? ?? 1);
@@ -4531,7 +4589,8 @@ public partial class App : Application, Services.IAppLifetime
             // SNAPSHOT, never the working list — the carrier must be immutable
             // (ENH-6f, Codex plan round 1). Empty = no references.
             pendingReferences.Count == 0 ? null : pendingReferences.ToArray(),
-            selectedCount);
+            selectedCount,
+            selectedThinking);
     }
 
     /// <summary>UI-7: the window a picker dialog took the foreground from, so the dialog can give it

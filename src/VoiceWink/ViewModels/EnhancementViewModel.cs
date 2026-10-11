@@ -1342,7 +1342,8 @@ public partial class EnhancementViewModel : ObservableObject
         string? imageAspect = null,
         string? imageSizeTier = null,
         bool askImageSize = false,
-        string? imageQuality = null)
+        string? imageQuality = null,
+        string? imageThinking = null)
     {
         prompt.IsImageGeneration = isImageGeneration;
         prompt.ProviderOverride = string.IsNullOrWhiteSpace(providerOverride) ? null : providerOverride.Trim();
@@ -1351,11 +1352,13 @@ public partial class EnhancementViewModel : ObservableObject
         prompt.ImageSizeTier = isImageGeneration && !string.IsNullOrWhiteSpace(imageSizeTier) ? imageSizeTier.Trim() : null;
         prompt.AskImageSize = isImageGeneration && askImageSize;
         prompt.ImageQuality = isImageGeneration && !string.IsNullOrWhiteSpace(imageQuality) ? imageQuality.Trim() : null;
+        prompt.ImageThinking = isImageGeneration && !string.IsNullOrWhiteSpace(imageThinking) ? imageThinking.Trim() : null;
         SavePrompts();
-        Logger.Information("Prompt config updated: type={Type}, provider={Provider}, model={Model}, aspect={Aspect}, tier={Tier}, quality={Quality}, askOptions={Ask} userTerm={Prompt}",
+        Logger.Information("Prompt config updated: type={Type}, provider={Provider}, model={Model}, aspect={Aspect}, tier={Tier}, quality={Quality}, thinking={Thinking}, askOptions={Ask} userTerm={Prompt}",
             isImageGeneration ? "Image" : "Text",
             prompt.ProviderOverride ?? "(default)", prompt.ModelOverride ?? "(default)",
-            prompt.ImageAspect ?? "(auto)", prompt.ImageSizeTier ?? "(auto)", prompt.ImageQuality ?? "(auto)", prompt.AskImageSize,
+            prompt.ImageAspect ?? "(auto)", prompt.ImageSizeTier ?? "(auto)", prompt.ImageQuality ?? "(auto)",
+            Helpers.ImageOptions.ThinkingForLog(prompt.ImageThinking), prompt.AskImageSize,
             Helpers.LogValueSanitizer.SingleLine(prompt.Title));
     }
 

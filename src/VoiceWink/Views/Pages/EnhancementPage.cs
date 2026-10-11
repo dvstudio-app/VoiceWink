@@ -2184,11 +2184,36 @@ public sealed class EnhancementPage : Page
             };
             qualityCombo.Visibility = aspectLabel.Visibility;
 
+            // ── Thinking level (Gemini-direct image models) ─────────────────
+            // Built like the Quality row: the ask is tracked apart from the clamped display
+            // (QualitySelectionTracker is generic), and the row is shown only for a model with
+            // documented levels (ImageOptions.SupportedThinkingFor).
+            var thinkingLabel = new TextBlock
+            {
+                Text = "Thinking",
+                FontSize = 13,
+                Foreground = AppTheme.Brush(AppTheme.SubtleText),
+                Margin = new Thickness(0, 12, 0, 4),
+                Visibility = Visibility.Collapsed
+            };
+            var thinkingCombo = new ComboBox { Width = 220, Visibility = Visibility.Collapsed };
+            var thinkingAsk = new QualitySelectionTracker(prompt.ImageThinking);
+            using (thinkingAsk.BeginPopulate())
+            {
+                AppTheme.PopulateImageThinkingComboWithIndicators(thinkingCombo, prompt.ImageThinking);
+            }
+            thinkingCombo.SelectionChanged += (_, _) =>
+            {
+                if (thinkingAsk.IsPopulating) return;
+                thinkingAsk.NoteUserPick(AppTheme.SelectedIndicatorTag(thinkingCombo));
+            };
+
             // UI-19: same guard as the options dialog — the closed box is re-asserted after every
             // dropdown close, and what it held before is logged.
             ComboSelectionBoxGuard.Attach(aspectCombo, "aspect");
             ComboSelectionBoxGuard.Attach(sizeCombo, "size");
             ComboSelectionBoxGuard.Attach(qualityCombo, "quality", () => qualityAsk.BeginPopulate());
+            ComboSelectionBoxGuard.Attach(thinkingCombo, "thinking", () => thinkingAsk.BeginPopulate());
 
             var qualityHint = new TextBlock
             {
@@ -2219,7 +2244,7 @@ public sealed class EnhancementPage : Page
 
             // UI-19: RefreshModelOptions re-gates after its fetch, which can land while one of
             // these rows has its dropdown open; the replay waits for that close (ComboDropDownGate).
-            ComboDropDownGate.Watch(aspectCombo, sizeCombo, qualityCombo);
+            ComboDropDownGate.Watch(aspectCombo, sizeCombo, qualityCombo, thinkingCombo);
 
             // Re-filter the aspect / size / quality dropdowns based on the resolved provider+model.
             // Also toggles visibility of the Size + Quality sub-sections when the model doesn't
@@ -2228,7 +2253,7 @@ public sealed class EnhancementPage : Page
             {
                 if (typeCombo.SelectedIndex != 1) return; // only meaningful on the image branch
                 if (ComboDropDownGate.TryDefer(() => { if (!dialogClosed) RefreshImageOptionGating(); },
-                        aspectCombo, sizeCombo, qualityCombo)) return;
+                        aspectCombo, sizeCombo, qualityCombo, thinkingCombo)) return;
                 var provider = EffectiveProvider();
                 // IMG-5: "(Default)" must gate against the model the RUNTIME would pick, not the
                 // provider's hardcoded default. Resolved with a NULL prompt deliberately — that is
@@ -2302,6 +2327,21 @@ public sealed class EnhancementPage : Page
                             gating.Qualities);
                     }
                 }
+
+                // Thinking: the same hide-AND-skip-repopulate rule; display = the ask clamped down.
+                var tVis = gating.ShowThinking ? Visibility.Visible : Visibility.Collapsed;
+                thinkingLabel.Visibility = tVis;
+                thinkingCombo.Visibility = tVis;
+                if (gating.ShowThinking)
+                {
+                    using (thinkingAsk.BeginPopulate())
+                    {
+                        AppTheme.PopulateImageThinkingComboWithIndicators(
+                            thinkingCombo,
+                            ImageOptions.ClampThinking(thinkingAsk.Requested, gating.ThinkingLevels),
+                            gating.ThinkingLevels);
+                    }
+                }
             }
             RefreshImageOptionGating();
             // UI-18: and again once the dialog is on screen. The populate above runs before
@@ -2354,6 +2394,12 @@ public sealed class EnhancementPage : Page
                 qualityLabel.Visibility = vis;
                 qualityCombo.Visibility = vis;
                 qualityHint.Visibility = vis;
+                // The thinking row stays hidden until the gating says the model has levels.
+                if (typeCombo.SelectedIndex != 1)
+                {
+                    thinkingLabel.Visibility = Visibility.Collapsed;
+                    thinkingCombo.Visibility = Visibility.Collapsed;
+                }
                 askSizeLabel.Visibility = vis;
                 askSizeToggle.Visibility = vis;
                 askSizeHint.Visibility = vis;
@@ -2592,6 +2638,7 @@ public sealed class EnhancementPage : Page
                     aspectLabel, aspectCombo,
                     sizeLabel, sizeCombo, sizeHint,
                     qualityLabel, qualityCombo, qualityHint,
+                    thinkingLabel, thinkingCombo,
                     askSizeLabel, askSizeToggle, askSizeHint,
                     providerLabel, providerCombo, providerHint,
                     modelLabel, modelCombo,
@@ -2638,6 +2685,7 @@ public sealed class EnhancementPage : Page
                 // Maximum clamped to Enhanced on a narrow model and then hidden by a third model
                 // would otherwise be SAVED as Enhanced and downgraded for good (Codex diff r1).
                 var imageQuality = qualityAsk.Requested;
+                var imageThinking = thinkingAsk.Requested; // the ask, for the same reason as quality
                 var askImageSize = isImage && askSizeToggle.IsOn;
 #if DEBUG
                 // ENH-8: persisted via the same UpdatePromptConfig save (mutate-then-save,
@@ -2656,7 +2704,7 @@ public sealed class EnhancementPage : Page
                 var languageTag = (languageCombo.SelectedItem as ComboBoxItem)?.Tag as string;
                 prompt.LanguageOverride = string.IsNullOrWhiteSpace(languageTag) ? null : languageTag;
                 _viewModel.UpdatePromptConfig(prompt, isImage, providerOverride, modelOverride,
-                    imageAspect, imageSizeTier, askImageSize, imageQuality);
+                    imageAspect, imageSizeTier, askImageSize, imageQuality, imageThinking);
                 RefreshPromptList();
             };
 

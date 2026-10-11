@@ -32,6 +32,13 @@ public static class ImageOptions
     public const string Aspect2x1   = "2:1";
     public const string Aspect1x2   = "1:2";
     public const string Aspect9x21  = "9:21";
+    // Ratios only a model's PUBLISHED catalog offers (see CatalogOnlyAspects).
+    public const string Aspect7x5   = "7:5";
+    public const string Aspect5x7   = "5:7";
+    public const string Aspect19_5x9 = "19.5:9";
+    public const string Aspect9x19_5 = "9:19.5";
+    public const string Aspect20x9  = "20:9";
+    public const string Aspect9x20  = "9:20";
 
     /// <summary>Aspects supported by the flexible-size gpt-image models + all current Gemini image models (10).</summary>
     public static readonly string[] CommonAspects =
@@ -84,20 +91,43 @@ public static class ImageOptions
     };
 
     /// <summary>
-    /// Every aspect tag the app can actually OFFER — the union of the three sets above, and exactly
+    /// Ratios no static rule offers: they reach a dropdown ONLY when a model's published catalog lists
+    /// them (OpenRouter's Image API, IMG-5). Owner decision 2026-10-11 ("support them"): the catalog
+    /// published them for Seedream 4.5 / 5.0 and Grok Imagine (<c>9:19.5</c>, <c>19.5:9</c>,
+    /// <c>9:20</c>, <c>20:9</c>) and Flux 3 (<c>5:7</c>, <c>7:5</c>), and the parse dropped them only
+    /// because the app had no constant or combo row for them — nobody had decided against them.
+    /// </summary>
+    public static readonly string[] CatalogOnlyAspects =
+    {
+        Aspect7x5, Aspect19_5x9, Aspect20x9,
+        Aspect5x7, Aspect9x19_5, Aspect9x20,
+    };
+
+    /// <summary>
+    /// Every aspect tag the app can actually OFFER — the union of the four sets above, and exactly
     /// the non-null tags in <c>AppTheme.PopulateImageAspectComboWithIndicators</c>'s fixed options
     /// table. This is the authority IMG-5's catalog parsing intersects against
-    /// (<see cref="ImageModelCapabilities"/>): a live catalog publishes ratios the app has no
-    /// constant, no combo entry, and no persistence story for (<c>9:19.5</c>, <c>19.5:9</c>,
-    /// <c>9:20</c>, <c>20:9</c> — seedream and grok). Without the intersection, capability-driven
-    /// gating would report an aspect that the combo silently drops while
-    /// <see cref="NormalizeForModel"/> accepted it as valid.
+    /// (<see cref="ImageModelCapabilities"/>): a value a live catalog publishes that is not here has
+    /// no constant, no combo entry, and no persistence story, so the parse drops it. Without the
+    /// intersection, capability-driven gating would report an aspect that the combo silently drops
+    /// while <see cref="NormalizeForModel"/> accepted it as valid. A value the catalog publishes and
+    /// the app lacks shows in the weekly model review (Phase 3c, `unknownValues`).
     /// <para>Keep in sync with that options table — a tag here with no combo entry is unofferable,
     /// and a combo entry missing here would be filtered out of every capability-driven list.
     /// Pinned by <c>ImageOptionsTests</c>.</para>
     /// </summary>
     public static readonly string[] AllKnownAspects =
-        Concat(Concat(CommonAspects, ExtremeAspects), GptImage2ExtraAspects);
+        Concat(Concat(Concat(CommonAspects, ExtremeAspects), GptImage2ExtraAspects), CatalogOnlyAspects);
+
+    /// <summary>
+    /// IMG-21: the exact ratios of the three sizes <see cref="SynthesizeGptImage1xSize"/> can send
+    /// (1024×1024, 1536×1024, 1024×1536) — the only aspects a reference-shape snap may record for
+    /// OpenAI-direct's preset models. Not their OFFER set, which stays <see cref="CommonAspects"/>.
+    /// </summary>
+    internal static readonly string[] GptImage1xPresetAspects =
+    {
+        Aspect1x1, Aspect3x2, Aspect2x3,
+    };
 
     /// <summary>
     /// The aspect combo's rows — label, tag, and indicator box size. Pure data (strings + doubles,
@@ -122,15 +152,21 @@ public static class ImageOptions
         ("1:1",   Aspect1x1, 14, 14),
         ("5:4",   Aspect5x4, 15, 12),
         ("4:3",   Aspect4x3, 16, 12),
+        ("7:5",   Aspect7x5, 17, 12),  // catalog-only (CatalogOnlyAspects)
         ("3:2",   Aspect3x2, 18, 12),
         ("16:9",  Aspect16x9, 20, 11),
         ("2:1",   Aspect2x1, 22, 11),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
+        ("19.5:9", Aspect19_5x9, 21.7, 10), // catalog-only
+        ("20:9",  Aspect20x9, 22.2, 10), // catalog-only
         ("21:9",  Aspect21x9, 23, 10),
         ("4:5",   Aspect4x5, 12, 15),
         ("3:4",   Aspect3x4, 12, 16),
+        ("5:7",   Aspect5x7, 12, 17),  // catalog-only
         ("2:3",   Aspect2x3, 12, 18),
         ("9:16",  Aspect9x16, 11, 20),
         ("1:2",   Aspect1x2, 11, 22),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
+        ("9:19.5", Aspect9x19_5, 10, 21.7), // catalog-only
+        ("9:20",  Aspect9x20, 10, 22.2), // catalog-only
         ("9:21",  Aspect9x21, 10, 23), // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
         // Extreme ratios (gemini-3.1 flash-image family and Nano Banana 2.1 only). Capped at 24 long edge.
         ("4:1",   Aspect4x1, 24,  6),  // 24/6 = 4 ✓
@@ -143,11 +179,20 @@ public static class ImageOptions
 
     /// <summary>Gemini-only "small" tier; the API value is the literal <c>512</c> (no K suffix).</summary>
     public const string Tier512 = "512";
+    /// <summary>Catalog-only, like <see cref="Tier1_5K"/>: published by OpenRouter for Flux 3 (owner
+    /// decision 2026-10-11). No static rule offers it.</summary>
+    public const string Tier768 = "768";
     public const string Tier1K  = "1K";
+    /// <summary>Catalog-only: published by OpenRouter for Flux 3 and Hunyuan Image 3.5 (owner decision
+    /// 2026-10-11). No static rule offers it.</summary>
+    public const string Tier1_5K = "1.5K";
     public const string Tier2K  = "2K";
     public const string Tier4K  = "4K";
 
-    public static readonly string[] AllTiers = { Tier512, Tier1K, Tier2K, Tier4K };
+    /// <summary>Ascending by output size, and the ORDER is load-bearing: <see cref="ClampTier"/> walks
+    /// it downward, so a tier inserted out of place would clamp a request UP (768 sits between 512 and
+    /// 1K, 1.5K between 1K and 2K).</summary>
+    public static readonly string[] AllTiers = { Tier512, Tier768, Tier1K, Tier1_5K, Tier2K, Tier4K };
 
     /// <summary>
     /// The size combo's rows — label, tag, indicator box size — pure data here for the same reason
@@ -162,7 +207,9 @@ public static class ImageOptions
     {
         ("Auto", null,    10, 10),
         (Tier512, Tier512, 10, 10),
+        (Tier768, Tier768, 11, 11),
         (Tier1K,  Tier1K,  12, 12),
+        (Tier1_5K, Tier1_5K, 14, 14),
         (Tier2K,  Tier2K,  16, 16),
         (Tier4K,  Tier4K,  20, 20),
     };
@@ -241,14 +288,92 @@ public static class ImageOptions
     /// persisted tag falls back to a title-cased copy of itself (the pre-IMG-14 History rule) rather
     /// than throwing or hiding the row.
     /// </summary>
-    public static string QualityLabelFor(string? tag)
+    public static string QualityLabelFor(string? tag) => LabelFor(QualityComboRows, tag);
+
+    // ─── Thinking-level tags (persisted on CustomPrompt.ImageThinking / TranscriptionRecord.ImageThinking) ───
+    // Gemini's generateContent `generationConfig.thinkingConfig.thinkingLevel` (owner decision
+    // 2026-10-11). Gemini-DIRECT only: OpenRouter's Image API publishes no thinking parameter.
+
+    public const string ThinkingMinimal = "minimal";
+    public const string ThinkingMedium = "medium";
+    public const string ThinkingHigh = "high";
+
+    /// <summary>Every thinking tag, ascending — the order <see cref="ClampThinking"/> walks down.</summary>
+    public static readonly string[] AllThinkingLevels = { ThinkingMinimal, ThinkingMedium, ThinkingHigh };
+
+    /// <summary>
+    /// The thinking combo's rows. Labels are Google's own level names (IMG-15); the tag is the
+    /// lower-case word and the wire value its enum name (<see cref="ThinkingToGeminiLevel"/>). The
+    /// leading "Auto" row carries a NULL tag — the field is omitted and the model's default applies.
+    /// </summary>
+    public static readonly (string Label, string? Tag, double Width, double Height)[] ThinkingComboRows =
+    {
+        ("Auto",    null,            10, 10),
+        ("Minimal", ThinkingMinimal, 10, 10),
+        ("Medium",  ThinkingMedium,  13, 13),
+        ("High",    ThinkingHigh,    16, 16),
+    };
+
+    /// <summary>The label a thinking tag renders under — the combo's row label, for History.</summary>
+    public static string ThinkingLabelFor(string? tag) => LabelFor(ThinkingComboRows, tag);
+
+    // Null/blank ⇒ "Auto"; an unrecognized persisted tag falls back to a title-cased copy of itself
+    // (the pre-IMG-14 History rule) rather than throwing or hiding the row.
+    private static string LabelFor((string Label, string? Tag, double Width, double Height)[] rows, string? tag)
     {
         if (string.IsNullOrWhiteSpace(tag)) return "Auto";
-        foreach (var row in QualityComboRows)
+        foreach (var row in rows)
             if (row.Tag != null && row.Tag.Equals(tag, System.StringComparison.Ordinal))
                 return row.Label;
         return char.ToUpperInvariant(tag![0]) + tag[1..];
     }
+
+    /// <summary>
+    /// Thinking levels a model accepts — Google's image-generation guide, "Controlling thinking levels"
+    /// (2026-10-11): Nano Banana 2.1 <c>minimal, medium, high</c> (default medium); 3.1 Flash Image and
+    /// 3.1 Flash Lite Image <c>minimal, high</c> (default minimal). Every other model, and every
+    /// provider but Gemini-direct, gets none and the row is hidden: no level is documented for Gemini 3
+    /// Pro Image or 2.5 Flash Image, generateContent returns an error when the field reaches a model
+    /// without thinking, and OpenRouter's Image API publishes no thinking parameter. A null model is
+    /// the provider's default model, as for the other rules.
+    /// </summary>
+    public static IReadOnlyList<string> SupportedThinkingFor(AIProvider provider, string? model)
+    {
+        if (provider != AIProvider.Gemini) return System.Array.Empty<string>();
+        if (string.IsNullOrEmpty(model)) model = DefaultModelFor(provider);
+        if (IsNanoBanana21(model)) return AllThinkingLevels;
+        if (IsGemini31FlashAspectFamily(model)) return new[] { ThinkingMinimal, ThinkingHigh };
+        return System.Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// The best supported level at or below <paramref name="requested"/>, else null (omit ⇒ the
+    /// model's default) — the <see cref="ClampQuality"/> rule, for the same reason: thinking tokens
+    /// are billed, so VoiceWink never NAMES a level above the ask. Like quality, that is not a cost
+    /// ceiling (an omitted field takes the model's default). An unrecognized tag returns null.
+    /// </summary>
+    internal static string? ClampThinking(string? requested, IReadOnlyList<string> supported)
+        => ClampDown(requested, supported, AllThinkingLevels);
+
+    /// <summary>
+    /// A thinking value as it may be LOGGED: "(auto)" for null, the tag when it is one of ours, else
+    /// "&lt;invalid&gt;". A persisted value can be anything an imported prompt carried, and log lines reach
+    /// Sentry breadcrumbs, so an unrecognized value is never echoed (Codex diff r1, PR #1202 — the
+    /// <see cref="SafeTag"/> rule, applied to the prompt editor's save line).
+    /// </summary>
+    public static string ThinkingForLog(string? value)
+        => value is null ? "(auto)"
+         : System.Array.IndexOf(AllThinkingLevels, value) >= 0 ? value
+         : "<invalid>";
+
+    /// <summary>The generateContent enum name for a thinking tag; null for Auto or an unknown tag.</summary>
+    public static string? ThinkingToGeminiLevel(string? tag) => tag switch
+    {
+        ThinkingMinimal => "MINIMAL",
+        ThinkingMedium => "MEDIUM",
+        ThinkingHigh => "HIGH",
+        _ => null,
+    };
 
     /// <summary>
     /// Synthesise the <c>size</c> parameter for OpenAI's flexible-size models — <c>gpt-image-2</c>
@@ -525,8 +650,10 @@ public static class ImageOptions
                 ? new[] { Tier1K, Tier2K, Tier4K }
                 : System.Array.Empty<string>();
 
-        // black-forest-labs flux family via OpenRouter publishes NO `resolution` either
-        // (same source, same day) — aspect_ratio is its only geometry knob.
+        // black-forest-labs flux family via OpenRouter published NO `resolution` at the
+        // 2026-07-31 reading (same source, same day). Since 2026-10-11 the catalog publishes
+        // 768/1K/1.5K for Flux 3 — answered by the catalog snapshot (Tier768/Tier1_5K); this
+        // static fallback stays empty rather than guessing tiers for the family.
         if (provider == AIProvider.OpenRouter && IsFluxFamily(model))
             return System.Array.Empty<string>();
 
@@ -668,12 +795,17 @@ public static class ImageOptions
     /// canonical form, while a provider's spelling is not ours to police.</para>
     /// </summary>
     internal static string? ClampQuality(string? requested, IReadOnlyList<string> supported)
+        => ClampDown(requested, supported, AllQualities);
+
+    // The down-only walk ClampQuality and ClampThinking share: the request itself when supported,
+    // else the nearest supported value BELOW it in the ascending vocabulary, else null. Ordinal.
+    private static string? ClampDown(string? requested, IReadOnlyList<string> supported, string[] ascending)
     {
         if (string.IsNullOrEmpty(requested) || supported.Count == 0) return null;
-        var requestedIndex = System.Array.IndexOf(AllQualities, requested);
+        var requestedIndex = System.Array.IndexOf(ascending, requested);
         if (requestedIndex < 0) return null;
         for (var i = requestedIndex; i >= 0; i--)
-            if (supported.Contains(AllQualities[i])) return AllQualities[i];
+            if (supported.Contains(ascending[i])) return ascending[i];
         return null;
     }
 
@@ -941,7 +1073,15 @@ public static class ImageOptions
     /// <c>GeminiImageClient</c> (direct-client callers; subsumes the old legacy-2.x
     /// imageSize strip via the empty supported-tier set). Rules:
     /// <list type="bullet">
-    /// <item>Unsupported ASPECT → null/Auto (no "nearest aspect" exists).</item>
+    /// <item>Unsupported ASPECT → null/Auto (no "nearest aspect" exists for a ratio the user
+    /// picked).</item>
+    /// <item>IMG-21, every provider: an Auto aspect with a chosen size tier and a reference image
+    /// becomes the supported aspect nearest the first reference's shape
+    /// (<see cref="NearestAspect"/>). Left to Auto, OpenRouter sized the output from the reference
+    /// and dropped the tier (owner report 2026-10-11: 4K + a 1776×2368 reference returned
+    /// 1344×1792, the same request with 3:4 returned 3072×4096), and OpenAI's flexible-size models
+    /// took IMG-13's square default. No size chosen, no reference, an unreadable reference, or a
+    /// model publishing no aspects leaves Auto alone.</item>
     /// <item>Unsupported TIER → nearest supported tier BELOW the request, else the lowest
     /// supported (flash-lite 2K → explicit <c>1K</c> — Gemini REJECTS unsupported values,
     /// and an omitted tier would render History's label as Auto while the user asked 2K);
@@ -963,9 +1103,17 @@ public static class ImageOptions
     /// evidence the dialog used. Without it a saved <c>2K</c> on krea, <c>21:9</c> on grok, or any
     /// saved aspect on <c>gpt-5-image</c> would still be sent (both 2026-08-01 final reviews).
     /// </param>
+    /// <param name="referenceSize">
+    /// IMG-21: the displayed size of the run's FIRST reference image (<see cref="ImagePixelSize"/>),
+    /// or null when there is none or it could not be read.
+    /// </param>
+    /// <param name="thinking">
+    /// The thinking-level ask (Gemini-direct only, <see cref="SupportedThinkingFor"/>); clamped down by
+    /// <see cref="ClampThinking"/>, never against <paramref name="capabilities"/> (no catalog publishes it).
+    /// </param>
     public static EffectiveImageOptions NormalizeForModel(
         AIProvider provider, string? model, string? aspect, string? sizeTier, string? quality,
-        ImageModelCapabilities? capabilities = null)
+        ImageModelCapabilities? capabilities = null, PixelSize? referenceSize = null, string? thinking = null)
     {
         global::System.Collections.Generic.List<string>? adjustments = null;
 
@@ -1003,6 +1151,34 @@ public static class ImageOptions
             }
         }
 
+        // IMG-21: a chosen size with an Auto aspect and a reference takes the reference's shape,
+        // on every provider and model that takes an aspect (owner decision 2026-10-11). Left to
+        // Auto, OpenRouter sized the output from the reference and dropped the tier, and OpenAI's
+        // flexible-size models fell to IMG-13's 1:1 just below. Keyed on the size the user CHOSE,
+        // not the clamped one, so a model without tiers (gpt-image-1.x, gemini-2.x flash-image)
+        // still gets the reference's shape. No size chosen keeps Auto — the provider following the
+        // reference IS the request then — and so does a model that publishes no aspects. BEFORE
+        // IMG-13, so the reference wins over its 1:1. Recorded on Effective, so History and a redo
+        // send the same request.
+        if (effAspect == null && !string.IsNullOrEmpty(sizeTier) && referenceSize is { } reference)
+        {
+            // OpenAI-direct gpt-image-1.x offers every common ratio for a user to PICK (bucketed
+            // into its presets), but the snap must record what is SENT: only the ratios of the
+            // three presets themselves, or History reads 3:4 over a 1024x1536 request (Codex
+            // diff r1, B1).
+            // A null model is the provider's default, as SupportedAspectsFor reads it.
+            var candidates = provider == AIProvider.OpenAI
+                    && !HasFlexibleSize(string.IsNullOrEmpty(model) ? DefaultModelFor(provider) : model)
+                ? GptImage1xPresetAspects
+                : SupportedAspectsFor(provider, model, capabilities);
+            var nearest = NearestAspect(reference, candidates);
+            if (nearest != null)
+            {
+                effAspect = nearest;
+                (adjustments ??= new()).Add($"aspect auto -> {nearest} (reference {reference})");
+            }
+        }
+
         // IMG-13 (Codex diff r1, Blocker): the OpenAI client synthesizes a concrete W×H whenever
         // EITHER geometry setting is present — SynthesizeGptImage2Size fills the missing one
         // (aspect → 1:1, tier → 1K). Materialize that paired default HERE so Effective, History
@@ -1027,8 +1203,22 @@ public static class ImageOptions
             }
         }
 
+        var effThinking = string.IsNullOrEmpty(thinking) ? null : thinking;
+        if (effThinking != null)
+        {
+            var clamped = ClampThinking(effThinking, SupportedThinkingFor(provider, model));
+            if (clamped != effThinking)
+            {
+                (adjustments ??= new()).Add(clamped == null
+                    ? $"thinking {SafeTag(effThinking, AllThinkingLevels)} -> auto"
+                    : $"thinking {SafeTag(effThinking, AllThinkingLevels)} -> {clamped}");
+                effThinking = clamped;
+            }
+        }
+
         return new EffectiveImageOptions(effAspect, effTier, effQuality,
-            adjustments ?? (global::System.Collections.Generic.IReadOnlyList<string>)global::System.Array.Empty<string>());
+            adjustments ?? (global::System.Collections.Generic.IReadOnlyList<string>)global::System.Array.Empty<string>(),
+            effThinking);
     }
 
     // Adjustment fragments are LOGGED (Information → Sentry breadcrumbs): only tags from
@@ -1056,6 +1246,70 @@ public static class ImageOptions
         foreach (var tier in AllTiers)
             if (supported.Contains(tier)) return tier;
         return null;
+    }
+
+    /// <summary>
+    /// IMG-21: the supported aspect whose ratio is closest to <paramref name="size"/>'s, measured as
+    /// the factor between the two ratios (so 4:3 against a 1:1 image is as far as 3:4 is), or null
+    /// when nothing in <paramref name="supported"/> is a known aspect.
+    ///
+    /// <para><b>No distance limit, deliberately.</b> The user set a size and left the shape to the
+    /// reference; the nearest shape the model accepts honours both as far as the model allows, and
+    /// Effective records it, so History shows what was sent. A limit would be a constant with no
+    /// evidence behind it.</para>
+    ///
+    /// <para>Exact: the comparison is cross-multiplied in 128-bit integers, never floating point, so
+    /// a tie is a real tie. A tie goes to the aspect listed first in <see cref="AllKnownAspects"/>
+    /// (square, then landscape before portrait) — a 1:1 reference offered only 16:9 and 9:16 gets
+    /// 16:9.</para>
+    /// </summary>
+    internal static string? NearestAspect(PixelSize size, global::System.Collections.Generic.IReadOnlyList<string> supported)
+    {
+        if (size.Width <= 0 || size.Height <= 0) return null;
+
+        string? best = null;
+        global::System.Int128 bestFar = 0, bestNear = 0;
+        foreach (var tag in AllKnownAspects)
+        {
+            if (!supported.Contains(tag) || !TryParseAspect(tag, out var across, out var down)) continue;
+            // size.Width/size.Height against across/down: compare Width·down with Height·across.
+            global::System.Int128 a = (global::System.Int128)size.Width * down;
+            global::System.Int128 b = (global::System.Int128)size.Height * across;
+            var far = a > b ? a : b;
+            var near = a > b ? b : a;
+            // far/near < bestFar/bestNear, with every term positive.
+            if (best == null || far * bestNear < bestFar * near)
+            {
+                best = tag;
+                bestFar = far;
+                bestNear = near;
+            }
+        }
+        return best;
+    }
+
+    // Both sides scaled ×10 so the catalog's one-decimal ratios (19.5:9, 9:19.5) compare exactly
+    // with the integer ones; a side with more than one decimal, or none at all, is refused.
+    private static bool TryParseAspect(string tag, out int across, out int down)
+    {
+        across = down = 0;
+        var colon = tag.IndexOf(':');
+        return colon > 0
+            && TryParseTenths(tag.AsSpan(0, colon), out across)
+            && TryParseTenths(tag.AsSpan(colon + 1), out down);
+    }
+
+    private static bool TryParseTenths(global::System.ReadOnlySpan<char> side, out int tenths)
+    {
+        tenths = 0;
+        if (!decimal.TryParse(side, global::System.Globalization.NumberStyles.AllowDecimalPoint,
+                global::System.Globalization.CultureInfo.InvariantCulture, out var value)
+            || value <= 0 || value > 100_000)
+            return false;
+        var scaled = value * 10;
+        if (scaled != decimal.Truncate(scaled)) return false;
+        tenths = (int)scaled;
+        return true;
     }
 
     /// <summary>
@@ -1092,7 +1346,8 @@ public sealed record EffectiveImageOptions(
     string? Aspect,
     string? SizeTier,
     string? Quality,
-    global::System.Collections.Generic.IReadOnlyList<string> Adjustments)
+    global::System.Collections.Generic.IReadOnlyList<string> Adjustments,
+    string? Thinking = null)
 {
     /// <summary>All-Auto instance for tests/fixtures.</summary>
     public static readonly EffectiveImageOptions Empty =

@@ -1248,8 +1248,11 @@ public sealed class HistoryPage : Page
             // Construct a RedoContext from the history item and use the shared model picker
             // (same dialog as MiniRecorder redo button and redo hotkey).
             // Parse "Provider/Model" from EnhancementModelName to pre-select in dialog.
-            var prompt = ResolvePromptForItem(capturedItem) ?? _enhancement.GetActivePrompt();
             bool isImage = IsImageHistoryItem(capturedItem);
+            // The row's image options are authoritative, Auto included — see PromptForHistoryRedo.
+            var prompt = MainViewModel.PromptForHistoryRedo(
+                ResolvePromptForItem(capturedItem) ?? _enhancement.GetActivePrompt(),
+                isImage, capturedItem);
             var (prevProvider, prevModel) = ProviderModelLabel.Parse(capturedItem.EnhancementModelName);
             var ctx = new MainViewModel.RedoContext(
                 RawText: capturedItem.Text ?? "",
@@ -1276,7 +1279,8 @@ public sealed class HistoryPage : Page
                 // column value decodes to one AppReferences selection per path; the
                 // dialog is authoritative and re-validates per origin, per item (a
                 // swept/missing copy degrades with a note there, never a dead path here).
-                References: DecodeRowReferences(capturedItem.ReferenceImagePath)
+                References: DecodeRowReferences(capturedItem.ReferenceImagePath),
+                PreviousImageThinking: capturedItem.ImageThinking
             );
 
             _mainViewModel.RequestModelPickerWithContext(ctx);
@@ -1350,7 +1354,8 @@ public sealed class HistoryPage : Page
                     iterModel,
                     capturedItem.ImageAspect,
                     capturedItem.ImageSizeTier,
-                    capturedItem.ImageQuality);
+                    capturedItem.ImageQuality,
+                    capturedItem.ImageThinking);
             };
             iterateBtn = iterateBorder;
         }
@@ -1573,7 +1578,12 @@ public sealed class HistoryPage : Page
             var aspect  = string.IsNullOrWhiteSpace(t.ImageAspect) ? "Auto" : t.ImageAspect!;
             var size    = string.IsNullOrWhiteSpace(t.ImageSizeTier) ? "Auto" : t.ImageSizeTier!;
             var quality = ImageOptions.QualityLabelFor(t.ImageQuality);
-            imageDetails = $"  \u2022  Aspect: {aspect}  \u2022  Size: {size}  \u2022  Quality: {quality}{DescribeImageFileSize(t.ImageFilePath)}";
+            // Thinking shows only when a level was set \u2014 most models have none, and "Auto" on
+            // every row would describe a knob those models do not have.
+            var thinking = string.IsNullOrWhiteSpace(t.ImageThinking)
+                ? ""
+                : $"  \u2022  Thinking: {ImageOptions.ThinkingLabelFor(t.ImageThinking)}";
+            imageDetails = $"  \u2022  Aspect: {aspect}  \u2022  Size: {size}  \u2022  Quality: {quality}{thinking}{DescribeImageFileSize(t.ImageFilePath)}";
         }
         _detailMeta!.Text = $"{t.Timestamp.ToLocalTime():MMM dd yyyy, HH:mm:ss}  \u2022  {modelInfo}{imageDetails}";
 

@@ -17,6 +17,13 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.113.410] - 2026-10-12
+
+- OpenRouter image models now offer every ratio and size they publish, incl. 9:19.5, 20:9, 5:7, 768 and 1.5K.
+- Images made from a reference image now keep the chosen size and the reference's shape when Aspect is Auto.
+- Gemini image models with thinking levels (Nano Banana 2 and 2.1) now offer a Thinking option.
+- Redoing an image from History now keeps Auto options on Auto instead of the prompt's saved ones.
+
 ## [1.112.409] - 2026-10-11
 
 - Nano Banana 2.1 on Gemini now offers 2K and 4K sizes and the 1:4, 4:1, 1:8 and 8:1 ratios.

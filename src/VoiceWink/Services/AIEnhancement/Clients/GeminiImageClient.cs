@@ -34,6 +34,7 @@ public sealed class GeminiImageClient
         string? imageAspect = null,
         string? imageSizeTier = null,
         string? imageQuality = null,
+        string? imageThinking = null,
         IReadOnlyList<ReferenceImage>? references = null,
         CancellationToken ct = default)
     {
@@ -48,14 +49,15 @@ public sealed class GeminiImageClient
         // Gemini has no separate "quality" knob — its imageSize covers what would be
         // both Tier and Quality on OpenAI; the normalizer nulls imageQuality.
         var normalized = ImageOptions.NormalizeForModel(
-            AIProvider.Gemini, model, imageAspect, imageSizeTier, imageQuality);
+            AIProvider.Gemini, model, imageAspect, imageSizeTier, imageQuality, thinking: imageThinking);
         foreach (var adjustment in normalized.Adjustments)
             Logger.Information("Image option adjusted for {Model}: {Adjustment}", model, adjustment);
         var aspectRatio = normalized.Aspect;
         var geminiImageSize = normalized.SizeTier;
+        var thinkingLevel = ImageOptions.ThinkingToGeminiLevel(normalized.Thinking);
 
-        Logger.Information("Gemini image generation: model={Model}, aspect={Aspect}, tier={Tier}, references={References}, prompt length={Length}",
-            model, aspectRatio ?? "auto", geminiImageSize ?? "auto",
+        Logger.Information("Gemini image generation: model={Model}, aspect={Aspect}, tier={Tier}, thinking={Thinking}, references={References}, prompt length={Length}",
+            model, aspectRatio ?? "auto", geminiImageSize ?? "auto", normalized.Thinking ?? "auto",
             ReferenceLogFormat.Describe(references), prompt.Length);
 
         var baseUrl = _config.GetBaseUrl().TrimEnd('/');
@@ -75,6 +77,11 @@ public sealed class GeminiImageClient
             if (geminiImageSize != null) imageConfig["imageSize"] = geminiImageSize;
             generationConfig["imageConfig"] = imageConfig;
         }
+        // Thinking level (2026-10-11): generateContent's generationConfig.thinkingConfig.thinkingLevel.
+        // Sent only for an explicit level — Auto omits the object, so the model's default applies and a
+        // request without a level is exactly what it was before this option existed.
+        if (thinkingLevel != null)
+            generationConfig["thinkingConfig"] = new Dictionary<string, object> { ["thinkingLevel"] = thinkingLevel };
 
         // ENH-6/6f: each reference image rides as an inline_data part after the text
         // part, in selection order (mime from the file's real extension — never

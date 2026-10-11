@@ -262,11 +262,10 @@ public static class ReferenceImagePolicy
     /// segment whose payload starts <c>MPF\0</c>). OpenAI's edits validator rejects
     /// the container outright regardless of resolution ("Invalid image file or
     /// mode", live incident 2026-07-15 — a 3.1 MP MPO failed while 28.7 MP plain
-    /// JPEGs passed). Walker contract (Codex plan rounds 1–2):
+    /// JPEGs passed). The walk itself — SOI, fill bytes, standalone markers, bounds,
+    /// the 64-segment cap, a validated SOS — is <see cref="JpegSegmentWalker"/>'s
+    /// contract (Codex plan rounds 1–2). This method adds:
     /// <list type="bullet">
-    /// <item>SOI required; FF fill bytes and standalone markers (01, D0–D7)
-    /// tolerated; every segment length bounds-checked without overflow; hard cap of
-    /// 64 segments.</item>
     /// <item><c>MPF\0</c> must be the FIRST FOUR PAYLOAD BYTES of an APP2 segment —
     /// never a substring scan.</item>
     /// <item>MultiPicture is returned only when the header ALSO walks cleanly to
@@ -280,49 +279,22 @@ public static class ReferenceImagePolicy
     /// </summary>
     public static JpegContainerKind ClassifyJpegContainer(byte[]? bytes)
     {
-        if (bytes == null || bytes.Length < 4) return JpegContainerKind.Plain;
-        if (bytes[0] != 0xFF || bytes[1] != 0xD8) return JpegContainerKind.Plain; // SOI required
+        if (bytes == null) return JpegContainerKind.Plain;
 
         var sawMpf = false;
-        var i = 2;
-        for (var segments = 0; segments < 64; segments++)
+        var end = JpegSegmentWalker.Walk(bytes, (marker, offset, length) =>
         {
-            if (i >= bytes.Length - 1) return JpegContainerKind.Plain; // EOF before SOS
-            if (bytes[i] != 0xFF) return JpegContainerKind.Plain;      // misaligned — malformed
-            // Consume FF fill bytes (a marker may be preceded by any number of FFs).
-            while (i < bytes.Length - 1 && bytes[i + 1] == 0xFF) i++;
-            if (i >= bytes.Length - 1) return JpegContainerKind.Plain;
-
-            var marker = bytes[i + 1];
-            if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
+            if (marker == 0xE2 && length >= 4
+                && bytes[offset] == (byte)'M' && bytes[offset + 1] == (byte)'P'
+                && bytes[offset + 2] == (byte)'F' && bytes[offset + 3] == 0x00)
             {
-                i += 2; // standalone marker — no length field
-                continue;
+                sawMpf = true; // still requires a clean walk to SOS
             }
-            if (marker == 0xD9)
-                return JpegContainerKind.Plain; // EOI before SOS — not a decodable frame
-
-            if (i + 3 >= bytes.Length) return JpegContainerKind.Plain;
-            var length = (bytes[i + 2] << 8) | bytes[i + 3];
-            if (length < 2) return JpegContainerKind.Plain;
-            var segmentEnd = (long)i + 2 + length;
-            if (segmentEnd > bytes.Length) return JpegContainerKind.Plain; // truncated
-
-            if (marker == 0xDA)
-                // Valid SOS — its own length header validated above like every other
-                // segment (a truncated/corrupt SOS must not classify; Codex diff r1).
-                return sawMpf ? JpegContainerKind.MultiPicture : JpegContainerKind.Plain;
-
-            if (marker == 0xE2 && length >= 6
-                && bytes[i + 4] == (byte)'M' && bytes[i + 5] == (byte)'P'
-                && bytes[i + 6] == (byte)'F' && bytes[i + 7] == 0x00)
-            {
-                sawMpf = true; // still requires a clean walk to SOS below
-            }
-
-            i = (int)segmentEnd;
-        }
-        return JpegContainerKind.Plain; // segment cap hit — refuse to vouch
+            return true;
+        });
+        return end == JpegSegmentWalker.WalkEnd.ReachedScan && sawMpf
+            ? JpegContainerKind.MultiPicture
+            : JpegContainerKind.Plain;
     }
 
     /// <summary>

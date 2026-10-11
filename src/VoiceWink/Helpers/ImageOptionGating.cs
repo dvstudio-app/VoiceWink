@@ -20,10 +20,15 @@ namespace VoiceWink.Helpers;
 /// <c>x-ai/grok-imagine-image-2.0</c> (which publishes <c>{low, medium}</c>) answered "Maximum" with
 /// an HTTP 400.
 /// </param>
+/// <param name="Thinking">
+/// Thinking levels to offer (Gemini-direct only, <see cref="ImageOptions.SupportedThinkingFor"/>).
+/// Empty or null ⇒ hide the thinking row entirely.
+/// </param>
 public readonly record struct ImageOptionGating(
     IReadOnlyList<string> Aspects,
     IReadOnlyList<string> Tiers,
-    IReadOnlyList<string> Qualities)
+    IReadOnlyList<string> Qualities,
+    IReadOnlyList<string>? Thinking = null)
 {
     /// <summary>
     /// Hide the aspect row when the model publishes no <c>aspect_ratio</c> — today the
@@ -48,6 +53,12 @@ public readonly record struct ImageOptionGating(
     /// </summary>
     public bool ShowQuality => Qualities.Count > 0;
 
+    /// <summary>Same rule for the thinking row (the same hide-AND-skip-repopulate contract).</summary>
+    public bool ShowThinking => Thinking is { Count: > 0 };
+
+    /// <summary>The thinking levels to offer, never null (null-safe view of <see cref="Thinking"/>).</summary>
+    public IReadOnlyList<string> ThinkingLevels => Thinking ?? global::System.Array.Empty<string>();
+
     /// <summary>
     /// Decide from the model the run will ACTUALLY use and what that model publishes.
     ///
@@ -62,7 +73,19 @@ public readonly record struct ImageOptionGating(
         => new(
             ImageOptions.SupportedAspectsFor(provider, model, capabilities),
             ImageOptions.SupportedTiersFor(provider, model, capabilities),
-            ImageOptions.SupportedQualitiesFor(provider, model, capabilities));
+            ImageOptions.SupportedQualitiesFor(provider, model, capabilities),
+            ImageOptions.SupportedThinkingFor(provider, model));
+
+    /// <summary>
+    /// IMG-21: where <see cref="Decide"/>'s answer came from, in words for the options dialog's
+    /// "Image options offered" log line — the three cases of the capability lookup's contract
+    /// (null ⇒ static rules; <see cref="ImageModelCapabilities.AllAuto"/> ⇒ the held snapshot does
+    /// not list the model; anything else ⇒ the catalog). Lives here so <c>App.xaml.cs</c> only logs.
+    /// </summary>
+    public static string DescribeSource(ImageModelCapabilities? capabilities)
+        => capabilities == null ? "static rules"
+            : ReferenceEquals(capabilities, ImageModelCapabilities.AllAuto) ? "not in catalog"
+            : "catalog";
 
     /// <summary>
     /// The model the dialog must gate against: the user's PENDING pick if there is one, else the

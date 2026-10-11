@@ -1572,13 +1572,14 @@ public sealed class AIEnhancementService
         await EnsureImageCapabilitiesAsync(imageProvider, ct).ConfigureAwait(false);
         var effective = Helpers.ImageOptions.NormalizeForModel(
             imageProvider, model, prompt?.ImageAspect, prompt?.ImageSizeTier, prompt?.ImageQuality,
-            ImageCapabilitiesFor(imageProvider, model));
+            ImageCapabilitiesFor(imageProvider, model), FirstReferenceSize(referenceImages),
+            prompt?.ImageThinking);
         foreach (var adjustment in effective.Adjustments)
             Logger.Information("Image option adjusted for {Model}: {Adjustment}", model, adjustment);
         var referencesDescription = ReferenceLogFormat.Describe(referenceImages);
-        Logger.Information("Image generation: provider={Provider}, model={Model}, aspect={Aspect}, tier={Tier}, quality={Quality}, references={References}, descriptionLength={DescriptionLength}",
+        Logger.Information("Image generation: provider={Provider}, model={Model}, aspect={Aspect}, tier={Tier}, quality={Quality}, thinking={Thinking}, references={References}, descriptionLength={DescriptionLength}",
             imageProvider, model, effective.Aspect ?? "auto", effective.SizeTier ?? "auto", effective.Quality ?? "auto",
-            referencesDescription, description.Length);
+            effective.Thinking ?? "auto", referencesDescription, description.Length);
         Helpers.PromptTraceLog.Write(Helpers.PromptTraceOp.ImageGeneration,
             new Helpers.TraceMeta(Provider: imageProvider.ToString(), Model: model),
             $"image generation · {imageProvider} · {model}",
@@ -1586,11 +1587,13 @@ public sealed class AIEnhancementService
             ("aspect", effective.Aspect ?? "auto"),
             ("size tier", effective.SizeTier ?? "auto"),
             ("quality", effective.Quality ?? "auto"),
+            ("thinking", effective.Thinking ?? "auto"),
             ("references", referencesDescription));
 
         var bytes = await Helpers.OperationTiming.TimeImageAsync(imageProvider.ToString(), model,
             () => descriptor.GenerateImageAsync(
-                _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality, referenceImages, ct), ct).ConfigureAwait(false);
+                _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality,
+                effective.Thinking, referenceImages, ct), ct).ConfigureAwait(false);
         return ClassifyGeneratedImage(bytes, referenceImages, effective);
     }
 
@@ -1619,9 +1622,22 @@ public sealed class AIEnhancementService
 
         // Numbers and a classification only — never payload bytes, in any encoding. A hex prefix
         // would be reversible content and these logs feed Sentry breadcrumbs.
-        Log.Information("Generated image classified: {Kind} ({Size} bytes)", kind, bytes.Length);
+        // IMG-21: the returned pixel size beside the size and aspect that were SENT, one line per
+        // image, so a provider that ignores the tier shows up here. The clipboard line cannot say
+        // it: it reports the size it scaled to above 16 MP (IMG-19).
+        var pixels = Helpers.ImagePixelSize.TryRead(bytes, kind);
+        Log.Information("Generated image classified: {Kind} ({Size} bytes), {Pixels:l} px; sent tier={Tier:l}, aspect={Aspect:l}",
+            kind, bytes.Length, pixels?.ToString() ?? "unknown", effective.SizeTier ?? "auto", effective.Aspect ?? "auto");
         return new ImageGenerationResult(bytes, referenceImages, effective) { Kind = kind };
     }
+
+    /// <summary>
+    /// IMG-21: the displayed size of the run's first reference, for
+    /// <see cref="Helpers.ImageOptions.NormalizeForModel"/> — a header read, no decode. Null with no
+    /// references or when the header cannot be read.
+    /// </summary>
+    private static Helpers.PixelSize? FirstReferenceSize(IReadOnlyList<ReferenceImage> referenceImages)
+        => referenceImages.Count > 0 ? Helpers.ImagePixelSize.TryRead(referenceImages[0].Bytes) : null;
 
     /// <summary>
     /// ENH-6: the ONE site that turns a <see cref="Models.ReferenceImageSelection"/>
@@ -2494,13 +2510,14 @@ public sealed class AIEnhancementService
         await EnsureImageCapabilitiesAsync(imageProvider, ct).ConfigureAwait(false);
         var effective = Helpers.ImageOptions.NormalizeForModel(
             imageProvider, modelId, prompt?.ImageAspect, prompt?.ImageSizeTier, prompt?.ImageQuality,
-            ImageCapabilitiesFor(imageProvider, modelId));
+            ImageCapabilitiesFor(imageProvider, modelId), FirstReferenceSize(referenceImages),
+            prompt?.ImageThinking);
         foreach (var adjustment in effective.Adjustments)
             Logger.Information("Image option adjusted for {Model}: {Adjustment}", modelId, adjustment);
         var referencesDescription = ReferenceLogFormat.Describe(referenceImages);
-        Logger.Information("Image generation (redo): provider={Provider}, model={Model}, aspect={Aspect}, tier={Tier}, quality={Quality}, references={References}",
+        Logger.Information("Image generation (redo): provider={Provider}, model={Model}, aspect={Aspect}, tier={Tier}, quality={Quality}, thinking={Thinking}, references={References}",
             imageProvider, modelId, effective.Aspect ?? "auto", effective.SizeTier ?? "auto", effective.Quality ?? "auto",
-            referencesDescription);
+            effective.Thinking ?? "auto", referencesDescription);
         Helpers.PromptTraceLog.Write(Helpers.PromptTraceOp.ImageGenerationRedo,
             new Helpers.TraceMeta(Provider: imageProvider.ToString(), Model: modelId),
             $"image generation (redo) · {imageProvider} · {modelId}",
@@ -2508,11 +2525,13 @@ public sealed class AIEnhancementService
             ("aspect", effective.Aspect ?? "auto"),
             ("size tier", effective.SizeTier ?? "auto"),
             ("quality", effective.Quality ?? "auto"),
+            ("thinking", effective.Thinking ?? "auto"),
             ("references", referencesDescription));
 
         var bytes = await Helpers.OperationTiming.TimeImageAsync(imageProvider.ToString(), modelId,
             () => descriptor.GenerateImageAsync(
-                _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality, referenceImages, ct), ct).ConfigureAwait(false);
+                _httpFactory, config, description, effective.Aspect, effective.SizeTier, effective.Quality,
+                effective.Thinking, referenceImages, ct), ct).ConfigureAwait(false);
         return ClassifyGeneratedImage(bytes, referenceImages, effective);
     }
 }

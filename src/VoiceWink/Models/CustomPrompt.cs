@@ -125,6 +125,18 @@ public class CustomPrompt
     /// </summary>
     public string? ImageQuality { get; set; }
 
+    /// <summary>
+    /// Thinking level for image generation (owner decision 2026-10-11): the tags in
+    /// <c>ImageOptions.AllThinkingLevels</c> — "minimal", "medium", "high". Null = Auto (the field is
+    /// omitted and the model's default applies). Gemini-direct only (<c>ImageOptions.SupportedThinkingFor</c>);
+    /// clamped DOWN on a model that lacks the level, to Auto on one without thinking. Only used when
+    /// IsImageGeneration is true. WhenWritingNull keeps untouched prompts byte-identical on disk;
+    /// downgrade note: a pre-feature build that re-saves prompts drops this property (the
+    /// <see cref="ReasoningOverride"/> precedent) — the History column keeps what each run used.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ImageThinking { get; set; }
+
     public DateTime DateCreated { get; set; } = DateTime.UtcNow;
 
     /// <summary>

@@ -43,6 +43,7 @@ public interface IAIProviderDescriptor
         string? imageAspect,
         string? imageSizeTier,
         string? imageQuality,
+        string? imageThinking,
         IReadOnlyList<ReferenceImage> references,
         CancellationToken ct);
 

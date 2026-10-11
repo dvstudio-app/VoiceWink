@@ -41,11 +41,12 @@ public sealed class GeminiDescriptor : IAIProviderDescriptor
         string? imageAspect,
         string? imageSizeTier,
         string? imageQuality,
+        string? imageThinking,
         IReadOnlyList<ReferenceImage> references,
         CancellationToken ct)
     {
         var client = new GeminiImageClient(httpFactory.CreateClient("images"), config);
-        return client.GenerateAsync(description, imageAspect, imageSizeTier, imageQuality, references, ct);
+        return client.GenerateAsync(description, imageAspect, imageSizeTier, imageQuality, imageThinking, references, ct);
     }
 
     public async Task<ProviderModelList> FetchAvailableModelsAsync(

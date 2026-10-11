@@ -42,6 +42,14 @@ public class TranscriptionRecord
     public string? ImageQuality { get; set; }
 
     /// <summary>
+    /// Thinking level the generation actually used — or, on a failure row, the one requested (the
+    /// tags in <c>ImageOptions.AllThinkingLevels</c>: "minimal", "medium", "high"). Null = Auto or a
+    /// model without thinking levels. Gemini-direct image models only. Additive nullable column
+    /// (2026-10-11), migrated by <c>App.InitializeDatabaseCore</c>.
+    /// </summary>
+    public string? ImageThinking { get; set; }
+
+    /// <summary>
     /// How many versions the run that produced this row requested (1–4). Completes the
     /// set of image knobs the row already records — aspect / size tier / quality exist
     /// so History's Redo can restore the EXACT request, and the version count was the

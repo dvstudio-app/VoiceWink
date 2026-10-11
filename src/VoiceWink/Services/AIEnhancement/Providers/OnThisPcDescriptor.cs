@@ -40,6 +40,7 @@ internal sealed class OnThisPcDescriptor : IAIProviderDescriptor
         string? imageAspect,
         string? imageSizeTier,
         string? imageQuality,
+        string? imageThinking,
         IReadOnlyList<ReferenceImage> references,
         CancellationToken ct)
         => throw new NotSupportedException("The local engine does not generate images.");

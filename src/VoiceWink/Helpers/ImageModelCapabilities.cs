@@ -13,9 +13,9 @@ namespace VoiceWink.Helpers;
 /// three size tiers to <c>openai/gpt-5-image</c> (it publishes neither aspect_ratio nor resolution).</para>
 ///
 /// <para><b>Aspects are pre-intersected with what the app can render</b> (see
-/// <see cref="ImageOptions.AllKnownAspects"/>). The catalog publishes ratios the app has no constant,
-/// no combo entry, and no persistence story for — <c>9:19.5</c>, <c>19.5:9</c>, <c>9:20</c>,
-/// <c>20:9</c> on seedream/grok. Carrying them would make <c>SupportedAspectsFor</c> claim an aspect
+/// <see cref="ImageOptions.AllKnownAspects"/>). A catalog can publish a ratio the app has no constant,
+/// no combo entry, and no persistence story for (<c>9:19.5</c> and its siblings were that case until
+/// 2026-10-11, when the app gained them). Carrying one would make <c>SupportedAspectsFor</c> claim an aspect
 /// that <c>PopulateImageAspectComboWithIndicators</c> silently drops (it filters a fixed options
 /// table), while <c>NormalizeForModel</c> would accept it as a valid persisted value. Intersecting
 /// at PARSE time means every consumer sees only offerable values, so that incoherence cannot arise.

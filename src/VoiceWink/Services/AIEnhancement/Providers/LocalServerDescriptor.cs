@@ -32,6 +32,7 @@ public sealed class LocalServerDescriptor : IAIProviderDescriptor
         string? imageAspect,
         string? imageSizeTier,
         string? imageQuality,
+        string? imageThinking,
         IReadOnlyList<ReferenceImage> references,
         CancellationToken ct)
         => throw new NotSupportedException("A local server does not generate images.");

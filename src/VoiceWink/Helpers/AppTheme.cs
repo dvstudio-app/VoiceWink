@@ -717,6 +717,20 @@ public static class AppTheme
     }
 
     /// <summary>
+    /// Populate a thinking-level combo (Gemini-direct image models). <paramref name="allowedLevels"/>
+    /// gates which levels are shown (Auto is always shown); rows live in
+    /// <see cref="ImageOptions.ThinkingComboRows"/>.
+    /// </summary>
+    public static void PopulateImageThinkingComboWithIndicators(
+        ComboBox combo,
+        string? selectedLevel,
+        global::System.Collections.Generic.IReadOnlyCollection<string>? allowedLevels = null)
+    {
+        PopulateIndicatorCombo(
+            combo, IndicatorComboRows.Filter(ImageOptions.ThinkingComboRows, allowedLevels), selectedLevel);
+    }
+
+    /// <summary>
     /// Shared helper for populating a ComboBox with indicator-box items. Atomically replaces the
     /// rows, so callers can re-populate freely (e.g. when the filter list changes after a provider
     /// switch); preserves <paramref name="selectedTag"/> when it survived filtering, otherwise falls

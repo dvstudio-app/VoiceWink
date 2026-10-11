@@ -33,6 +33,7 @@ public sealed class AnthropicDescriptor : IAIProviderDescriptor
         string? imageAspect,
         string? imageSizeTier,
         string? imageQuality,
+        string? imageThinking,
         IReadOnlyList<ReferenceImage> references,
         CancellationToken ct)
         => throw new NotSupportedException("Anthropic does not support image generation.");

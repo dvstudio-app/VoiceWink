@@ -1771,7 +1771,8 @@ public partial class MainViewModel : ObservableObject
                             generation.Effective.Aspect,
                             generation.Effective.SizeTier,
                             generation.Effective.Quality,
-                            persist.RearmSelections);
+                            persist.RearmSelections,
+                            generation.Effective.Thinking);
                     return persist;
                 },
                 resumeAfterCommit: _imageJob.EndCommitResumeGenerating,
@@ -1994,6 +1995,7 @@ public partial class MainViewModel : ObservableObject
         string? aspect,
         string? sizeTier,
         string? quality,
+        string? thinking,
         string? referencePath)
         => new()
         {
@@ -2012,6 +2014,7 @@ public partial class MainViewModel : ObservableObject
             ImageAspect = aspect,
             ImageSizeTier = sizeTier,
             ImageQuality = quality,
+            ImageThinking = thinking,
             // The run's version count, recorded on EVERY image row (N=1 included, as an
             // explicit 1) so History's Redo can restore it — see the property's docs.
             ImageVersionCount = Helpers.ImageBatchPolicy.ClampCount(req.Count),
@@ -2053,6 +2056,7 @@ public partial class MainViewModel : ObservableObject
                                 generation.Effective.Aspect,
                                 generation.Effective.SizeTier,
                                 generation.Effective.Quality,
+                                generation.Effective.Thinking,
                                 referencePath), CancellationToken.None);
                         return row.Id;
                     }, CancellationToken.None);
@@ -2205,6 +2209,7 @@ public partial class MainViewModel : ObservableObject
                         req.Prompt?.ImageAspect,
                         req.Prompt?.ImageSizeTier,
                         req.Prompt?.ImageQuality,
+                        req.Prompt?.ImageThinking,
                         referencePath), CancellationToken.None);
                 disposition = write.Disposition;
                 return write.Id;
@@ -2675,7 +2680,8 @@ public partial class MainViewModel : ObservableObject
         string? previousModel = null,
         string? previousImageAspect = null,
         string? previousImageSizeTier = null,
-        string? previousImageQuality = null)
+        string? previousImageQuality = null,
+        string? previousImageThinking = null)
     {
         if (!IsLicenseAllowingRecording(out var blockedMessage, out _))
         {
@@ -2696,8 +2702,28 @@ public partial class MainViewModel : ObservableObject
 
         RequestModelPickerWithContext(BuildNewGenerationContext(
             previousProvider, previousModel,
-            previousImageAspect, previousImageSizeTier, previousImageQuality,
+            previousImageAspect, previousImageSizeTier, previousImageQuality, previousImageThinking,
             references));
+    }
+
+    /// <summary>
+    /// The prompt a History redo of an image row runs with: a CLONE carrying the row's own aspect,
+    /// size, quality and thinking level, Auto (null) included. The redo dialog seeds each option row
+    /// from <c>PreviousImageX ?? Prompt.ImageX</c>, so a row that ran on Auto under a prompt whose
+    /// saved value is, say, High quality would otherwise redo at High — a value that row never used,
+    /// and quality, size and thinking are billed (Codex diff r1, PR #1202, which fixed thinking alone).
+    /// The saved prompt itself is never mutated. Text rows and a null prompt pass through unchanged.
+    /// </summary>
+    internal static CustomPrompt? PromptForHistoryRedo(
+        CustomPrompt? prompt, bool isImageRow, Models.Entities.TranscriptionRecord row)
+    {
+        if (!isImageRow || prompt == null) return prompt;
+        var copy = prompt.Clone();
+        copy.ImageAspect = row.ImageAspect;
+        copy.ImageSizeTier = row.ImageSizeTier;
+        copy.ImageQuality = row.ImageQuality;
+        copy.ImageThinking = row.ImageThinking;
+        return copy;
     }
 
     /// <summary>
@@ -2715,6 +2741,7 @@ public partial class MainViewModel : ObservableObject
         string? previousImageAspect,
         string? previousImageSizeTier,
         string? previousImageQuality,
+        string? previousImageThinking,
         IReadOnlyList<ReferenceImageSelection>? references)
         => new(
             RawText: "",
@@ -2733,7 +2760,8 @@ public partial class MainViewModel : ObservableObject
             PreviousImageSizeTier: previousImageSizeTier,
             PreviousImageQuality: previousImageQuality,
             IsNewGeneration: true,
-            References: references?.ToArray());
+            References: references?.ToArray(),
+            PreviousImageThinking: previousImageThinking);
 
     /// <summary>
     /// Open the model picker dialog with an explicit context.
@@ -3052,7 +3080,8 @@ public partial class MainViewModel : ObservableObject
                 PreviousImageAspect: ctx.Prompt?.ImageAspect,
                 PreviousImageSizeTier: ctx.Prompt?.ImageSizeTier,
                 PreviousImageQuality: ctx.Prompt?.ImageQuality,
-                References: ctx.References
+                References: ctx.References,
+                PreviousImageThinking: ctx.Prompt?.ImageThinking
             ), redoToneResolved);
             Logger.Information("Redo enhancement completed with model {Model}", modelId);
         }
@@ -6792,7 +6821,8 @@ public partial class MainViewModel : ObservableObject
                 PreviousModel: model,
                 PreviousImageAspect: prompt.ImageAspect,
                 PreviousImageSizeTier: prompt.ImageSizeTier,
-                PreviousImageQuality: prompt.ImageQuality);
+                PreviousImageQuality: prompt.ImageQuality,
+                PreviousImageThinking: prompt.ImageThinking);
 
             // Same picker gate as RequestModelPickerWithContext: if a redo picker is
             // already open, showing this dialog would throw (one ContentDialog per
@@ -6835,6 +6865,7 @@ public partial class MainViewModel : ObservableObject
             prompt.ImageAspect = picked.Aspect;
             prompt.ImageSizeTier = picked.SizeTier;
             prompt.ImageQuality = picked.Quality;
+            prompt.ImageThinking = picked.Thinking;
             if (!string.IsNullOrWhiteSpace(picked.Model))
                 prompt.ModelOverride = picked.Model;
             if (picked.Provider != null)
@@ -7177,7 +7208,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     internal sealed record LastCommittedItem(
         int? HistoryId, string? Aspect, string? SizeTier, string? Quality,
-        IReadOnlyList<ReferenceImageSelection>? RearmSelections);
+        IReadOnlyList<ReferenceImageSelection>? RearmSelections, string? Thinking = null);
 
     /// <summary>A composed terminal presentation, ready to materialize into
     /// <see cref="PendingImageCompletion"/> — status, tone, History assignment,
@@ -7279,7 +7310,8 @@ public partial class MainViewModel : ObservableObject
                 PreviousImageQuality: lastCommitted != null ? lastCommitted.Quality : prompt?.ImageQuality,
                 PreviousImageCount: total,
                 IsNewGeneration: isNewGeneration,
-                References: references));
+                References: references,
+                PreviousImageThinking: lastCommitted != null ? lastCommitted.Thinking : prompt?.ImageThinking));
     }
 
     /// <summary>
@@ -7501,7 +7533,8 @@ public partial class MainViewModel : ObservableObject
         string? PreviousImageQuality = null,  // image quality used in previous generation (for pre-selection)
         int? PreviousImageCount = null,       // IMG-3: seeds the next dialog's Versions picker AND carries the confirmed run count back to dispatch (dialog-authoritative on confirm, like References); null = fresh chain, seed 1
         bool IsNewGeneration = false,         // IMG-1 text-first entry: no lineage — dialog says "Generate Image"/"Generate", not "Regenerate"/"Run"
-        IReadOnlyList<ReferenceImageSelection>? References = null // ENH-6/6f: reference images riding this generation, selection order (dialog is authoritative — its confirm overwrites this; ALWAYS an immutable snapshot, null ≡ empty)
+        IReadOnlyList<ReferenceImageSelection>? References = null, // ENH-6/6f: reference images riding this generation, selection order (dialog is authoritative — its confirm overwrites this; ALWAYS an immutable snapshot, null ≡ empty)
+        string? PreviousImageThinking = null  // image thinking level used in previous generation (for pre-selection)
     );
 
     /// <summary>
@@ -7587,7 +7620,8 @@ public partial class MainViewModel : ObservableObject
         string? SizeTier,
         string? Quality,
         IReadOnlyList<ReferenceImageSelection>? References = null, // ENH-6/6f: the dialog's reference strip (null/empty = none; snapshot, never the dialog's working list)
-        int Count = 1); // IMG-3: the Versions picker (image dialogs only; text dialogs pass 1) — per-run choice, clamped at dispatch
+        int Count = 1, // IMG-3: the Versions picker (image dialogs only; text dialogs pass 1) — per-run choice, clamped at dispatch
+        string? Thinking = null); // image thinking level (Gemini-direct; null = Auto) — the ask, like Quality
 
     /// <summary>
     /// What the transcription-retry picker needs to render (TRN-17). Plain data, resolved before
