@@ -245,14 +245,17 @@ public static class ReferenceImagePolicy
     /// <summary>
     /// IMG-4: aggregate reference budget for a PARALLEL multi-version batch. All N
     /// concurrent provider calls build their payloads from the same shared reference
-    /// bytes, so the transient request-build allocation multiplies by N — dividing the
-    /// single-call budget by the version count keeps a batch's peak allocation at
-    /// ~the long-accepted single-call worst case (the same invariant
-    /// <see cref="MaxTotalBytes"/> established for multi-reference). N=1 returns the
-    /// unchanged <see cref="MaxTotalBytes"/>; corrupt counts clamp to 1.
+    /// bytes, so the transient request-build allocation multiplies by N — the
+    /// single-call budget is divided by the version count, but NEVER below
+    /// <see cref="MaxBytes"/> (owner decision 2026-10-14): a reference the single-file
+    /// bound accepts is accepted at every version count, so one 45 MB photo no longer
+    /// fails a 4-version run. Peak cost of that floor at 4 versions, from IMG-7's
+    /// measured 5.0x build cost: about 4 x 50 MB x 5 = 1 GB, against 750 MiB for the
+    /// single-call worst case. Only several large references together stay divided.
+    /// N=1 returns the unchanged <see cref="MaxTotalBytes"/>; corrupt counts clamp to 1.
     /// </summary>
     public static long MaxBatchTotalBytes(int versionCount)
-        => MaxTotalBytes / Math.Max(1, versionCount);
+        => Math.Max(MaxBytes, MaxTotalBytes / Math.Max(1, versionCount));
 
     /// <summary>
     /// ENH-6i: classify a JPEG's CONTAINER by walking its marker segments. The one

@@ -41,7 +41,7 @@ public sealed partial class MainWindow : Window
     private Border? _moreBadge;
     private bool _updatesBadgeOn;
 
-    // UI-25: the collapsed "More" group (Metrics, License, Updates, About). The bool survives a
+    // UI-25: the collapsed "More" group (License, Updates, Metrics, About). The bool survives a
     // sidebar rebuild (theme change) so the group keeps the state the user left it in; it starts
     // collapsed each launch and opens itself when a page inside it is shown.
     private StackPanel? _moreItems;
@@ -55,6 +55,24 @@ public sealed partial class MainWindow : Window
     // shown in this session.
     private readonly StoreRatingPrompt _storeRatingPrompt;
 
+    // Home's time-saved pill (2026-10-14) reads the lifetime totals and its copy button writes the
+    // clipboard; both injected so the page adds no service-locator call.
+    private readonly Services.Data.LifetimeMetricsService _lifetimeMetrics;
+    private readonly Services.System.ClipboardService _clipboard;
+
+    // Home shows the recording hotkey (2026-10-14 redesign); the window reads it when it builds the
+    // page, so a change made in Settings shows on the next visit.
+    private readonly Services.System.SettingsService _settings;
+
+    /// <summary>The recording hotkey the hook is actually using: the stored binding, or Right Alt
+    /// when the stored value does not parse — the fallback <c>HotkeyService.ResolveRecordingBinding</c>
+    /// applies, so Home never shows a key that does nothing.</summary>
+    private string RecordingHotkeyForHome()
+    {
+        var stored = _settings.GetString(AppDefaults.HotkeyModifier, "RightAlt");
+        return HotkeyBinding.TryParse(stored, out var binding, out _) ? binding.Canonical : "RightAlt";
+    }
+
     /// <summary>Whether this window is showing — not hidden to the tray, not minimized (LNC-14: the Store
     /// rating line counts as seen only while it is).</summary>
     private bool IsOnScreen()
@@ -66,18 +84,18 @@ public sealed partial class MainWindow : Window
     // The sidebar's entries and groups live in Helpers/SidebarLayout (UI-25), which is also the
     // NavigateToPage allowlist, so the two cannot drift.
 
-    public MainWindow() : this(deferLicenseRoute: false) { }
-
     /// <summary>
     /// LGL-1: when <paramref name="deferLicenseRoute"/> is <c>true</c>, the constructor
     /// builds UI for onboarded users but does NOT call <see cref="ApplyLicenseStartupRoute"/>.
     /// <c>App.OnLaunched</c> calls <see cref="ApplyLicenseStartupRouteIfReady"/> explicitly
     /// after the legal-acceptance gate succeeds, so license routing can't mutate the
-    /// ContentControl mid-modal. The default <c>false</c> preserves the legacy auto-route
-    /// behaviour for any caller that still wants it.
+    /// ContentControl mid-modal. <c>false</c> keeps the legacy auto-route behaviour.
     /// </summary>
-    public MainWindow(bool deferLicenseRoute)
+    public MainWindow(bool deferLicenseRoute, Services.Data.LifetimeMetricsService lifetimeMetrics,
+        Services.System.ClipboardService clipboard)
     {
+        _lifetimeMetrics = lifetimeMetrics;   // before BuildUI: building the UI navigates to Home
+        _clipboard = clipboard;
         // Version deliberately NOT in the title (owner 2026-07-10) — it lives on the
         // About and Updates pages; the "(Debug)" marker went the same way (owner
         // 2026-09-22), so every configuration carries the plain title.
@@ -90,6 +108,7 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
 
         var settings = App.Services.GetRequiredService<Services.System.SettingsService>();
+        _settings = settings;
         // Before BuildUI: building the UI navigates to Home, whose factory arm hands this over.
         _storeRatingPrompt = new StoreRatingPrompt(settings, IsOnScreen);
         if (settings.GetBool(AppDefaults.HasCompletedOnboarding))
@@ -513,6 +532,8 @@ public sealed partial class MainWindow : Window
             Text = "VoiceWink",
             FontSize = 18,
             FontWeight = FontWeights.Bold,
+            // The wordmark keeps the brand blue: WCAG exempts a logotype, and ThemeTextContrastTests
+            // names this line as the one accent Foreground allowed.
             Foreground = AppTheme.Brush(AppTheme.AccentBlue),
             Margin = new Thickness(20, 20, 20, 24)
         };
@@ -522,7 +543,7 @@ public sealed partial class MainWindow : Window
 
         foreach (var entry in SidebarLayout.Main)
         {
-            var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag);
+            var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag, entry.Tooltip);
             navStack.Children.Add(item);
             _navItems.Add(item);
         }
@@ -534,7 +555,7 @@ public sealed partial class MainWindow : Window
         _moreItems = new StackPanel { Spacing = 2, Margin = new Thickness(12, 0, 0, 0) };
         foreach (var entry in SidebarLayout.More)
         {
-            var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag);
+            var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag, entry.Tooltip);
             _moreItems.Children.Add(item);
             _navItems.Add(item);
         }
@@ -674,12 +695,21 @@ public sealed partial class MainWindow : Window
                 _moreHeader, expanded ? "Expanded" : "Collapsed");
     }
 
-    private Border CreateUpdatesDot() => new()
+    private Border CreateUpdatesDot()
+    {
+        var dot = NewUpdatesDot();
+        ToolTipService.SetToolTip(dot, "Update available");
+        return dot;
+    }
+
+    private Border NewUpdatesDot() => new()
     {
         Width = 8,
         Height = 8,
         CornerRadius = new CornerRadius(4),
-        Background = AppTheme.Brush(AppTheme.AccentBlue),
+        // The text blue, not the accent: on the light active pill the accent dot measured 2.7:1,
+        // under the 3:1 a meaningful graphic needs.
+        Background = AppTheme.Brush(AppTheme.AccentBlueText),
         VerticalAlignment = VerticalAlignment.Center,
         // Optical nudge DOWN: the row's height is driven by the taller FontIcon, and a
         // line box's geometric centre sits ABOVE the lowercase text mass — so a
@@ -691,7 +721,7 @@ public sealed partial class MainWindow : Window
         Visibility = _updatesBadgeOn ? Visibility.Visible : Visibility.Collapsed
     };
 
-    private Button CreateNavItem(string label, string glyph, string tag)
+    private Button CreateNavItem(string label, string glyph, string tag, string? tooltip = null)
     {
         var isDisabled = DisabledNavTags.Contains(tag);
         var foreground = isDisabled ? AppTheme.DimText : AppTheme.SubtleText;
@@ -739,6 +769,7 @@ public sealed partial class MainWindow : Window
         // Hover and press come from the Button's resource keys (CreateSidebarButton); the active
         // row's pill is the same brush, so hovering it changes nothing, as before.
         button.Click += (_, _) => NavigateTo(tag);
+        if (tooltip != null) ToolTipService.SetToolTip(button, tooltip);
 
         return button;
     }
@@ -798,8 +829,8 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public bool NavigateToPage(string tag)
     {
-        // The sidebar's entries plus the pages reached from inside another page (Log Viewer from
-        // Settings, Legal from About) — one list with the sidebar, so the two cannot drift (UI-25).
+        // The sidebar's entries plus the pages reached from inside another page (Legal from About)
+        // — one list with the sidebar, so the two cannot drift (UI-25).
         if (!SidebarLayout.NavigableTags.Contains(tag))
         {
             Logger.Warning("NavigateToPage rejected unknown tag: {Tag}", tag);
@@ -818,6 +849,17 @@ public sealed partial class MainWindow : Window
     {
         if (_isOnboarding) return;
         NavigateTo("legal", prebuilt: new Pages.LegalPage(initial));
+    }
+
+    /// <summary>
+    /// Settings, scrolled to its Keyboard shortcuts card — Home's hotkey is a link here (owner,
+    /// 2026-10-14). A typed entry like <see cref="NavigateToLegalPage"/>, so no caller can ask for
+    /// a section that does not exist.
+    /// </summary>
+    public void NavigateToHotkeySettings()
+    {
+        if (_isOnboarding) return;
+        NavigateTo("settings", prebuilt: new SettingsPage(scrollToShortcuts: true));
     }
 
     private void NavigateTo(string tag, Page? prebuilt = null)
@@ -839,8 +881,7 @@ public sealed partial class MainWindow : Window
 
         Logger.Debug("Navigation: {Tag}", tag);
 
-        // A page with no sidebar entry highlights the entry it is reached from (Log Viewer →
-        // Settings, Legal → About).
+        // A page with no sidebar entry highlights the entry it is reached from (Legal → About).
         var highlightTag = SidebarLayout.HighlightTagFor(tag);
 
         // Update visual state of nav items
@@ -855,12 +896,14 @@ public sealed partial class MainWindow : Window
             if (isActive)
             {
                 item.Background = AppTheme.Brush(AppTheme.ActivePillBg);
+                // AccentBlueText, not the accent: the accent on its own pill read 3.5:1 dark and
+                // 2.7:1 light (2026-10-14); ThemeTextContrastTests pins ≥ 4.5:1 in both themes.
                 foreach (var child in inner.Children)
                 {
-                    if (child is FontIcon fi) fi.Foreground = AppTheme.Brush(AppTheme.AccentBlue);
+                    if (child is FontIcon fi) fi.Foreground = AppTheme.Brush(AppTheme.AccentBlueText);
                     if (child is TextBlock tb)
                     {
-                        tb.Foreground = AppTheme.Brush(AppTheme.AccentBlue);
+                        tb.Foreground = AppTheme.Brush(AppTheme.AccentBlueText);
                         tb.FontWeight = FontWeights.SemiBold;
                     }
                 }
@@ -887,7 +930,7 @@ public sealed partial class MainWindow : Window
         // constructor-args-bearing instance instead of using static handshakes.
         var page = prebuilt ?? tag switch
         {
-            "home" => (Page?)new HomePage(_storeRatingPrompt),
+            "home" => (Page?)new HomePage(_storeRatingPrompt, _lifetimeMetrics, _clipboard, RecordingHotkeyForHome()),
             "models" => new ModelsPage(),
             "history" => new HistoryPage(),
             "enhancement" => new EnhancementPage(),

@@ -307,7 +307,7 @@ public sealed class AudioTranscribePage : Page
             IsActive = false,
             Width = 36,
             Height = 36,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 24, 0, 0)
         };
@@ -453,7 +453,7 @@ public sealed class AudioTranscribePage : Page
         if (_copyButton?.Child is not TextBlock label) return;
         _copyButton.MinWidth = _copyButton.ActualWidth;
         label.Text = copied ? "✓ Copied" : "Couldn't copy";
-        label.Foreground = AppTheme.Brush(copied ? AppTheme.AccentGreen : AppTheme.FailureText);
+        label.Foreground = AppTheme.Brush(copied ? AppTheme.AccentGreenText : AppTheme.FailureText);
         await Task.Delay(1200);
         if (_isUnloaded || generation != _copyFeedbackGeneration) return;
         RestoreCopyButtonFace();

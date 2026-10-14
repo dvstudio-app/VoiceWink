@@ -1210,7 +1210,8 @@ public partial class App : Application, Services.IAppLifetime
 
             // Create and show main window. LGL-1: legal route is deferred so the
             // license-route + runtime services can't fire before acceptance.
-            _mainWindow = new MainWindow(deferLicenseRoute: true);
+            _mainWindow = new MainWindow(deferLicenseRoute: true, Services.GetRequiredService<LifetimeMetricsService>(),
+                Services.GetRequiredService<ClipboardService>());
             MainWindow = _mainWindow;
             MainWindowInstance = _mainWindow;
             // Wire OnboardingCompleted so the wizard's last step triggers gated
@@ -4540,7 +4541,7 @@ public partial class App : Application, Services.IAppLifetime
 
         // IMG-4: batch reference-budget gate. N concurrent payload builds multiply the
         // transient allocation, so a batch's aggregate reference bytes must fit
-        // MaxBatchTotalBytes(count) = 150 MB / count. Enforced at CONFIRM — args.Cancel
+        // MaxBatchTotalBytes(count) = 150 MB / count, never below one 50 MB file. Enforced at CONFIRM — args.Cancel
         // keeps the dialog open with the actionable, count-specific limit shown, before
         // any spend — with the shared read's count-scoped budget as the backstop.
         // Unreadable sizes are skipped fail-soft (the backstop still enforces).

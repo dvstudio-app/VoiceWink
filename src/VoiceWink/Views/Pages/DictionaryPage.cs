@@ -140,7 +140,7 @@ public sealed class DictionaryPage : Page
         var statusBlock = new TextBlock
         {
             FontSize = 13,
-            Foreground = AppTheme.Brush(AppTheme.AccentRed),
+            Foreground = AppTheme.Brush(AppTheme.FailureText),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 0),
             Visibility = Visibility.Collapsed
@@ -556,7 +556,7 @@ public sealed class DictionaryPage : Page
         {
             Text = word,
             FontSize = 13,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             VerticalAlignment = VerticalAlignment.Center
         };
 
@@ -565,7 +565,7 @@ public sealed class DictionaryPage : Page
         {
             Glyph = "\uE711", // Cancel / X
             FontSize = 10,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue)
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText)
         };
 
         var deleteBorder = new Border
@@ -584,6 +584,7 @@ public sealed class DictionaryPage : Page
             Background = AppTheme.TransparentBrush
         };
 
+        AppTheme.SetIconLabel(deleteBorder, "Remove");
         var deleteHoverBg = AppTheme.Brush(ColorHelper.FromArgb(50, 0, 122, 255));
         deleteBorder.PointerEntered += (_, _) => deleteBorder.Background = deleteHoverBg;
         deleteBorder.PointerExited += (_, _) => deleteBorder.Background = AppTheme.TransparentBrush;
@@ -645,7 +646,7 @@ public sealed class DictionaryPage : Page
             Text = replacement.ReplacementText,
             FontSize = 13,
             FontWeight = FontWeights.Medium,
-            Foreground = AppTheme.Brush(replacement.IsEnabled ? AppTheme.AccentBlue : AppTheme.DimText),
+            Foreground = AppTheme.Brush(replacement.IsEnabled ? AppTheme.AccentBlueText : AppTheme.DimText),
             VerticalAlignment = VerticalAlignment.Center,
             TextTrimming = TextTrimming.CharacterEllipsis
         };
@@ -674,6 +675,7 @@ public sealed class DictionaryPage : Page
             VerticalAlignment = VerticalAlignment.Center
         };
         AppTheme.AllowParentScroll(toggleSwitch);
+        AppTheme.SetIconLabel(toggleSwitch, "Apply this replacement"); // the switch has no label of its own
         var suppressToggle = false;
         toggleSwitch.Toggled += async (_, _) =>
         {
@@ -699,7 +701,7 @@ public sealed class DictionaryPage : Page
             // failure branch re-brushed them and a rule toggled off kept its enabled colours until
             // the page was rebuilt (self-review on PR 926, 2026-09-13).
             originalText.Foreground = AppTheme.Brush(replacement.IsEnabled ? AppTheme.TextPrimary : AppTheme.DimText);
-            replacementText.Foreground = AppTheme.Brush(replacement.IsEnabled ? AppTheme.AccentBlue : AppTheme.DimText);
+            replacementText.Foreground = AppTheme.Brush(replacement.IsEnabled ? AppTheme.AccentBlueText : AppTheme.DimText);
         };
 
         // Delete button (subtle X)
@@ -727,12 +729,13 @@ public sealed class DictionaryPage : Page
             },
             Background = AppTheme.TransparentBrush
         };
+        AppTheme.SetIconLabel(deleteBtn, "Delete");
 
         var deleteHoverBg = AppTheme.Brush(ColorHelper.FromArgb(30, 255, 69, 58));
         deleteBtn.PointerEntered += (_, _) =>
         {
             deleteBtn.Background = deleteHoverBg;
-            deleteIcon.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+            deleteIcon.Foreground = AppTheme.Brush(AppTheme.FailureText);
         };
         deleteBtn.PointerExited += (_, _) =>
         {
@@ -785,7 +788,7 @@ public sealed class DictionaryPage : Page
         editBtn.PointerEntered += (_, _) =>
         {
             editBtn.Background = editHoverBg;
-            editIcon.Foreground = AppTheme.Brush(AppTheme.AccentBlue);
+            editIcon.Foreground = AppTheme.Brush(AppTheme.AccentBlueText);
         };
         editBtn.PointerExited += (_, _) =>
         {

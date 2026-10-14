@@ -139,7 +139,8 @@ internal static class MarkdownInline
 
     private static void AddLink(TextBlock tb, string label, Uri uri)
     {
-        var link = new Hyperlink { NavigateUri = uri };
+        // Set on the Hyperlink itself: WinUI does not take a Hyperlink's colour from its TextBlock.
+        var link = new Hyperlink { NavigateUri = uri, Foreground = AppTheme.Brush(AppTheme.AccentBlueText) };
         link.Inlines.Add(new Run { Text = label });
         tb.Inlines.Add(link);
     }

@@ -175,7 +175,7 @@ internal static class LocalModelsSection
                 // instead of splitting after "this" (owner, 2026-10-09).
                 Text = "  Best\u00A0for\u00A0this\u00A0PC",
                 FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+                Foreground = AppTheme.Brush(AppTheme.AccentGreenText),
             });
         }
 
@@ -213,30 +213,15 @@ internal static class LocalModelsSection
             Minimum = 0,
             Maximum = 1,
             CornerRadius = new CornerRadius(3),
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             Background = AppTheme.Brush(ColorHelper.FromArgb(40, 142, 142, 147)),
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
-        var download = AppTheme.CreateActionToggleButton("Download", "Cancel");
+        var download = AppTheme.CreateActionToggleButton("Download", "Cancel", compact: true);
         var selectBtn = AppTheme.CreateCompactButton("Select");
-        selectBtn.MinWidth = 80;
-        var active = new Border
-        {
-            Background = AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88)),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(10, 4, 10, 4),
-            MinWidth = 80,
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text = "Active",
-                FontSize = 12,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
-                HorizontalAlignment = HorizontalAlignment.Center,
-            },
-        };
+        selectBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
+        var active = AppTheme.CreateActiveStatusBadge();
         var delete = AppTheme.CreateCompactButton("Delete", isDanger: true);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         buttons.Children.Add(active);
@@ -276,7 +261,8 @@ internal static class LocalModelsSection
             delete.Visibility = installed && !chosen ? Visibility.Visible : Visibility.Collapsed;
             // The Models page's status icon: green check in use, blue check downloaded, grey arrow not.
             iconGlyph.Glyph = installed ? "\uE73E" : "\uE896";
-            iconGlyph.Foreground = AppTheme.Brush(chosen ? AppTheme.AccentGreen : installed ? AppTheme.AccentBlue : AppTheme.SubtleText);
+            ToolTipService.SetToolTip(icon, AppTheme.ModelStatusTooltip(chosen, installed));
+            iconGlyph.Foreground = AppTheme.Brush(chosen ? AppTheme.AccentGreenText : installed ? AppTheme.AccentBlueText : AppTheme.SubtleText);
             icon.Background = chosen
                 ? AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88))
                 : installed

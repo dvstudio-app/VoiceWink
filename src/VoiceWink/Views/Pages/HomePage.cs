@@ -3,21 +3,24 @@ using Microsoft.UI;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Media;
 using Serilog;
 using VoiceWink.Helpers;
-using VoiceWink.Models.Enums;
 using VoiceWink.Services.Licensing;
 using VoiceWink.ViewModels;
 
 namespace VoiceWink.Views.Pages;
 
 /// <summary>
-/// Home page showing recording status — and, since LNC-11, the free trial's countdown (the last
-/// three days emphasized) or its "has ended" line, each with a link to the License page; since LNC-14,
-/// once, the Microsoft Store rating line (<see cref="StoreRatingPrompt"/>).
+/// Home page, as it was before 2026-10-14 (title, mic, last transcription) with three additions the
+/// owner chose that day after two other redesigns were rejected: the time saved as a small pill
+/// under the title (opens Metrics), the status line directly under the mic, and under that
+/// "Press [hotkey] in any app to dictate" with the hotkey in bold — a tester skipped setup and never
+/// learned the hotkey. The last transcription's card carries a copy button. Also, when
+/// they apply: the free trial's countdown or "has ended" line (LNC-11) and, once, the Microsoft
+/// Store rating line (LNC-14, <see cref="StoreRatingPrompt"/>).
 /// </summary>
 public sealed class HomePage : Page
 {
@@ -27,8 +30,18 @@ public sealed class HomePage : Page
     private readonly LicenseService _license;
     private readonly TextBlock _statusBlock;
     private readonly TextBlock _transcriptionBlock;
-    private TextBlock _hintText = null!;
+    private readonly Border _copyButton;
     private readonly PropertyChangedEventHandler _vmPropertyChanged;
+
+    /// <summary>What the last-transcription card says before anything is dictated. It names no way
+    /// to record: the hotkey line under the mic is that.</summary>
+    internal const string NoTranscriptionText = "No transcriptions yet.";
+
+    /// <summary>The hotkey line: "Press", the hotkey in bold, "in any app to dictate" (owner's
+    /// wording); the detail is its tooltip.</summary>
+    internal const string HotkeyLead = "Press";
+    internal const string HotkeyTail = "in any app to dictate";
+    internal const string HotkeyLineTooltip = "Text appears at your cursor. Hold to talk, or tap to start and stop. Click the hotkey to change it.";
 
     // LNC-11: the free-trial line under the title. Resolved by HomeTrialLine from three reads of
     // the licence state (no licensing write; the trial window's last-seen advances as on every
@@ -55,9 +68,34 @@ public sealed class HomePage : Page
     private static readonly TimeSpan StoreRatingOnScreenPoll = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan StoreRatingHiddenPoll = TimeSpan.FromSeconds(15);
 
-    public HomePage(StoreRatingPrompt storeRating)
+    // The time saved (owner, 2026-10-14: a constant reminder of the app's value): a pill under the
+    // title in the app's badge style — clock, the figure, "saved with VoiceWink", a chevron — that
+    // opens Metrics. The Metrics page's number (TimeSavedEstimate), shown from the very start
+    // (minutes, then hours), re-read on every arrival and whenever a dictation updates the totals.
+    private readonly Services.Data.LifetimeMetricsService _metrics;
+    private readonly Button _timeSavedPill;
+    private readonly Run _timeSavedValue;
+    private bool _metricsAttached;
+    private long _timeSavedRefreshVersion;
+
+    // Spacing, top to bottom, as the owner tuned it on a local build (2026-10-14): more air above the
+    // mic and between the status and the hotkey line, less between the hotkey line and the last
+    // transcription (the section header adds its own 24 above itself).
+    private const double TitleGapBelow = 8;
+    private const double LineGapBelow = 16;      // under the pill, the trial line and the Store line
+    private const double MicGapAbove = 28;
+    private const double MicGapBelow = 12;
+    private const double StatusGapBelow = 22;
+    private const double HotkeyGapBelow = 24;
+
+    /// <param name="recordingHotkey">The recording hotkey's canonical binding ("RightControl",
+    /// "Ctrl+Space"), read by the window when it builds the page — Home is rebuilt on every
+    /// navigation, so a change made in Settings shows on return.</param>
+    public HomePage(StoreRatingPrompt storeRating, Services.Data.LifetimeMetricsService metrics,
+        Services.System.ClipboardService clipboard, string recordingHotkey)
     {
         _storeRating = storeRating;
+        _metrics = metrics;
         RequestedTheme = AppTheme.ElementTheme;
         Background = AppTheme.Brush(AppTheme.ContentBg);
         _viewModel = App.Services.GetRequiredService<MainViewModel>();
@@ -72,8 +110,68 @@ public sealed class HomePage : Page
             FontWeight = FontWeights.Bold,
             Foreground = AppTheme.Brush(AppTheme.TextPrimary),
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 8)
+            Margin = new Thickness(0, 0, 0, TitleGapBelow)
         };
+
+        // ── Time saved pill ──────────────────────────────────────────
+        // A Button rather than a tapped Border, so it takes keyboard focus and Enter; its look is set
+        // through the Button's own resource keys (the sidebar's pattern), the focus visual kept.
+        // The badge style is the app's own (the "Active" marker: a tinted ground, small text).
+        // The tint is the accent; the text and icons are its readable shade, which clears 4.5:1 on
+        // the tint up to ThemeSwatches.TintAlphaMax — the pressed state's alpha.
+        var accent = AppTheme.AccentBlue;
+        var accentText = AppTheme.Brush(AppTheme.AccentBlueText);
+        _timeSavedValue = new Run
+        {
+            FontWeight = FontWeights.SemiBold,
+            Foreground = AppTheme.Brush(AppTheme.TextPrimary),
+        };
+        var timeSavedText = new TextBlock { FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+        timeSavedText.Inlines.Add(_timeSavedValue);
+        timeSavedText.Inlines.Add(new Run
+        {
+            Text = " " + TimeSavedEstimate.HomeLabel,
+            Foreground = accentText,
+        });
+        _timeSavedPill = new Button
+        {
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 7,
+                Children =
+                {
+                    new FontIcon
+                    {
+                        Glyph = "",   // Clock - the glyph of the Metrics page's "Time Saved" card
+                        FontSize = 13,
+                        Foreground = accentText,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                    timeSavedText,
+                    new FontIcon
+                    {
+                        Glyph = "",   // ChevronRight
+                        FontSize = 9,
+                        Foreground = accentText,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                },
+            },
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Padding = new Thickness(10, 5, 12, 5),
+            CornerRadius = new CornerRadius(14),
+            BorderThickness = new Thickness(0),
+            Background = AppTheme.Brush(ColorHelper.FromArgb(36, accent.R, accent.G, accent.B)),
+            Margin = new Thickness(0, 0, 0, LineGapBelow),
+            Visibility = Visibility.Collapsed,
+        };
+        _timeSavedPill.Resources["ButtonBackgroundPointerOver"] = AppTheme.Brush(ColorHelper.FromArgb(44, accent.R, accent.G, accent.B));
+        _timeSavedPill.Resources["ButtonBackgroundPressed"] = AppTheme.Brush(ColorHelper.FromArgb(ThemeSwatches.TintAlphaMax, accent.R, accent.G, accent.B));
+        foreach (var key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed" })
+            _timeSavedPill.Resources[key] = AppTheme.TransparentBrush;
+        ToolTipService.SetToolTip(_timeSavedPill, TimeSavedEstimate.HomeCardTooltip);
+        _timeSavedPill.Click += (_, _) => App.MainWindowInstance?.NavigateToPage("metrics");
 
         // ── Free-trial line (LNC-11) ─────────────────────────────────
         // Countdown / ended line + a link to the License page, whose Buy-primary panel carries
@@ -95,7 +193,7 @@ public sealed class HomePage : Page
         _trialPanel = new StackPanel
         {
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 16),
+            Margin = new Thickness(0, 0, 0, LineGapBelow),
             Visibility = Visibility.Collapsed,
             Children = { _trialText, _trialLink }
         };
@@ -103,27 +201,11 @@ public sealed class HomePage : Page
         // ── Store rating line (LNC-14 a) ─────────────────────────────
         // One plain link, no question in front of it and no reward; collapsed unless the prompt says
         // it is due. Opens the listing in the Store app, or its web page where the Store cannot start.
-        _storeRatingLink = AppTheme.CreateActionLink(FeedbackLinks.StoreRatingText, OnStoreRatingClicked);
+        _storeRatingLink = AppTheme.CreateActionLink(FeedbackLinks.StoreRatingText, OnStoreRatingClicked, "Microsoft Store");
         _storeRatingLink.HorizontalAlignment = HorizontalAlignment.Center;
         _storeRatingLink.TextAlignment = TextAlignment.Center;
-        _storeRatingLink.Margin = new Thickness(0, 0, 0, 16);
+        _storeRatingLink.Margin = new Thickness(0, 0, 0, LineGapBelow);
         _storeRatingLink.Visibility = Visibility.Collapsed;
-
-        // ── Status ───────────────────────────────────────────────────
-        // Wraps: StatusText carries provider error prose (a rejected image
-        // prompt, a network failure), which measures far wider than the hero
-        // panel. Centered + NoWrap clipped such a message on BOTH sides, so it
-        // started and ended mid-word.
-        _statusBlock = new TextBlock
-        {
-            Text = _viewModel.StatusText,
-            FontSize = 15,
-            Foreground = AppTheme.Brush(AppTheme.SubtleText),
-            TextWrapping = TextWrapping.Wrap,
-            TextAlignment = TextAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 40)
-        };
 
         // ── Record button glow (larger semi-transparent circle behind) ──
         var glowCircle = new Border
@@ -142,9 +224,10 @@ public sealed class HomePage : Page
 
         var micIcon = new FontIcon
         {
-            Glyph = "\uE720",
+            Glyph = "",
             FontSize = 26,
-            Foreground = AppTheme.Brush(AppTheme.TextPrimary),
+            // White in both themes (TextPrimary is black in Light, which read as black on blue).
+            Foreground = AppTheme.Brush(Colors.White),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -171,20 +254,54 @@ public sealed class HomePage : Page
         {
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 16)
+            Margin = new Thickness(0, MicGapAbove, 0, MicGapBelow)
         };
         buttonContainer.Children.Add(glowCircle);
         buttonContainer.Children.Add(recordButton);
 
-        // ── Hint text below button ───────────────────────────────────
-        _hintText = new TextBlock
+        // ── Status, directly under the mic ──────────────────────────
+        // Wraps: StatusText carries provider error prose (a rejected image prompt, a network
+        // failure), which measures far wider than the column. Centered + NoWrap clipped such a
+        // message on BOTH sides, so it started and ended mid-word.
+        _statusBlock = new TextBlock
         {
-            Text = GetHintText(_viewModel.RecordingState),
-            FontSize = 12,
-            Foreground = AppTheme.Brush(AppTheme.DimText),
+            Text = _viewModel.StatusText,
+            FontSize = 15,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 48)
+            Margin = new Thickness(0, 0, 0, StatusGapBelow)
         };
+
+        // ── Hotkey line, under the status ───────────────────────────
+        // One sentence, the hotkey in bold (owner: no key drawing, just make it stand out). One
+        // TextBlock, so it wraps as text in a narrow window and Narrator reads it as it reads.
+        var hotkeyLine = new TextBlock
+        {
+            FontSize = 13,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, HotkeyGapBelow),
+        };
+        hotkeyLine.Inlines.Add(new Run { Text = HotkeyLead + " " });
+        // The hotkey is a link to where it is changed (owner, 2026-10-14): Settings, scrolled to
+        // Keyboard shortcuts. An inline Hyperlink — keyboard- and Narrator-reachable, the app's
+        // idiom for a link inside a sentence — kept in the bold look the owner chose.
+        var hotkeyLink = new Hyperlink
+        {
+            FontWeight = FontWeights.SemiBold,
+            Foreground = AppTheme.Brush(AppTheme.TextPrimary),
+            UnderlineStyle = UnderlineStyle.None,
+        };
+        hotkeyLink.Inlines.Add(new Run { Text = HotkeyKeyDisplay.Describe(recordingHotkey) });
+        hotkeyLink.Click += (_, _) => App.MainWindowInstance?.NavigateToHotkeySettings();
+        hotkeyLine.Inlines.Add(hotkeyLink);
+        hotkeyLine.Inlines.Add(new Run { Text = " " + HotkeyTail });
+        ToolTipService.SetToolTip(hotkeyLine, HotkeyLineTooltip);
+        AutomationProperties.SetHelpText(hotkeyLine, HotkeyLineTooltip);
 
         // ── Last Transcription section ───────────────────────────────
         var sectionHeader = AppTheme.CreateSectionHeader("Last Transcription");
@@ -193,23 +310,29 @@ public sealed class HomePage : Page
 
         _transcriptionBlock = new TextBlock
         {
-            Text = string.IsNullOrEmpty(_viewModel.LastTranscription)
-                ? "No transcriptions yet. Press the microphone button or use your hotkey to start recording."
-                : _viewModel.LastTranscription,
             TextWrapping = TextWrapping.Wrap,
             TextAlignment = TextAlignment.Center,
             FontSize = 14,
             IsTextSelectionEnabled = true,
-            Foreground = AppTheme.Brush(
-                string.IsNullOrEmpty(_viewModel.LastTranscription)
-                    ? AppTheme.DimText
-                    : AppTheme.TextSecondary),
-            Padding = new Thickness(0)
+            // Room on both sides for the copy button at the right edge, so centred text stays centred
+            // and never runs under it.
+            Margin = new Thickness(28, 0, 28, 0),
         };
+        // The copy button sits at the card's right edge, vertically centred (owner, 2026-10-14: copy
+        // from Home as easily as from History) — History's own button, through the one shared helper.
+        _copyButton = AppTheme.CreateCopyButton(
+            "Copy text",
+            HistoryImagePresentation.CopyFeedbackLabel(isImageItem: false),
+            () => _viewModel.LastTranscription ?? "",
+            clipboard.SetClipboardAsync);
+        _copyButton.HorizontalAlignment = HorizontalAlignment.Right;
+        _copyButton.VerticalAlignment = VerticalAlignment.Center;
+        _copyButton.Margin = new Thickness(0, 0, -12, 0);
+        ShowLastTranscription();
 
-        var transcriptionCard = AppTheme.CreateCard(new StackPanel
+        var transcriptionCard = AppTheme.CreateCard(new Grid
         {
-            Children = { _transcriptionBlock }
+            Children = { _transcriptionBlock, _copyButton }
         });
         transcriptionCard.MaxWidth = 560;
         transcriptionCard.HorizontalAlignment = HorizontalAlignment.Center;
@@ -221,18 +344,8 @@ public sealed class HomePage : Page
             {
                 if (e.PropertyName == nameof(MainViewModel.StatusText))
                     _statusBlock.Text = _viewModel.StatusText;
-                else if (e.PropertyName == nameof(MainViewModel.RecordingState))
-                    _hintText.Text = GetHintText(_viewModel.RecordingState);
                 else if (e.PropertyName == nameof(MainViewModel.LastTranscription))
-                {
-                    var text = _viewModel.LastTranscription;
-                    var hasText = !string.IsNullOrEmpty(text);
-                    _transcriptionBlock.Text = hasText
-                        ? text
-                        : "No transcriptions yet. Press the microphone button or use your hotkey to start recording.";
-                    _transcriptionBlock.Foreground = AppTheme.Brush(
-                        hasText ? AppTheme.TextSecondary : AppTheme.DimText);
-                }
+                    ShowLastTranscription();
             });
         };
         Loaded += (_, _) =>
@@ -248,18 +361,19 @@ public sealed class HomePage : Page
             _trialTimer.Tick += OnTrialTick;
             _trialTimer.Start();
             RefreshStoreRatingLine();
+            // Once per arrival: the flag keeps a missed Unloaded from subscribing twice.
+            if (!_metricsAttached)
+            {
+                _metrics.MetricsChanged += OnMetricsChanged;
+                _metricsAttached = true;
+            }
+            _ = RefreshTimeSavedAsync();
             // Refresh with current values in case they changed while on another page
             _statusBlock.Text = _viewModel.StatusText;
-            var text = _viewModel.LastTranscription;
-            var hasText = !string.IsNullOrEmpty(text);
-            _transcriptionBlock.Text = hasText
-                ? text
-                : "No transcriptions yet. Press the microphone button or use your hotkey to start recording.";
-            _transcriptionBlock.Foreground = AppTheme.Brush(
-                hasText ? AppTheme.TextSecondary : AppTheme.DimText);
+            ShowLastTranscription();
         };
 
-        // ── Hero layout (centered vertically) ───────────────────────
+        // ── Hero layout ──────────────────────────────────────────────
         var heroPanel = new StackPanel
         {
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -269,11 +383,12 @@ public sealed class HomePage : Page
             Children =
             {
                 title,
+                _timeSavedPill,
                 _trialPanel,
                 _storeRatingLink,
-                _statusBlock,
                 buttonContainer,
-                _hintText,
+                _statusBlock,
+                hotkeyLine,
                 sectionHeader,
                 transcriptionCard
             }
@@ -282,15 +397,14 @@ public sealed class HomePage : Page
         AppTheme.SetPageScrollContent(this, heroPanel);
     }
 
-    private static string GetHintText(RecordingState state) => state switch
+    private void ShowLastTranscription()
     {
-        RecordingState.Idle => "Tap to speak",
-        RecordingState.Starting => "Starting...",
-        RecordingState.Recording => "Tap to stop",
-        RecordingState.Transcribing => "Transcribing...",
-        RecordingState.Enhancing => "Enhancing...",
-        _ => ""
-    };
+        var text = _viewModel.LastTranscription;
+        var hasText = !string.IsNullOrEmpty(text);
+        _transcriptionBlock.Text = hasText ? text : NoTranscriptionText;
+        _transcriptionBlock.Foreground = AppTheme.Brush(hasText ? AppTheme.TextSecondary : AppTheme.DimText);
+        _copyButton.Visibility = hasText ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private void OnTrialTick(object? sender, object e) => RefreshTrialLine();
 
@@ -456,9 +570,61 @@ public sealed class HomePage : Page
         _storeRatingSeenTimer.Tick -= OnStoreRatingSeenTick;
     }
 
+    /// <summary>
+    /// MetricsChanged is raised on the recording pipeline's thread, so this hops to the UI thread
+    /// first. A page that has left the tree drops its own subscription here: WinUI 3 does not always
+    /// deliver Unloaded, and the service is a singleton that would otherwise keep every Home page it
+    /// ever served (Codex diff r1, PR #1225).
+    /// </summary>
+    private void OnMetricsChanged() => DispatcherQueue.TryEnqueue(() =>
+    {
+        if (!IsLoaded)
+        {
+            _metrics.MetricsChanged -= OnMetricsChanged;
+            _metricsAttached = false;
+            return;
+        }
+        _ = RefreshTimeSavedAsync();
+    });
+
+    /// <summary>
+    /// Reads the lifetime totals and shows the pill. Fail-soft like the trial line: a read that
+    /// throws hides the pill, never the page. Refreshes overlap (an arrival and a dictation), so each
+    /// stamps a version and renders only while it is still the newest — an older read finishing last
+    /// must not put back a smaller number (Codex diff r1, PR #1225).
+    /// </summary>
+    private async Task RefreshTimeSavedAsync()
+    {
+        var version = Interlocked.Increment(ref _timeSavedRefreshVersion);
+        string? value;
+        try
+        {
+            var stats = await _metrics.GetAggregateStatsAsync();
+            value = TimeSavedEstimate.HomeValue(TimeSavedEstimate.Minutes(stats.TotalWords, stats.Total));
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug(ex, "Home time-saved pill: metrics read failed — hiding the pill");
+            value = null;
+        }
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (version != Volatile.Read(ref _timeSavedRefreshVersion)) return;
+            _timeSavedValue.Text = value ?? "";
+            _timeSavedPill.Visibility = value is not null ? Visibility.Visible : Visibility.Collapsed;
+            if (value is not null)
+                AutomationProperties.SetName(_timeSavedPill, $"{value} {TimeSavedEstimate.HomeLabel}. Open Metrics.");
+        });
+    }
+
     private void OnUnloaded(object sender, RoutedEventArgs e)
     {
         _viewModel.PropertyChanged -= _vmPropertyChanged;
+        if (_metricsAttached)
+        {
+            _metrics.MetricsChanged -= OnMetricsChanged;
+            _metricsAttached = false;
+        }
         // Stopped AND unsubscribed: a DispatcherTimer holds a strong reference to its handler.
         if (_trialTimer != null)
         {

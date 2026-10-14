@@ -134,7 +134,7 @@ public sealed class LogViewerPage : Page
             catch (Exception ex)
             {
                 Logger.Warning(ex, "Failed to clear log files");
-                AppendLine($"[Failed to clear logs: {ex.Message}]", AppTheme.AccentRed);
+                AppendLine($"[Failed to clear logs: {ex.Message}]", AppTheme.FailureText);
                 _tailTimer.Start();
             }
         });
@@ -169,6 +169,7 @@ public sealed class LogViewerPage : Page
         buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         buttonRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        ToolTipService.SetToolTip(clearBtn, "Deletes every log file, prompt logs included");
         foreach (var (btn, col) in new[] { (clearBtn, 0), (logsFolderBtn, 1), (reportBtn, 2) })
         {
             btn.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -305,7 +306,7 @@ public sealed class LogViewerPage : Page
         }
         catch (Exception ex)
         {
-            AppendLine($"[Error reading log: {ex.Message}]", AppTheme.AccentRed);
+            AppendLine($"[Error reading log: {ex.Message}]", AppTheme.FailureText);
         }
     }
 
@@ -385,7 +386,7 @@ public sealed class LogViewerPage : Page
         var color = AppTheme.TextSecondary;
 
         if (line.Contains("[ERR]") || line.Contains("[FTL]"))
-            color = AppTheme.AccentRed;
+            color = AppTheme.FailureText;
         else if (line.Contains("[WRN]"))
             color = AppTheme.WarningText;
         else if (line.Contains("[DBG]"))

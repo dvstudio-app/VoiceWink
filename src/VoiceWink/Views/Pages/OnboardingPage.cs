@@ -376,7 +376,7 @@ public sealed class OnboardingPage : Page
             _contentPanel.Children.Add(new TextBlock
             {
                 Text = "Already accepted on this device. You can skip to the next step.",
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 FontSize = 13,
                 TextWrapping = TextWrapping.Wrap,
                 TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
@@ -870,7 +870,7 @@ public sealed class OnboardingPage : Page
             if (!string.IsNullOrEmpty(existingKey))
             {
                 apiKeyBox.Password = existingKey;
-                SetKeyStatus("\uE73E", "Key saved", AppTheme.AccentGreen, true);
+                SetKeyStatus("\uE73E", "Key saved", AppTheme.AccentGreenText, true);
             }
             else
             {
@@ -935,11 +935,11 @@ public sealed class OnboardingPage : Page
                     {
                         SetKeyStatus("\uE783", saveResult == Services.System.ApiKeySaveResult.InvalidFormat
                             ? Helpers.ApiKeyFormat.DescribeCandidate(key)
-                            : "Could not save the key on this device", AppTheme.AccentRed, true);
+                            : "Could not save the key on this device", AppTheme.FailureText, true);
                         return false;
                     }
                     committed = true;
-                    SetKeyStatus("\uE73E", "Key valid", AppTheme.AccentGreen, true);
+                    SetKeyStatus("\uE73E", "Key valid", AppTheme.AccentGreenText, true);
                     return true;
                 }
                 if (couldNotValidate)
@@ -955,7 +955,7 @@ public sealed class OnboardingPage : Page
                     {
                         SetKeyStatus("\uE783", saveResult == Services.System.ApiKeySaveResult.InvalidFormat
                             ? Helpers.ApiKeyFormat.DescribeCandidate(key)
-                            : "Could not save the key on this device", AppTheme.AccentRed, true);
+                            : "Could not save the key on this device", AppTheme.FailureText, true);
                         return false;
                     }
                     committed = true;
@@ -974,9 +974,9 @@ public sealed class OnboardingPage : Page
                 }
                 apiKeyBox.Password = previousKey;
                 if (!string.IsNullOrEmpty(previousKey))
-                    SetKeyStatus("\uE73E", "Invalid key rejected — previous key restored", AppTheme.AccentGreen, true);
+                    SetKeyStatus("\uE73E", "Invalid key rejected — previous key restored", AppTheme.AccentGreenText, true);
                 else
-                    SetKeyStatus("\uE783", "Invalid API key", AppTheme.AccentRed, true);
+                    SetKeyStatus("\uE783", "Invalid API key", AppTheme.FailureText, true);
                 return false;
             }
             catch (Exception ex)
@@ -987,7 +987,7 @@ public sealed class OnboardingPage : Page
                     SetKeyStatus("\uE7BA", "Key saved — models not loaded", AppTheme.WarningText, true);
                     return true;
                 }
-                SetKeyStatus("\uE783", "Could not save the key — try again", AppTheme.AccentRed, true);
+                SetKeyStatus("\uE783", "Could not save the key — try again", AppTheme.FailureText, true);
                 return false;
             }
         }
@@ -1463,7 +1463,7 @@ public sealed class OnboardingPage : Page
                 // live leaks; `displayName` is the same row's friendly name, already resolved above.
                 Text = $"Model already downloaded: {displayName}",
                 FontSize = 14,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+                Foreground = AppTheme.Brush(AppTheme.AccentGreenText),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 Margin = new Thickness(0, 4, 0, 0)
             });
@@ -1486,7 +1486,7 @@ public sealed class OnboardingPage : Page
             {
                 Width = 300,
                 Height = 6,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 Background = AppTheme.Brush(ColorHelper.FromArgb(40, 142, 142, 147)),
                 CornerRadius = new CornerRadius(3),
                 Margin = new Thickness(0, 8, 0, 0)
@@ -1514,7 +1514,7 @@ public sealed class OnboardingPage : Page
             // Error text block — hidden until an error occurs
             var errorText = new TextBlock
             {
-                Foreground = AppTheme.Brush(AppTheme.AccentRed),
+                Foreground = AppTheme.Brush(AppTheme.FailureText),
                 FontSize = 13,
                 TextWrapping = TextWrapping.Wrap,
                 TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
@@ -2149,7 +2149,7 @@ public sealed class OnboardingPage : Page
                 Logger.Warning("Stored API key for {Provider} has an invalid format: {Verdict}",
                     ex.Provider, ex.Verdict);
                 if (generation != modelLoadGeneration) return;
-                SetEnhKeyStatus("\uE783", ex.UserMessage, AppTheme.AccentRed, true);
+                SetEnhKeyStatus("\uE783", ex.UserMessage, AppTheme.FailureText, true);
                 modelCombo.PlaceholderText = "Enter a valid API key";
             }
             catch
@@ -2197,7 +2197,7 @@ public sealed class OnboardingPage : Page
             if (!string.IsNullOrEmpty(existingKey))
             {
                 apiKeyBox.Password = existingKey;
-                SetEnhKeyStatus("\uE73E", "Key saved", AppTheme.AccentGreen, true);
+                SetEnhKeyStatus("\uE73E", "Key saved", AppTheme.AccentGreenText, true);
             }
             else
             {
@@ -2256,7 +2256,7 @@ public sealed class OnboardingPage : Page
                 var candidateVerdict = Helpers.ApiKeyFormat.Validate(Helpers.ApiKeyFormat.Normalize(key));
                 if (candidateVerdict != Helpers.ApiKeyFormatVerdict.Ok)
                 {
-                    SetEnhKeyStatus("\uE783", Helpers.ApiKeyFormat.Describe(candidateVerdict), AppTheme.AccentRed, true);
+                    SetEnhKeyStatus("\uE783", Helpers.ApiKeyFormat.Describe(candidateVerdict), AppTheme.FailureText, true);
                     return false;
                 }
 
@@ -2317,7 +2317,7 @@ public sealed class OnboardingPage : Page
                     }
                     if (!commitResult.IsSuccess())
                     {
-                        SetEnhKeyStatus("\uE783", "Could not save the key on this device", AppTheme.AccentRed, true);
+                        SetEnhKeyStatus("\uE783", "Could not save the key on this device", AppTheme.FailureText, true);
                         return false;
                     }
                     committed = true;
@@ -2326,7 +2326,7 @@ public sealed class OnboardingPage : Page
 
                     if (isValid)
                     {
-                        SetEnhKeyStatus("\uE73E", "Key valid", AppTheme.AccentGreen, true);
+                        SetEnhKeyStatus("\uE73E", "Key valid", AppTheme.AccentGreenText, true);
                         await LoadModelsAsync(provider, fetchedModels); // reuse already-fetched models
                     }
                     else
@@ -2351,7 +2351,7 @@ public sealed class OnboardingPage : Page
                 apiKeyBox.Password = previousKey;
                 SetEnhKeyStatus("\uE783",
                     string.IsNullOrEmpty(previousKey) ? "Invalid API key" : "Invalid key rejected — previous key kept",
-                    AppTheme.AccentRed, true);
+                    AppTheme.FailureText, true);
                 return false;
             }
             catch (Exception ex)
@@ -2367,7 +2367,7 @@ public sealed class OnboardingPage : Page
                     SetEnhKeyStatus("\uE7BA", "Key saved — models not loaded", AppTheme.WarningText, true);
                     return true;
                 }
-                SetEnhKeyStatus("\uE783", "Could not save the key — try again", AppTheme.AccentRed, true);
+                SetEnhKeyStatus("\uE783", "Could not save the key — try again", AppTheme.FailureText, true);
                 return false;
             }
         }
@@ -2692,7 +2692,7 @@ public sealed class OnboardingPage : Page
             _contentPanel.Children.Add(new TextBlock
             {
                 Text = "This machine is already activated. You can skip to the next step.",
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 FontSize = 13,
                 TextWrapping = TextWrapping.Wrap,
                 TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
@@ -2958,16 +2958,34 @@ public sealed class OnboardingPage : Page
 
     private void BuildCrashReportingStep()
     {
-        // Layered (owner, 2026-10-13: too much text): the header names both things "Yes" does —
-        // including that the log holds the dictated text and the AI results, for 7 days (Codex plan
-        // r1, B1: "your prompts" alone under-disclosed it) — and that the choice can be changed
-        // later, all BEFORE the choice, as consent needs. It also names who receives the crash
-        // reports: since ONB-12 the privacy policy, which identifies the controller, is folded on the
-        // terms step, so nothing else on screen does (Codex plan r2, B3). The full lists sit one
-        // click away under "What's included", unchanged and still pinned.
+        // Two separate choices (owner, 2026-10-14, reversing the 2026-09-13 one-answer design):
+        // the question is crash reports; the prompt log is its own opt-in switch, OFF unless the
+        // user turns it on — a combined answer read as "VoiceWink records my prompts", and users
+        // assume the publisher can read them. Each choice is stated before it is made. The header
+        // names who receives the crash reports: since ONB-12 the privacy policy, which identifies
+        // the controller, is folded on the terms step (Codex plan r2 B3, PR #1216). The full lists
+        // sit one click away under "What's included", unchanged and still pinned.
         AddStepHeader("Help improve VoiceWink",
-            "Send crash reports to DV Studio and keep a 7-day log of your prompts, dictated text " +
-            "and AI results on this PC, for problem reports. You can change this later in Settings.");
+            "Send crash reports to DV Studio. You can change this later in Settings.");
+
+        // The switch writes nothing by itself: both choices are written when an answer button is
+        // pressed, and Back writes nothing. A re-run of setup shows the stored value.
+        var keepPromptLog = _settings.GetBoolDefaulted(AppDefaults.PromptTraceLoggingOptIn);
+        const string promptLogTitle = "Keep a prompt log on this PC (optional)";
+        _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
+            promptLogTitle,
+            // Owner 2026-10-14: say outright that the log is not part of the crash reports above and
+            // is never sent by itself — true by construction: the trace never rides the main log or
+            // the Sentry pipeline (diagnostics.md, REL-17), and a problem report attaches the raw file
+            // only on an explicit per-report choice. No "only if": the data export (Settings → Your
+            // data, logs ticked) includes the raw file too (Codex + GLM diff r1, PR #1222).
+            "Your prompts, dictated text and AI results, for 7 days. " +
+            "Never sent automatically or with crash reports; you can attach it to a problem report.",
+            keepPromptLog,
+            isOn => keepPromptLog = isOn,
+            out var promptLogSwitch));
+        // The factory's switch carries no label of its own; Narrator reads this (Codex plan r1).
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(promptLogSwitch, promptLogTitle);
 
         var details = new StackPanel { Visibility = Visibility.Collapsed };
         var detailsLink = DisclosureLink("What's included", 12, text =>
@@ -3008,10 +3026,9 @@ public sealed class OnboardingPage : Page
 
         details.Children.Add(new TextBlock
         {
-            // The second half of what "Yes" records (owner decision 2026-09-13): the RAW prompt
-            // trace, which never leaves the PC by itself. Named here because this step is the
-            // consent surface for it now — privacy-v5 §2 calls it "the optional prompt-trace
-            // logging (off by default)", and the wizard's Yes is what switches it on. The redacted
+            // What the prompt-log switch above keeps: the RAW prompt trace, which never leaves the
+            // PC by itself. Named here because this step is a consent surface for it — privacy-v5
+            // §2 calls it "the optional prompt-trace logging (off by default)". The redacted
             // summary sentence is a statement of fact, not a consent: that file is always kept.
             // PromptTraceAlwaysKeptTests pins the file name and the retention.
             Text = HelpImproveKeptLocallyText,
@@ -3022,18 +3039,20 @@ public sealed class OnboardingPage : Page
             Margin = new Thickness(0, 0, 0, 8),
         });
 
-        // The next step is Updates on Advanced; ShowStep moves past it to Done on Express.
-        var yesBtn = AppTheme.CreateAccentButton("Yes, help improve");
+        // The buttons answer the crash-report question; either one also saves the prompt-log
+        // switch as set, so the local log can be kept without sending crash reports. The next
+        // step is Updates on Advanced; ShowStep moves past it to Done on Express.
+        var yesBtn = AppTheme.CreateAccentButton("Yes, send crash reports");
         yesBtn.Tapped += (_, _) =>
         {
-            ApplyHelpImproveConsent(requested: true);
+            ApplyHelpImproveConsent(crashReports: true, promptLog: keepPromptLog);
             ShowStep(OnboardingStepFlow.UpdatesStepIndex);
         };
 
         var noBtn = AppTheme.CreateSecondaryButton("No thanks");
         noBtn.Tapped += (_, _) =>
         {
-            ApplyHelpImproveConsent(requested: false);
+            ApplyHelpImproveConsent(crashReports: false, promptLog: keepPromptLog);
             ShowStep(OnboardingStepFlow.UpdatesStepIndex);
         };
 
@@ -3041,53 +3060,53 @@ public sealed class OnboardingPage : Page
     }
 
     /// <summary>
-    /// What "Yes, help improve" keeps ON THIS PC (owner decision 2026-09-13): the raw prompt
-    /// trace. One const so the wizard's consent surface and its copy test read the same words.
+    /// What the step's prompt-log switch keeps ON THIS PC: the raw prompt trace. One const so the
+    /// wizard's consent surface and its copy test read the same words.
     /// </summary>
     internal const string HelpImproveKeptLocallyText =
         "Kept on this PC, never sent by itself: a full log of your prompts, the text you dictate and " +
-        "the AI results (prompts-*.log), deleted after 7 days. It leaves your PC only if you attach it " +
-        "to a problem report. A redacted summary with the text replaced by its length is always kept.";
+        "the AI results (prompts-*.log), deleted after 7 days. You can attach it to a problem report. " +
+        "A redacted summary with the text replaced by its length is always kept.";
 
     /// <summary>
-    /// The "Help improve VoiceWink" answer, applied to BOTH consents it covers (owner decision
-    /// 2026-09-13): crash reporting the way the Settings toggle applies it
-    /// (<see cref="CrashReportingConsent"/> — a DURABLE write that fails OFF, the SDK started or
-    /// stopped to match, the Sentry log sink attached or detached in THIS session), and the RAW
-    /// prompt-trace opt-in through the same durable fail-OFF rule (<see cref="DiagnosticsConsent"/>).
-    /// The two writes are INDEPENDENT — each in its own try, so a failure in one never skips the
-    /// other (Codex plan round) — and the image-prompt sub-option is deliberately untouched: it
-    /// stays the separate Settings-only opt-in REL-21 made it. Never advance-blocking: the step
-    /// moves on whatever happened, because Settings → Diagnostics remains available for a
-    /// re-confirm on a healthier day, and a choice that could not be saved is OFF — the
-    /// privacy-safe direction.
+    /// The "Help improve VoiceWink" step's two choices, applied when an answer button is pressed
+    /// (separate since 2026-10-14; one answer set both from 2026-09-13): crash reporting from the
+    /// button, the way the Settings toggle applies it (<see cref="CrashReportingConsent"/> — a
+    /// DURABLE write that fails OFF, the SDK started or stopped to match, the Sentry log sink
+    /// attached or detached in THIS session), and the RAW prompt-trace opt-in from the step's switch
+    /// through the same durable fail-OFF rule (<see cref="DiagnosticsConsent"/>). The two writes are
+    /// INDEPENDENT — each in its own try, so a failure in one never skips the other (Codex plan
+    /// round) — and the image-prompt sub-option is deliberately untouched: it stays the separate
+    /// Settings-only opt-in REL-21 made it. Never advance-blocking: the step moves on whatever
+    /// happened, because Settings → Diagnostics remains available for a re-confirm on a healthier
+    /// day, and a choice that could not be saved is OFF — the privacy-safe direction.
     /// </summary>
-    private void ApplyHelpImproveConsent(bool requested)
+    private void ApplyHelpImproveConsent(bool crashReports, bool promptLog)
     {
         try
         {
-            var result = CrashReportingConsent.Apply(_settings, requested, App.ReattachLogSinks);
+            var result = CrashReportingConsent.Apply(_settings, crashReports, App.ReattachLogSinks);
             if (!result.Persisted)
                 Logger.Warning("Could not persist crash reporting consent ({Requested}) during onboarding; forced to {Effective}",
-                    requested, result.Effective);
+                    crashReports, result.Effective);
         }
         catch (Exception ex)
         {
             // Apply is fail-safe internally; this catches a settings service that throws on the
             // in-memory write itself, or a type-init failure bubbling out of the SDK.
-            Logger.Warning(ex, "Applying crash reporting consent ({Requested}) failed during onboarding", requested);
+            Logger.Warning(ex, "Applying crash reporting consent ({Requested}) failed during onboarding", crashReports);
         }
 
         try
         {
-            var result = DiagnosticsConsent.Apply(_settings, AppDefaults.PromptTraceLoggingOptIn, requested);
+            var result = DiagnosticsConsent.Apply(_settings, AppDefaults.PromptTraceLoggingOptIn, promptLog);
             if (!result.Persisted)
                 Logger.Warning("Could not persist the prompt-log consent ({Requested}) during onboarding; forced to {Effective}",
-                    requested, result.Effective);
+                    promptLog, result.Effective);
         }
         catch (Exception ex)
         {
-            Logger.Warning(ex, "Applying the prompt-log consent ({Requested}) failed during onboarding", requested);
+            Logger.Warning(ex, "Applying the prompt-log consent ({Requested}) failed during onboarding", promptLog);
         }
     }
 
@@ -3536,7 +3555,7 @@ public sealed class OnboardingPage : Page
         {
             Glyph = glyph,
             FontSize = 20,
-            Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlue : AppTheme.TextSecondary),
+            Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlueText : AppTheme.TextSecondary),
             Margin = new Thickness(0, 0, 12, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -3547,7 +3566,7 @@ public sealed class OnboardingPage : Page
             Text = title,
             FontSize = 15,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlue : AppTheme.TextSecondary)
+            Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlueText : AppTheme.TextSecondary)
         });
         textPanel.Children.Add(new TextBlock
         {
@@ -3601,11 +3620,11 @@ public sealed class OnboardingPage : Page
         if (border.Child is StackPanel row && row.Children.Count >= 2)
         {
             if (row.Children[0] is FontIcon icon)
-                icon.Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlue : AppTheme.TextSecondary);
+                icon.Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlueText : AppTheme.TextSecondary);
             if (row.Children[1] is StackPanel textPanel && textPanel.Children.Count > 0)
             {
                 if (textPanel.Children[0] is TextBlock titleBlock)
-                    titleBlock.Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlue : AppTheme.TextSecondary);
+                    titleBlock.Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlueText : AppTheme.TextSecondary);
             }
         }
     }
@@ -3670,7 +3689,7 @@ public sealed class OnboardingPage : Page
         {
             Glyph = glyph,
             FontSize = 16,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             Margin = new Thickness(0, 0, 10, 0),
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -3746,7 +3765,7 @@ public sealed class OnboardingPage : Page
         {
             Glyph = glyph,
             FontSize = 18,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 2, 0, 0)
         };

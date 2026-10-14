@@ -50,7 +50,7 @@ public sealed class OllamaGraphicsDialog : ContentDialog
             Height = 16,
             IsActive = false,
             Visibility = Visibility.Collapsed,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 2, 0, 0),
         };
@@ -185,7 +185,7 @@ public sealed class OllamaGraphicsDialog : ContentDialog
         // Only a confirmed graphics reading earns the check mark (Codex diff r1).
         var confirmed = IsConfirmedOnGraphics(outcome);
         _icon.Glyph = confirmed ? "\uE73E" : "\uE7BA"; // CheckMark / Warning
-        _icon.Foreground = AppTheme.Brush(confirmed ? AppTheme.AccentGreen : AppTheme.WarningText);
+        _icon.Foreground = AppTheme.Brush(confirmed ? AppTheme.AccentGreenText : AppTheme.WarningText);
         _icon.Visibility = Visibility.Visible;
         _status.Text = OutcomeText(outcome);
         _status.Foreground = AppTheme.Brush(confirmed ? AppTheme.TextPrimary : AppTheme.WarningText);

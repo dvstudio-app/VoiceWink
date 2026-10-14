@@ -1503,6 +1503,8 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
 
             // Reset any error/redo display state before applying the pipeline state.
             _stopButton.Visibility = Visibility.Visible;
+            AppTheme.SetIconLabel(_stopButton,
+                Helpers.MiniRecorderStopRouting.TooltipFor(state, isImageJobRunning: false) ?? "Stop");
             _redoButton.Visibility = Visibility.Collapsed;
             _dismissButton.Visibility = Visibility.Collapsed;
             StatusText.Foreground = AppTheme.Brush(AppTheme.TextPrimary);
@@ -1787,6 +1789,8 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         _dismissButton.Visibility = Visibility.Collapsed;
         _redoButton.Visibility = Visibility.Collapsed;
         _stopButton.Visibility = Visibility.Visible;
+        AppTheme.SetIconLabel(_stopButton,
+            Helpers.MiniRecorderStopRouting.TooltipFor(RecordingState.Starting, isImageJobRunning: false) ?? "Stop");
         SetStopAccent(AppTheme.TextPrimary); // the recording phase's chrome stays neutral
         _targetLabelAllowed = false;
         ApplyTargetAppLabel();
@@ -1941,6 +1945,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             _redoButton.Visibility = Visibility.Collapsed;
             _dismissButton.Visibility = Visibility.Collapsed;
             _stopButton.Visibility = Visibility.Visible; // user can cancel
+            AppTheme.SetIconLabel(_stopButton, "Cancel");
             Show(pipelineState: null);
         });
     }
@@ -2001,6 +2006,8 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             // Stop button stays visible — it cancels the job (owner: "working stop button
             // whenever the pipeline is idle").
             _stopButton.Visibility = Visibility.Visible;
+            AppTheme.SetIconLabel(_stopButton,
+                Helpers.MiniRecorderStopRouting.TooltipFor(RecordingState.Idle, isImageJobRunning: true) ?? "Stop");
 
             Show(pipelineState: null);
         });

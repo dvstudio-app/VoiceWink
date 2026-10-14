@@ -209,7 +209,7 @@ public sealed class AppModePage : Page
             Text = "Active",
             FontSize = 11,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-            Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+            Foreground = AppTheme.Brush(AppTheme.AccentGreenText),
             Visibility = config.IsEnabled ? Visibility.Visible : Visibility.Collapsed,
             Margin = new Thickness(0, 6, 0, 0)
         };
@@ -230,6 +230,10 @@ public sealed class AppModePage : Page
                 _manager.UpdateConfig(config);
                 RefreshList();
             });
+        // Not the AI Enhancement page's Activate: several app modes can be on at once.
+        ToolTipService.SetToolTip(activateBtn, config.IsEnabled
+            ? "Stops applying these settings"
+            : "Applies these settings in the apps listed here");
         buttonsRow.Children.Add(activateBtn);
 
         var configId = config.Id;
@@ -666,7 +670,7 @@ public sealed class AppModePage : Page
                 var iconBlock = new FontIcon
                 {
                     FontSize = 20,
-                    Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                    Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                     VerticalAlignment = VerticalAlignment.Top,
                     Margin = new Thickness(0, 2, 12, 0)
                 };
@@ -705,7 +709,7 @@ public sealed class AppModePage : Page
                         {
                             Text = pattern,
                             FontSize = 11,
-                            Foreground = AppTheme.Brush(AppTheme.AccentBlue)
+                            Foreground = AppTheme.Brush(AppTheme.AccentBlueText)
                         }
                     });
                 }
@@ -816,7 +820,7 @@ public sealed class AppModePage : Page
             {
                 Text = pattern,
                 FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
             }
         };

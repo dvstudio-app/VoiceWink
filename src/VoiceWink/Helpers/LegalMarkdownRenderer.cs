@@ -101,12 +101,13 @@ public static class LegalMarkdownRenderer
         var tb = new TextBlock
         {
             FontSize = 13,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             TextWrapping = TextWrapping.Wrap,
         };
         if (MarkdownInline.TryCreateSafeLinkUri(url, out var uri))
         {
-            var link = new Hyperlink { NavigateUri = uri };
+            // Set on the Hyperlink itself: WinUI does not take a Hyperlink's colour from its TextBlock.
+            var link = new Hyperlink { NavigateUri = uri, Foreground = AppTheme.Brush(AppTheme.AccentBlueText) };
             link.Inlines.Add(new Run { Text = text });
             tb.Inlines.Add(link);
         }

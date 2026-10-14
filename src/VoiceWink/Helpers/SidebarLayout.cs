@@ -6,26 +6,32 @@ namespace VoiceWink.Helpers;
 /// <c>SidebarLayoutTests</c> rather than by eye.
 ///
 /// <para>Owner decisions, 2026-10-13: the everyday pages stay in the main list (App Mode
-/// included); Settings, Metrics, License, Updates and About go into a collapsed "More" group
-/// (Settings joined it after the owner saw the first build); the Log Viewer leaves the sidebar and
-/// opens from Settings → Diagnostics. <c>MainWindow</c> builds the sidebar
+/// included); Metrics, License, Updates and About go into a collapsed "More" group. Owner,
+/// 2026-10-14: Settings comes back out of "More" (the page people go looking for, last in the
+/// main list, just above the group), and the main list follows use: History, then the Dictionary
+/// users should add to, Models and AI Enhancement side by side (both choose a model), App Mode,
+/// and Transcribe File, the least used; the Log Viewer is back in the sidebar, under "More"
+/// above About (it also opens from Settings → Diagnostics). <c>MainWindow</c> builds the sidebar
 /// from <see cref="Main"/> and <see cref="More"/>, and its <c>NavigateToPage</c> allowlist is
 /// <see cref="NavigableTags"/>, so the two cannot drift; the page-factory switch is pinned to the
 /// same set by a source test.</para>
 /// </summary>
 internal static class SidebarLayout
 {
-    internal sealed record Entry(string Label, string Glyph, string Tag);
+    /// <param name="Tooltip">Only for an entry whose label does not say what the page is for
+    /// (2026-10-14 tooltip pass).</param>
+    internal sealed record Entry(string Label, string Glyph, string Tag, string? Tooltip = null);
 
     public static readonly IReadOnlyList<Entry> Main =
     [
         new("Home",            "\uE80F", "home"),
         new("History",         "\uE81C", "history"),
+        new("Dictionary",      "\uE82D", "dictionary"),
         new("Models",          "\uE8F1", "models"),
         new("AI Enhancement",  "\uE945", "enhancement"),
-        new("Dictionary",      "\uE82D", "dictionary"),
-        new("App Mode",        "\uE7AC", "appmode"),
+        new("App Mode",        "\uE7AC", "appmode", "A different model, language or prompt per app"),
         new("Transcribe File", "\uE8E6", "transcribe"),
+        new("Settings",        "\uE713", "settings"),
     ];
 
     public const string MoreLabel = "More";
@@ -33,18 +39,17 @@ internal static class SidebarLayout
 
     public static readonly IReadOnlyList<Entry> More =
     [
-        new("Settings", "\uE713", "settings"),
-        new("Metrics",  "\uE9D2", "metrics"),
-        new("License",  "\uE192", "license"),
-        new("Updates",  "\uE895", "updates"),
-        new("About",    "\uE946", "about"),
+        new("License",    "\uE192", "license"),
+        new("Updates",    "\uE895", "updates"),
+        new("Metrics",    "\uE9D2", "metrics"),
+        new("Log Viewer", "\uE7BA", "logviewer"),
+        new("About",      "\uE946", "about"),
     ];
 
     /// <summary>Pages with no sidebar entry, each mapped to the entry that stays highlighted while
     /// it is open — the page it is reached from.</summary>
     private static readonly Dictionary<string, string> OffSidebarParents = new(StringComparer.Ordinal)
     {
-        ["logviewer"] = "settings",
         ["legal"] = "about",
     };
 

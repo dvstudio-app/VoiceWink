@@ -39,4 +39,20 @@ internal static class MiniRecorderStopRouting
             RecordingState.Transcribing or RecordingState.Enhancing => MiniRecorderStopAction.CancelPipeline,
             _ => MiniRecorderStopAction.None
         };
+
+    /// <summary>
+    /// The stop button's tooltip and accessible name: what a tap does now, read off
+    /// <see cref="Decide"/> so the label and the routing cannot disagree (2026-10-14 tooltip pass).
+    /// "Stop enhancing" rather than "Skip": a tap skips a text enhancement and keeps the transcript,
+    /// but cancels the whole run where there is nothing to fall back to (MainViewModel.ClassifyStopTap).
+    /// Null when a tap does nothing.
+    /// </summary>
+    public static string? TooltipFor(RecordingState state, bool isImageJobRunning)
+        => Decide(state, isImageJobRunning) switch
+        {
+            MiniRecorderStopAction.ToggleRecording => "Stop recording",
+            MiniRecorderStopAction.CancelPipeline => state == RecordingState.Enhancing ? "Stop enhancing" : "Cancel transcription",
+            MiniRecorderStopAction.CancelImageJob => "Cancel image",
+            _ => null
+        };
 }

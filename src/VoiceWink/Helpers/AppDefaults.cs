@@ -262,8 +262,9 @@ public static class AppDefaults
     /// sent to a provider and the raw text it returned are appended to
     /// <c>Logs/prompts-yyyyMMdd.log</c> via <see cref="PromptTraceLog"/> (ALL builds; was
     /// DEBUG-only). The redacted sidecar is NOT behind this key since 2026-09-13 — it is always
-    /// written — and the onboarding wizard's "Help improve VoiceWink" answer sets this key
-    /// together with <see cref="CrashReportingOptIn"/> (owner decision). Deliberately a NEW key:
+    /// written — and the onboarding wizard's "Help improve VoiceWink" screen asks for this key with
+    /// its own switch, off by default, beside the <see cref="CrashReportingOptIn"/> question (owner
+    /// decision 2026-10-14; one answer set both from 2026-09-13). Deliberately a NEW key:
     /// a stale Debug-era <see cref="LegacyPromptTraceLoggingEnabled"/> value must never
     /// silently activate Release tracing, so the legacy key is REMOVED at launch
     /// (<see cref="PromptTraceKeyMigration"/>) and both keys are import-protected —

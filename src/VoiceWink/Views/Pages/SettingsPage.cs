@@ -21,13 +21,34 @@ public sealed class SettingsPage : Page
     private static ILogger Logger => Log.ForContext<SettingsPage>();
 
     private readonly SettingsViewModel _viewModel;
+    private Border _shortcutsCard = null!;
 
-    public SettingsPage()
+    /// <param name="scrollToShortcuts">Open scrolled to the Keyboard shortcuts card — the target of
+    /// Home's hotkey link (<c>MainWindow.NavigateToHotkeySettings</c>).</param>
+    public SettingsPage(bool scrollToShortcuts = false)
     {
         RequestedTheme = AppTheme.ElementTheme;
         Background = AppTheme.Brush(AppTheme.ContentBg);
         _viewModel = App.Services.GetRequiredService<SettingsViewModel>();
         BuildUI();
+        if (scrollToShortcuts) Loaded += ScrollToShortcutsOnce;
+    }
+
+    /// <summary>
+    /// Scrolls the page so the Keyboard shortcuts card sits where a page's content starts (one page
+    /// padding below the top). Queued at Low priority after Loaded, so the first layout pass has
+    /// placed the card; once only, so a later Loaded (a revisit) never yanks the page.
+    /// </summary>
+    private void ScrollToShortcutsOnce(object sender, RoutedEventArgs e)
+    {
+        Loaded -= ScrollToShortcutsOnce;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            if (Content is not ScrollViewer scroller || !_shortcutsCard.IsLoaded) return;
+            var top = _shortcutsCard.TransformToVisual(scroller)
+                .TransformPoint(new global::Windows.Foundation.Point(0, 0)).Y + scroller.VerticalOffset;
+            scroller.ChangeView(null, Math.Max(0, top - AppTheme.PagePadding), null, disableAnimation: true);
+        });
     }
 
     private void BuildUI()
@@ -45,6 +66,7 @@ public sealed class SettingsPage : Page
 
         // ── Keyboard Shortcuts card ───────────────────────────────────
         var shortcutsCard = BuildKeyboardShortcutsCard();
+        _shortcutsCard = shortcutsCard; // Home's hotkey link scrolls here (ScrollToShortcutsOnce)
 
         // ── Audio card ────────────────────────────────────────────────
         var audioCard = BuildAudioCard();
@@ -975,6 +997,7 @@ public sealed class SettingsPage : Page
 
         var deleteAllButton = AppTheme.CreateSecondaryButton("Delete all data",
             async (_, _) => await ShowDeleteAllDialogAsync());
+        ToolTipService.SetToolTip(deleteAllButton, "Erases everything VoiceWink keeps on this PC, then quits");
 
         // The images-folder shortcut + the three data buttons flow in a row, wrapping to the next
         // line when the card is too narrow to fit them all (FlowPanel — no built-in WrapPanel).
@@ -1571,8 +1594,8 @@ public sealed class SettingsPage : Page
             out crashReportingSwitch);
         StripCardBorder(crashReporting);
 
-        // UI-25 (owner, 2026-10-13): the Log Viewer left the sidebar — most users never need it —
-        // and opens from here, beside the toggles that decide what the logs hold.
+        // UI-25 (owner, 2026-10-13): the Log Viewer opens from here, beside the toggles that decide
+        // what the logs hold — and, since 2026-10-14, from its own entry under More in the sidebar.
         var openLogViewerButton = AppTheme.CreateSecondaryButton("Open Log Viewer",
             (_, _) => App.MainWindowInstance?.NavigateToPage("logviewer"));
         openLogViewerButton.HorizontalAlignment = HorizontalAlignment.Left;

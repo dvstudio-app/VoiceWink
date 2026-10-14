@@ -901,12 +901,11 @@ public sealed class LicensePage : Page
     }
 
     // The chip is 12 px SemiBold TEXT on the page background, so its amber states take WarningText
-    // (LIC-20); the two blue states are left as they are — re-tinting ACTIVE is a design choice the
-    // owner has not been asked about (UI-15 carries the question).
+    // (LIC-20) and its two blue states AccentBlueText (owner, 2026-10-14: "all coloured text").
     private static Windows.UI.Color StatusColor(LicenseStatus status) => status switch
     {
-        LicenseStatus.Activated         => AppTheme.AccentBlue,
-        LicenseStatus.FirstRunGrace     => AppTheme.AccentBlue,
+        LicenseStatus.Activated         => AppTheme.AccentBlueText,
+        LicenseStatus.FirstRunGrace     => AppTheme.AccentBlueText,
         LicenseStatus.OfflineGrace      => AppTheme.WarningText,
         LicenseStatus.GraceExpired      => AppTheme.WarningText,
         LicenseStatus.Invalid           => AppTheme.WarningText,

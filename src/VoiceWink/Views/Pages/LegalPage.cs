@@ -106,14 +106,14 @@ public sealed class LegalPage : Page
                 {
                     Text = "‹",
                     FontSize = 16,
-                    Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                    Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                     VerticalAlignment = VerticalAlignment.Center,
                 },
                 new TextBlock
                 {
                     Text = "Back to About",
                     FontSize = 13,
-                    Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                    Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                     VerticalAlignment = VerticalAlignment.Center,
                 },
             },
@@ -172,7 +172,7 @@ public sealed class LegalPage : Page
     {
         border.Background = AppTheme.Brush(active ? AppTheme.ActivePillBg : AppTheme.RowBg);
         if (border.Child is TextBlock tb)
-            tb.Foreground = AppTheme.Brush(active ? AppTheme.AccentBlue : AppTheme.TextSecondary);
+            tb.Foreground = AppTheme.Brush(active ? AppTheme.AccentBlueText : AppTheme.TextSecondary);
     }
 
     private static UIElement BuildPane(LegalDocumentMetadata doc, LegalDocument kind)
@@ -191,17 +191,12 @@ public sealed class LegalPage : Page
         // versioned URL on voicewink.app/legal so users who want native
         // browser rendering have an escape hatch.
         var slug = kind == LegalDocument.Eula ? "eula" : "privacy";
-        var browserLink = new TextBlock
-        {
-            Text = $"View in browser: voicewink.app/legal/{slug}-v{doc.Version}",
-            FontSize = 12,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
-            Margin = new Thickness(0, 12, 0, 0),
-        };
-        browserLink.Tapped += (_, _) => ShellLink.TryOpen($"https://voicewink.app/legal/{slug}-v{doc.Version}");
-        browserLink.PointerEntered += (_, _) => browserLink.Opacity = 0.8;
-        browserLink.PointerExited += (_, _) => browserLink.Opacity = 1.0;
-        ToolTipService.SetToolTip(browserLink, $"https://voicewink.app/legal/{slug}-v{doc.Version}");
+        var browserUrl = $"https://voicewink.app/legal/{slug}-v{doc.Version}";
+        var browserLink = AppTheme.CreateActionLink(
+            $"View in browser: voicewink.app/legal/{slug}-v{doc.Version}",
+            () => ShellLink.TryOpen(browserUrl),
+            browserUrl);
+        browserLink.Margin = new Thickness(0, 12, 0, 0);
 
         return AppTheme.CreateCard(new StackPanel
         {

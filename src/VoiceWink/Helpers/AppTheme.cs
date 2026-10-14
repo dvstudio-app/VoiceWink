@@ -34,6 +34,21 @@ public static class AppTheme
     public static Windows.UI.Color AccentGreen => Current.AccentGreen;
     public static Windows.UI.Color AccentRed => Current.AccentRed;
     public static Windows.UI.Color AccentAmber => Current.AccentAmber;
+    /// <summary>The image badge's purple: its tint only; its text is <see cref="AccentPurpleText"/>.</summary>
+    public static Windows.UI.Color AccentPurple => Current.AccentPurple;
+    /// <summary>
+    /// Blue TEXT and icons (2026-10-14, owner: "all coloured text") — links, the highlighted sidebar
+    /// entry, blue badges and pills. <see cref="AccentBlue"/> stays the colour of fills, borders, dots
+    /// and tints: as text it measures 3.6:1 on the light page and 3.46:1 on the dark active pill. The
+    /// rule, the measured values and the test that keeps the accent out of a <c>Foreground</c> are
+    /// <see cref="ThemeSwatches"/>' (the same rule <see cref="WarningText"/> set for amber).
+    /// </summary>
+    public static Windows.UI.Color AccentBlueText => Current.AccentBlueText;
+    /// <summary>Green TEXT and icons; <see cref="AccentGreen"/> measures 2.3:1 on the light page.
+    /// In the dark theme it IS the accent.</summary>
+    public static Windows.UI.Color AccentGreenText => Current.AccentGreenText;
+    /// <summary>Purple TEXT (the Enhancement page's image badge).</summary>
+    public static Windows.UI.Color AccentPurpleText => Current.AccentPurpleText;
     /// <summary>
     /// Failure TEXT at small sizes (LIC-19) — chosen for ≥ 4.5:1 against both the page and the card
     /// background in BOTH themes. The accents were tuned for chips and borders: at 12 px on the light
@@ -48,9 +63,9 @@ public static class AppTheme
     /// themes. <see cref="AccentAmber"/> stays the colour of borders, badges and the pill tones: as
     /// 12 px text it measures 1.97:1 on the light page. In the dark theme this IS the accent value, so
     /// nothing there changed. The values live in <see cref="ThemeSwatches"/>, where
-    /// <c>ThemeTextContrastTests</c> pins them — and pins that no view under <c>src/VoiceWink</c> builds
-    /// a <c>Foreground</c> from the accent (the direct form; a colour reaching text through a variable
-    /// or a parameter is the reviewer's to catch).
+    /// <c>ThemeTextContrastTests</c> pins them — and pins that no code line under <c>src/VoiceWink</c>
+    /// builds a <c>Foreground</c> from an accent, the sidebar wordmark and the mini recorder pill excepted
+    /// (a colour reaching text through a variable or a parameter is the reviewer's to catch).
     /// </summary>
     public static Windows.UI.Color WarningText => Current.WarningText;
 
@@ -153,6 +168,10 @@ public static class AppTheme
         public Windows.UI.Color AccentGreen;
         public Windows.UI.Color AccentRed;
         public Windows.UI.Color AccentAmber;
+        public Windows.UI.Color AccentPurple;
+        public Windows.UI.Color AccentBlueText;
+        public Windows.UI.Color AccentGreenText;
+        public Windows.UI.Color AccentPurpleText;
         public Windows.UI.Color FailureText;
         public Windows.UI.Color WarningText;
         public Windows.UI.Color TextPrimary;
@@ -165,7 +184,7 @@ public static class AppTheme
         public Windows.UI.Color RowHoverBg;
     }
 
-    // The contrast-bearing fields (the backgrounds text lands on, the two accents, the *Text colours
+    // The contrast-bearing fields (the backgrounds text lands on, the accents, the *Text colours
     // and SubtleText, plus ActivePillBg, the sidebar's hover) come from the WinRT-free ThemeSwatches
     // so the test host can pin the shipped values (LIC-20, UI-24); ThemeTextContrastTests also pins
     // that every one of these lines names its own theme and field. The rest of each palette stays inline.
@@ -179,9 +198,13 @@ public static class AppTheme
         CardBg          = FromSwatch(ThemeSwatches.Dark.CardBg),        // #1E1E22
         CardBorderColor = ColorHelper.FromArgb(255, 42, 42, 46),        // #2A2A2E
         AccentBlue      = FromSwatch(ThemeSwatches.Dark.AccentBlue),    // #007AFF
-        AccentGreen     = ColorHelper.FromArgb(255, 48, 209, 88),       // #30D158
-        AccentRed       = ColorHelper.FromArgb(255, 255, 69, 58),       // #FF453A
+        AccentGreen     = FromSwatch(ThemeSwatches.Dark.AccentGreen),   // #30D158
+        AccentRed       = FromSwatch(ThemeSwatches.Dark.AccentRed),     // #FF453A
         AccentAmber     = FromSwatch(ThemeSwatches.Dark.AccentAmber),   // #FF9500
+        AccentPurple    = FromSwatch(ThemeSwatches.Dark.AccentPurple),  // #AF52DE
+        AccentBlueText  = FromSwatch(ThemeSwatches.Dark.AccentBlueText),   // #409CFF
+        AccentGreenText = FromSwatch(ThemeSwatches.Dark.AccentGreenText),  // = the accent
+        AccentPurpleText = FromSwatch(ThemeSwatches.Dark.AccentPurpleText), // #C47FE7
         FailureText     = FromSwatch(ThemeSwatches.Dark.FailureText),   // #FF6B6B — 7.0:1 on ContentBg, 6.0:1 on CardBg
         WarningText     = FromSwatch(ThemeSwatches.Dark.WarningText),   // = the accent in the dark theme (8.8:1 / 7.6:1)
         TextPrimary     = ColorHelper.FromArgb(255, 255, 255, 255),     // white
@@ -201,11 +224,15 @@ public static class AppTheme
         CardBg          = FromSwatch(ThemeSwatches.Light.CardBg),       // white
         CardBorderColor = ColorHelper.FromArgb(255, 210, 210, 215),     // #D2D2D7
         AccentBlue      = FromSwatch(ThemeSwatches.Light.AccentBlue),   // #007AFF
-        AccentGreen     = ColorHelper.FromArgb(255, 40, 185, 75),       // #28B94B
-        AccentRed       = ColorHelper.FromArgb(255, 255, 59, 48),       // #FF3B30
+        AccentGreen     = FromSwatch(ThemeSwatches.Light.AccentGreen),  // #28B94B — fills and tints only: 2.3:1 as text
+        AccentRed       = FromSwatch(ThemeSwatches.Light.AccentRed),    // #FF3B30
         AccentAmber     = FromSwatch(ThemeSwatches.Light.AccentAmber),  // #FF9500 — borders and badges only: 1.97:1 as text
+        AccentPurple    = FromSwatch(ThemeSwatches.Light.AccentPurple), // #AF52DE
+        AccentBlueText  = FromSwatch(ThemeSwatches.Light.AccentBlueText),   // #0055B8
+        AccentGreenText = FromSwatch(ThemeSwatches.Light.AccentGreenText),  // #186F2D
+        AccentPurpleText = FromSwatch(ThemeSwatches.Light.AccentPurpleText), // #823DA4
         FailureText     = FromSwatch(ThemeSwatches.Light.FailureText),  // #B3261E — 5.9:1 on ContentBg, 6.5:1 on CardBg
-        WarningText     = FromSwatch(ThemeSwatches.Light.WarningText),  // #9A5B00 — 4.86:1 on ContentBg, 5.43:1 on CardBg
+        WarningText     = FromSwatch(ThemeSwatches.Light.WarningText),  // #8F5500 — 5.43:1 on ContentBg, 4.69:1 on its own tint
         TextPrimary     = ColorHelper.FromArgb(255, 0, 0, 0),           // black
         TextSecondary   = ColorHelper.FromArgb(255, 60, 60, 67),        // #3C3C43
         SubtleText      = FromSwatch(ThemeSwatches.Light.SubtleText),   // #58585C
@@ -320,7 +347,7 @@ public static class AppTheme
         {
             Text = "Active",
             FontSize = 11,
-            Foreground = Brush(AccentGreen)
+            Foreground = Brush(AccentGreenText)
         }
     };
 
@@ -420,7 +447,7 @@ public static class AppTheme
         var link = new Hyperlink
         {
             FontSize = linkFontSize,
-            Foreground = Brush(AccentBlue),
+            Foreground = Brush(AccentBlueText),
             UnderlineStyle = UnderlineStyle.None // matches the HyperlinkButton look this replaced
         };
         link.Inlines.Add(linkRun);
@@ -486,7 +513,7 @@ public static class AppTheme
             {
                 Glyph = glyph,
                 FontSize = 20,
-                Foreground = Brush(AccentBlue),
+                Foreground = Brush(AccentBlueText),
                 Margin = new Thickness(0, 0, 0, 8)
             };
             content.Children.Insert(0, icon);
@@ -1244,14 +1271,16 @@ public static class AppTheme
     /// and the transitions take no arguments, so a caller structurally cannot put the cancel label
     /// on the primary state (Codex diff review — the earlier API allowed exactly that while its doc
     /// claimed labels could not drift). The caller wires ONE <c>Tapped</c> handler and branches on
-    /// <see cref="ActionToggleButton.IsCancelling"/>.
+    /// <see cref="ActionToggleButton.IsCancelling"/>. <paramref name="compact"/> gives it the
+    /// <see cref="CreateCompactButton"/> size, for a model card where it sits beside Select, Delete
+    /// and <see cref="CreateActiveStatusBadge"/>.
     /// </summary>
-    public static ActionToggleButton CreateActionToggleButton(string primaryText, string cancelText)
+    public static ActionToggleButton CreateActionToggleButton(string primaryText, string cancelText, bool compact = false)
     {
         var core = new ActionToggleCore(primaryText, cancelText);
         var label = new TextBlock
         {
-            FontSize = 13,
+            FontSize = compact ? CompactControlFontSize : 13,
             FontWeight = FontWeights.SemiBold,
             Foreground = Brush(TextPrimary),
             HorizontalAlignment = HorizontalAlignment.Center
@@ -1259,11 +1288,44 @@ public static class AppTheme
         var border = new Border
         {
             CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(16, 8, 16, 8),
+            Padding = compact ? CompactControlPadding : new Thickness(16, 8, 16, 8),
+            MinWidth = compact ? ModelCardControlMinWidth : 0,
             Child = label
         };
         return new ActionToggleButton(border, label, core);
     }
+
+    // One size for everything on a model card's right side: Select, Delete, Download and the Active badge.
+    private const double CompactControlFontSize = 12;
+
+    /// <summary>The minimum width of a model card's Select, Download and Active controls, so the three
+    /// read as one size whichever label a card shows ("Download" is the widest, about 86 px).</summary>
+    public const double ModelCardControlMinWidth = 96;
+    private static Thickness CompactControlPadding => new(14, 6, 14, 6);
+    private static Thickness CompactControlPaddingInsideBorder => new(13, 5, 13, 5);
+
+    /// <summary>
+    /// The green "Active" status on a model card (the Models page and the built-in AI models), the same
+    /// size as the <see cref="CreateCompactButton"/> buttons it stands in for. Not
+    /// <see cref="CreateActiveBadge"/>, the small marker beside a title.
+    /// </summary>
+    public static Border CreateActiveStatusBadge() => new()
+    {
+        Background = Brush(ColorHelper.FromArgb(51, 48, 209, 88)), // the green the card's status icon sits on
+        CornerRadius = new CornerRadius(8),
+        Padding = CompactControlPadding,
+        MinWidth = ModelCardControlMinWidth,
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock
+        {
+            Text = "Active",
+            FontSize = CompactControlFontSize,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush(AccentGreenText),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        },
+    };
 
     /// <summary>Subtle secondary button with border.</summary>
     public static Border CreateSecondaryButton(string text, TappedEventHandler? onTapped = null)
@@ -1355,10 +1417,95 @@ public static class AppTheme
         border.PointerExited += (_, _) => { border.Background = normalBg; icon.Foreground = Brush(SubtleText); };
         border.Tapped += onTapped;
 
-        ToolTipService.SetToolTip(border, accessibleName);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(border, accessibleName);
+        SetIconLabel(border, accessibleName);
         return border;
     }
+
+    /// <summary>
+    /// Names a glyph-only control twice, the same way: as its tooltip (a pointer user sees only the
+    /// glyph) and as its accessible name (a <see cref="Border"/> is not a <c>Control</c>, so nothing
+    /// else names it). The one way every icon-only button in the app is labelled (2026-10-14 tooltip
+    /// pass), <see cref="CreateIconButton"/> included.
+    /// </summary>
+    public static void SetIconLabel(FrameworkElement element, string label)
+    {
+        ToolTipService.SetToolTip(element, label);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(element, label);
+    }
+
+    /// <summary>
+    /// The glyph-only copy button History's rows and Home's last-transcription card share (moved out
+    /// of HistoryPage on 2026-10-14 so the second copy is this one, not a duplicate). A tap copies
+    /// <paramref name="getText"/>'s text through <paramref name="copy"/> and says what happened:
+    /// HIS-1's rules, kept whole — the feedback follows the copy's RESULT (a check mark on a failed
+    /// copy would be the silent lie HIS-1 fixed), the tooltip is opened EXPLICITLY (setting it only
+    /// configures hover content), each tap's own tooltip is always closed, and a generation guard
+    /// keeps rapid re-taps from leaving a stuck glyph. Then the hover label comes back.
+    /// </summary>
+    public static Border CreateCopyButton(string label, string copiedLabel,
+        Func<string> getText, Func<string, Task<bool>> copy)
+    {
+        const string CopyGlyph = "";
+        var icon = new FontIcon { Glyph = CopyGlyph, FontSize = 11, Foreground = Brush(SubtleText) };
+        var button = new Border
+        {
+            Width = 24,
+            Height = 24,
+            CornerRadius = new CornerRadius(4),
+            VerticalAlignment = VerticalAlignment.Center,
+            Background = TransparentBrush,
+            Child = new Viewbox { Width = 12, Height = 12, Child = icon },
+        };
+        SetIconLabel(button, label);
+        var feedbackGeneration = 0;
+        var feedbackActive = false; // hover must not overwrite the feedback tint
+        button.PointerEntered += (_, _) =>
+        {
+            button.Background = Brush(ColorHelper.FromArgb(30, 142, 142, 147));
+            if (!feedbackActive) icon.Foreground = Brush(TextPrimary);
+        };
+        button.PointerExited += (_, _) =>
+        {
+            button.Background = TransparentBrush;
+            if (!feedbackActive) icon.Foreground = Brush(SubtleText);
+        };
+        button.PointerPressed += (_, pe) => pe.Handled = true;
+        button.Tapped += async (_, e) =>
+        {
+            e.Handled = true;
+            var copied = await copy(getText() ?? "");
+            var generation = ++feedbackGeneration;
+            feedbackActive = true;
+            icon.Glyph = copied ? "" : ""; // CheckMark / Cancel
+            icon.Foreground = Brush(copied ? AccentGreenText : FailureText);
+            var tip = new ToolTip { Content = copied ? copiedLabel : HistoryImagePresentation.CopyFailedLabel };
+            ToolTipService.SetToolTip(button, tip);
+            tip.IsOpen = true;
+            await Task.Delay(1200);
+            tip.IsOpen = false;
+            if (generation != feedbackGeneration) return;
+            feedbackActive = false;
+            icon.Glyph = CopyGlyph;
+            icon.Foreground = Brush(SubtleText);
+            ToolTipService.SetToolTip(button, label); // back to the hover label
+        };
+        return button;
+    }
+
+    /// <summary>What a model card's status icon means — its colour alone said it (Models page, and the
+    /// built-in AI models, which copy that icon).</summary>
+    public static string ModelStatusTooltip(bool inUse, bool downloaded) =>
+        inUse ? "In use" : downloaded ? "Downloaded" : "Not downloaded";
+
+    /// <summary>The API key Save buttons (Models page, AI Enhancement): a save is checked first.</summary>
+    public const string SaveKeyTooltip = "Checks the key with the provider, then saves it";
+
+    /// <summary>
+    /// A link's opacity under the pointer. 0.8 took <see cref="AccentBlueText"/> to 4.24:1 on the
+    /// dark card; at this value it still clears 4.5:1 on the page and the card in both themes
+    /// (pinned by <c>ThemeTextContrastTests</c>).
+    /// </summary>
+    public const double LinkHoverOpacity = 0.9;
 
     /// <summary>
     /// Link-style TextBlock (hover-dim + tap action) for an in-page ACTION rather than a URL — the
@@ -1373,13 +1520,13 @@ public static class AppTheme
         var link = new TextBlock
         {
             Text = text,
-            Foreground = Brush(AccentBlue),
+            Foreground = Brush(AccentBlueText),
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 4, 0, 0),
         };
         link.Tapped += (_, _) => onTap();
-        link.PointerEntered += (_, _) => link.Opacity = 0.8;
+        link.PointerEntered += (_, _) => link.Opacity = LinkHoverOpacity;
         link.PointerExited += (_, _) => link.Opacity = 1.0;
         if (tooltip != null) ToolTipService.SetToolTip(link, tooltip);
         return link;
@@ -1402,7 +1549,7 @@ public static class AppTheme
             {
                 Text = text,
                 FontSize = 13,
-                Foreground = Brush(AccentRed),
+                Foreground = Brush(FailureText),
                 HorizontalAlignment = HorizontalAlignment.Center
             }
         };
@@ -1431,7 +1578,7 @@ public static class AppTheme
         {
             normalBg = TransparentBrush;
             hoverBg = Brush(ColorHelper.FromArgb(30, 255, 69, 58));
-            textBrush = Brush(AccentRed);
+            textBrush = Brush(FailureText);
             borderBrush = Brush(ColorHelper.FromArgb(80, 255, 69, 58));
         }
         else
@@ -1447,11 +1594,13 @@ public static class AppTheme
             BorderBrush = borderBrush,
             BorderThickness = borderBrush != null ? new Thickness(1) : new Thickness(0),
             CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(14, 6, 14, 6),
+            // The danger button's 1 px border comes out of the padding, so it is exactly as tall as
+            // Select, Download and the Active badge (a Select beside it stretches to its height).
+            Padding = borderBrush != null ? CompactControlPaddingInsideBorder : CompactControlPadding,
             Child = new TextBlock
             {
                 Text = text,
-                FontSize = 12,
+                FontSize = CompactControlFontSize,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = textBrush,
                 VerticalAlignment = VerticalAlignment.Center,

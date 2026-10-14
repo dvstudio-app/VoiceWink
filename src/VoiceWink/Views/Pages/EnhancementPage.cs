@@ -281,7 +281,7 @@ public sealed class EnhancementPage : Page
             };
 
             var refreshIcon = new FontIcon { Glyph = "\uE72C", FontSize = 14, Foreground = AppTheme.Brush(AppTheme.SubtleText) };
-            var loadingRing = new ProgressRing { Width = 14, Height = 14, IsActive = false, Foreground = AppTheme.Brush(AppTheme.AccentBlue) };
+            var loadingRing = new ProgressRing { Width = 14, Height = 14, IsActive = false, Foreground = AppTheme.Brush(AppTheme.AccentBlueText) };
             var refreshBtn = new Border
             {
                 Width = 34, Height = 34,
@@ -303,7 +303,7 @@ public sealed class EnhancementPage : Page
             var fetchErrorText = new TextBlock
             {
                 FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.AccentRed),
+                Foreground = AppTheme.Brush(AppTheme.FailureText),
                 Margin = new Thickness(0, 4, 0, 0),
                 Visibility = Visibility.Collapsed,
                 TextWrapping = TextWrapping.Wrap
@@ -546,6 +546,7 @@ public sealed class EnhancementPage : Page
         RegisterViewModelSubscription(apiKeyChangedHandler);
 
         var saveBtn = AppTheme.CreateAccentButton("Save Key", async (_, _) => await _viewModel.SaveApiKeyAsync());
+        ToolTipService.SetToolTip(saveBtn, AppTheme.SaveKeyTooltip);
 
         var apiKeyStatus = CreateApiKeyStatusIndicator(
             () => _viewModel.ApiKeyStatus,
@@ -642,6 +643,7 @@ public sealed class EnhancementPage : Page
         RegisterViewModelSubscription(imageApiKeyChangedHandler);
 
         var saveImageBtn = AppTheme.CreateAccentButton("Save Key", async (_, _) => await _viewModel.SaveImageApiKeyAsync());
+        ToolTipService.SetToolTip(saveImageBtn, AppTheme.SaveKeyTooltip);
 
         var imageApiKeyStatus = CreateApiKeyStatusIndicator(
             () => _viewModel.ImageApiKeyStatus,
@@ -1056,7 +1058,7 @@ public sealed class EnhancementPage : Page
         {
             Text = "⚠ Experimental — shows every model the provider returns, including ones this list can't use. Selecting an unsupported model may cause errors.",
             FontSize = 12,
-            Foreground = AppTheme.Brush(ColorHelper.FromArgb(255, 255, 180, 50)),
+            Foreground = AppTheme.Brush(AppTheme.WarningText),
             Margin = new Thickness(0, 2, 0, 0),
             TextWrapping = TextWrapping.Wrap,
             Visibility = getValue() ? Visibility.Visible : Visibility.Collapsed
@@ -1235,10 +1237,11 @@ public sealed class EnhancementPage : Page
 
         // Type badge: "Image" or "Text"
         var typeBadgeColor = prompt.IsImageGeneration
-            ? ColorHelper.FromArgb(255, 175, 82, 222) // purple for image
-            : AppTheme.AccentBlue;
+            ? AppTheme.AccentPurpleText // purple for image
+            : AppTheme.AccentBlueText;
+        var purple = AppTheme.AccentPurple;
         var typeBadgeBg = prompt.IsImageGeneration
-            ? ColorHelper.FromArgb(30, 175, 82, 222)
+            ? ColorHelper.FromArgb(30, purple.R, purple.G, purple.B)
             : ColorHelper.FromArgb(30, 0, 122, 255);
         var typeBadge = new Border
         {
@@ -1266,7 +1269,7 @@ public sealed class EnhancementPage : Page
                 {
                     Text = $"Model: {EngineModelLabel.Label(Enum.TryParse<AIProvider>(prompt.ProviderOverride, out var badgeProvider) ? badgeProvider : _viewModel.SelectedProvider, prompt.ModelOverride)}",
                     FontSize = 11,
-                    Foreground = AppTheme.Brush(AppTheme.AccentBlue)
+                    Foreground = AppTheme.Brush(AppTheme.AccentBlueText)
                 }
             };
         }
@@ -1290,7 +1293,7 @@ public sealed class EnhancementPage : Page
             {
                 Glyph = "\uE720", // microphone
                 FontSize = 11,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 VerticalAlignment = VerticalAlignment.Center
             });
             foreach (var word in prompt.TriggerWords)
@@ -1300,7 +1303,7 @@ public sealed class EnhancementPage : Page
                 var pillBg = isConflict
                     ? ColorHelper.FromArgb(30, 255, 149, 0) // amber tint
                     : ColorHelper.FromArgb(30, 0, 122, 255);
-                var pillFg = isConflict ? AppTheme.WarningText : AppTheme.AccentBlue;
+                var pillFg = isConflict ? AppTheme.WarningText : AppTheme.AccentBlueText;
 
                 var pillContent = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
                 if (isConflict)
@@ -1353,7 +1356,7 @@ public sealed class EnhancementPage : Page
             {
                 Glyph = "\uE765", // keyboard
                 FontSize = 11,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+                Foreground = AppTheme.Brush(AppTheme.AccentGreenText),
                 VerticalAlignment = VerticalAlignment.Center
             });
             hotkeyPanel.Children.Add(new Border
@@ -1365,7 +1368,7 @@ public sealed class EnhancementPage : Page
                 {
                     Text = HotkeyKeyDisplay.Describe(prompt.Hotkey ?? string.Empty),
                     FontSize = 11,
-                    Foreground = AppTheme.Brush(AppTheme.AccentGreen)
+                    Foreground = AppTheme.Brush(AppTheme.AccentGreenText)
                 }
             });
             hotkeyDisplay = hotkeyPanel;
@@ -1425,6 +1428,9 @@ public sealed class EnhancementPage : Page
                 _viewModel.SetActivePromptCommand.Execute(prompt);
                 BuildUI(); // rebuild to reflect toggle + prompt state
             });
+        ToolTipService.SetToolTip(setActiveBtn, prompt.IsActive
+            ? "Stops using this prompt by default"
+            : "Makes this the prompt dictations use by default");
         buttonsRow.Children.Add(setActiveBtn);
 
         var editBtn = AppTheme.CreateSecondaryButton("Edit", (s, e) =>
@@ -1455,6 +1461,7 @@ public sealed class EnhancementPage : Page
         {
             ShowConfigureDialog(prompt);
         });
+        ToolTipService.SetToolTip(configBtn, "Type, provider, model and language for this prompt");
         buttonsRow.Children.Add(configBtn);
 
         var deleteBtn = AppTheme.CreateDangerButton("Delete", async (s, e) =>
@@ -1683,7 +1690,7 @@ public sealed class EnhancementPage : Page
             var iconBlock = new FontIcon
             {
                 FontSize = 20,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(0, 0, 12, 0)
             };
@@ -2744,16 +2751,16 @@ public sealed class EnhancementPage : Page
             {
                 case ApiKeyStatus.Valid:
                     icon.Glyph = "\uE73E"; // Checkmark
-                    icon.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
+                    icon.Foreground = AppTheme.Brush(AppTheme.AccentGreenText);
                     text.Text = "Key valid";
-                    text.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
+                    text.Foreground = AppTheme.Brush(AppTheme.AccentGreenText);
                     panel.Visibility = Visibility.Visible;
                     break;
                 case ApiKeyStatus.Invalid:
                     icon.Glyph = "\uE783"; // Error
-                    icon.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                    icon.Foreground = AppTheme.Brush(AppTheme.FailureText);
                     text.Text = "Invalid API key";
-                    text.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                    text.Foreground = AppTheme.Brush(AppTheme.FailureText);
                     panel.Visibility = Visibility.Visible;
                     break;
                 default: // ApiKeyStatus.Unknown

@@ -17,6 +17,16 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.115.412] - 2026-10-14
+
+- Setup asks about crash reports; keeping a prompt log on your PC is a separate switch, off by default.
+- Home shows your hotkey under the mic (click it to change it), how much time VoiceWink has saved you, and a copy button on the last transcription.
+- Settings is back in the main sidebar list, Dictionary sits right after History, and the Log Viewer is back under More.
+- Tooltips on icon buttons, status icons and buttons whose effect isn't obvious.
+- Coloured text and icons are easier to read in both themes: links, badges and the highlighted sidebar entry.
+- The Active badge on a model card is the same size as the buttons beside it.
+- A reference photo up to 50 MB now works when generating several image versions at once.
+
 ## [1.114.411] - 2026-10-14
 
 - A shorter sidebar: Settings, Metrics, License, Updates and About sit under More, and the Log Viewer opens from Settings → Diagnostics.

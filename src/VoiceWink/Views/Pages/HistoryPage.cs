@@ -425,6 +425,8 @@ public sealed class HistoryPage : Page
             (_, _) => ShellFolder.Open(AppPaths.ImagesDir));
         buttonRow.Children.Add(newImageBtn);
         buttonRow.Children.Add(openImagesBtn);
+        // The export takes the type filter only, never the search box (Codex + GLM diff r1).
+        ToolTipService.SetToolTip(exportBtn, "Exports all entries of the selected type, ignoring the search");
         buttonRow.Children.Add(exportBtn);
         buttonRow.Children.Add(deleteAllBtn);
         Grid.SetColumn(buttonRow, 1);
@@ -465,7 +467,7 @@ public sealed class HistoryPage : Page
         void UpdateFilterVisuals()
         {
             var activeBg = AppTheme.Brush(AppTheme.ActivePillBg);
-            var activeFg = AppTheme.Brush(AppTheme.AccentBlue);
+            var activeFg = AppTheme.Brush(AppTheme.AccentBlueText);
             var inactiveBg = AppTheme.TransparentBrush;
             var inactiveFg = AppTheme.Brush(AppTheme.SubtleText);
 
@@ -602,7 +604,7 @@ public sealed class HistoryPage : Page
                 Text = "Enhanced",
                 FontSize = 11,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen)
+                Foreground = AppTheme.Brush(AppTheme.AccentGreenText)
             }
         };
 
@@ -628,6 +630,7 @@ public sealed class HistoryPage : Page
             Margin = new Thickness(0, 8, 0, 8),
             Visibility = Visibility.Collapsed
         };
+        ToolTipService.SetToolTip(_detailImage, "Double-click to open");
         _detailImage.DoubleTapped += (_, _) =>
         {
             var item = _viewModel.SelectedTranscription;
@@ -1106,13 +1109,18 @@ public sealed class HistoryPage : Page
         {
             Glyph = isImageItem ? "\uE8B9" : "\uE8D2", // Photo : Page
             FontSize = 12,
-            Foreground = AppTheme.Brush(isFailed ? AppTheme.AccentRed
-                : isImageItem ? AppTheme.AccentBlue
-                : hasEnhancement ? AppTheme.AccentGreen
+            Foreground = AppTheme.Brush(isFailed ? AppTheme.FailureText
+                : isImageItem ? AppTheme.AccentBlueText
+                : hasEnhancement ? AppTheme.AccentGreenText
                 : AppTheme.SubtleText),
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 2, 8, 0)
         };
+        // The colour carries the meaning; the tooltip says it.
+        ToolTipService.SetToolTip(typeIcon, isFailed ? "Failed"
+            : isImageItem ? "Image"
+            : hasEnhancement ? "AI-enhanced"
+            : "Transcript");
 
         var previewBlock = new TextBlock
         {
@@ -1135,79 +1143,20 @@ public sealed class HistoryPage : Page
         var capturedItem = item;
 
         // ── Copy button ────────────────────────────────────────────
-        var copyIcon = new FontIcon
-        {
-            Glyph = "\uE8C8", // Copy
-            FontSize = 11,
-            Foreground = AppTheme.Brush(AppTheme.SubtleText)
-        };
-        var copyBtn = new Border
-        {
-            Width = 24,
-            Height = 24,
-            CornerRadius = new CornerRadius(4),
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 0, 0),
-            Background = AppTheme.TransparentBrush,
-            Child = new Viewbox { Width = 12, Height = 12, Child = copyIcon }
-        };
-        var copyFeedbackGeneration = 0;
-        var copyFeedbackActive = false; // hover handlers must not overwrite the feedback tint
-        copyBtn.PointerEntered += (_, _) =>
-        {
-            copyBtn.Background = AppTheme.Brush(ColorHelper.FromArgb(30, 142, 142, 147));
-            if (!copyFeedbackActive) copyIcon.Foreground = AppTheme.Brush(AppTheme.TextPrimary);
-        };
-        copyBtn.PointerExited += (_, _) =>
-        {
-            copyBtn.Background = AppTheme.TransparentBrush;
-            if (!copyFeedbackActive) copyIcon.Foreground = AppTheme.Brush(AppTheme.SubtleText);
-        };
-        copyBtn.PointerPressed += (_, pe) => pe.Handled = true;
-        copyBtn.Tapped += async (_, e) =>
-        {
-            e.Handled = true;
-            // For image/failed items, copy the original text, not the marker
-            var isImageItem = IsImageHistoryItem(capturedItem);
-            var textToCopy = isImageItem || capturedItem.EnhancedText == "[Enhancement failed]"
+        // HIS-1: say WHAT was copied — this button is a TEXT affordance (the image copy lives on the
+        // detail pane), and for image rows it yields the PROMPT; with a missing image that silence
+        // read as a wrong copy (owner report). For image/failed items, the original text, not the marker.
+        var isImageRow = IsImageHistoryItem(capturedItem);
+        var copyBtn = AppTheme.CreateCopyButton(
+            isImageRow ? "Copy prompt" : "Copy text",
+            HistoryImagePresentation.CopyFeedbackLabel(isImageRow),
+            () => (isImageRow || capturedItem.EnhancedText == "[Enhancement failed]"
                 ? capturedItem.Text
                 : (capturedItem.WasEnhanced && !string.IsNullOrEmpty(capturedItem.EnhancedText)
                     ? capturedItem.EnhancedText
-                    : capturedItem.Text);
-            var copied = await _clipboard.SetClipboardAsync(textToCopy ?? "");
-
-            // HIS-1: say WHAT was copied — this button is a TEXT affordance (the image
-            // copy lives on the detail pane), and for image rows it yields the PROMPT;
-            // with a missing image that silence read as a wrong copy (owner report).
-            // The feedback branches on SetClipboard's RESULT (a checkmark on a failed
-            // copy would be the same silent lie this fixes — Codex diff review), the
-            // ToolTip is opened EXPLICITLY (SetToolTip alone only configures hover
-            // content), and a generation guard keeps rapid re-taps from leaving a
-            // stuck glyph or an orphaned tip.
-            var generation = ++copyFeedbackGeneration;
-            copyFeedbackActive = true;
-            copyIcon.Glyph = copied ? "\uE73E" : "\uE711"; // CheckMark / Cancel
-            copyIcon.Foreground = AppTheme.Brush(copied ? AppTheme.AccentGreen : AppTheme.AccentRed);
-            var tip = new ToolTip
-            {
-                Content = copied
-                    ? HistoryImagePresentation.CopyFeedbackLabel(isImageItem)
-                    : HistoryImagePresentation.CopyFailedLabel
-            };
-            ToolTipService.SetToolTip(copyBtn, tip);
-            tip.IsOpen = true;
-            await Task.Delay(1200);
-            // ALWAYS close this invocation's own tooltip — replacing the attachment
-            // only implicitly hides it; IsOpen is the documented visibility control
-            // (Codex HIS-1 r2). Only the SHARED glyph/attachment cleanup below is
-            // generation-guarded.
-            tip.IsOpen = false;
-            if (generation != copyFeedbackGeneration) return;
-            copyFeedbackActive = false;
-            copyIcon.Glyph = "\uE8C8"; // Copy
-            copyIcon.Foreground = AppTheme.Brush(AppTheme.SubtleText);
-            ToolTipService.SetToolTip(copyBtn, null);
-        };
+                    : capturedItem.Text)) ?? "",
+            _clipboard.SetClipboardAsync);
+        copyBtn.Margin = new Thickness(8, 0, 0, 0);
 
         // ── Redo enhancement button ────────────────────────────────
         var redoIcon = new FontIcon
@@ -1226,13 +1175,17 @@ public sealed class HistoryPage : Page
             Background = AppTheme.TransparentBrush,
         };
         redoBtn.Child = new Viewbox { Width = 12, Height = 12, Child = redoIcon };
+        // The mini recorder's redo button carries the same text-row label.
+        AppTheme.SetIconLabel(redoBtn, IsImageHistoryItem(capturedItem)
+            ? "Generate again"
+            : "Run again with a different AI model");
 
         bool isRedoing = false;
         redoBtn.PointerEntered += (_, _) =>
         {
             if (isRedoing) return;
             redoBtn.Background = AppTheme.Brush(ColorHelper.FromArgb(30, 48, 209, 88));
-            redoIcon.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
+            redoIcon.Foreground = AppTheme.Brush(AppTheme.AccentGreenText);
         };
         redoBtn.PointerExited += (_, _) =>
         {
@@ -1328,7 +1281,7 @@ public sealed class HistoryPage : Page
             iterateBorder.PointerEntered += (_, _) =>
             {
                 iterateBorder.Background = AppTheme.Brush(ColorHelper.FromArgb(30, 0, 122, 255));
-                iterateIcon.Foreground = AppTheme.Brush(AppTheme.AccentBlue);
+                iterateIcon.Foreground = AppTheme.Brush(AppTheme.AccentBlueText);
             };
             iterateBorder.PointerExited += (_, _) =>
             {
@@ -1377,10 +1330,11 @@ public sealed class HistoryPage : Page
             Background = AppTheme.TransparentBrush,
             Child = new Viewbox { Width = 12, Height = 12, Child = deleteIcon }
         };
+        AppTheme.SetIconLabel(deleteBtn, "Delete");
         deleteBtn.PointerEntered += (_, _) =>
         {
             deleteBtn.Background = AppTheme.Brush(ColorHelper.FromArgb(30, 255, 69, 58));
-            deleteIcon.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+            deleteIcon.Foreground = AppTheme.Brush(AppTheme.FailureText);
         };
         deleteBtn.PointerExited += (_, _) =>
         {
@@ -1601,7 +1555,7 @@ public sealed class HistoryPage : Page
             if (_enhancedBadge.Child is TextBlock imgBadgeText)
             {
                 imgBadgeText.Text = isFailed ? "\u26A0 Image Generation Failed" : "\U0001F5BC Image Generated";
-                imgBadgeText.Foreground = AppTheme.Brush(isFailed ? AppTheme.AccentRed : AppTheme.AccentBlue);
+                imgBadgeText.Foreground = AppTheme.Brush(isFailed ? AppTheme.FailureText : AppTheme.AccentBlueText);
             }
             _detailText!.Text = t.Text; // the image description/prompt
             _originalLabel!.Visibility = Visibility.Collapsed;
@@ -1674,7 +1628,7 @@ public sealed class HistoryPage : Page
                 failBadgeText.Text = promptTitle != null
                     ? $"\u26A0 Enhancement Failed \u2022 {promptTitle}"
                     : "\u26A0 Enhancement Failed";
-                failBadgeText.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                failBadgeText.Foreground = AppTheme.Brush(AppTheme.FailureText);
             }
             _detailText!.Text = t.Text;
             _originalLabel!.Visibility = Visibility.Collapsed;
@@ -1690,7 +1644,7 @@ public sealed class HistoryPage : Page
                 // Show which enhancement was used (resolve prompt ID → title)
                 var promptTitle = ResolvePromptTitle(t.PromptUsed);
                 enhBadgeText.Text = promptTitle != null ? $"Enhanced \u2022 {promptTitle}" : "Enhanced";
-                enhBadgeText.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
+                enhBadgeText.Foreground = AppTheme.Brush(AppTheme.AccentGreenText);
             }
             _detailText!.Text = t.EnhancedText!;
             _originalLabel!.Visibility = Visibility.Visible;

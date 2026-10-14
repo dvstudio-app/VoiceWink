@@ -14,22 +14,8 @@ public sealed class MetricsPage : Page
 {
     private static ILogger Logger => Log.ForContext<MetricsPage>();
 
-    // ── Time-saved model parameters ─────────────────────────────────
-    // T  = average typing speed (WPM)
-    // D  = careful dictation speed (WPM)
-    // eₜ = typing edit overhead (minutes per 100 words)
-    // eᵥ = voice edit overhead (minutes per 100 words)
-    //
-    // Formula: Saved = (W/T + W/100·eₜ) − (W/D + W/100·eᵥ)
-    //
-    // T was 60 — a confident touch typist — while voicewink.app's speed FAQ names 40 WPM as the
-    // basis for its "4× faster than typing" claim, so the app and the site described different
-    // people. Aligned on 40 by owner decision 2026-09-15. The info line below STATES this figure
-    // and derives it from the constant, so the two can never drift apart again.
-    private const double TypingWpm = 40.0;
-    private const double DictationWpm = 130.0;
-    private const double TypingEditPer100 = 0.1;   // typing needs minimal corrections
-    private const double VoiceEditPer100 = 0.4;     // voice needs more review/fixes
+    // The time-saved model lives in TimeSavedEstimate (2026-10-14): Home shows the same number.
+    // The info line below STATES the typing speed from that constant, so the two never drift.
 
     private readonly LifetimeMetricsService _metrics;
     private TextBlock? _totalCount;
@@ -126,7 +112,7 @@ public sealed class MetricsPage : Page
 
         var infoText = new TextBlock
         {
-            Text = $"Time saved compares typing at {TypingWpm:F0} words a minute with dictation, " +
+            Text = $"Time saved compares typing at {TimeSavedEstimate.TypingWpm:F0} words a minute with dictation, " +
                    "end-to-end. Totals are lifetime stats and do not shrink when transcription " +
                    "history is cleared.",
             FontSize = 12,
@@ -168,10 +154,7 @@ public sealed class MetricsPage : Page
             var avgWordsPerSession = stats.Total > 0 ? stats.TotalWords / stats.Total : 0;
 
             // Time saved: full end-to-end comparison (typing vs voice, including editing)
-            var w = (double)stats.TotalWords;
-            var timeTyping = w / TypingWpm + (w / 100.0) * TypingEditPer100;
-            var timeVoice  = w / DictationWpm + (w / 100.0) * VoiceEditPer100;
-            var minutesSaved = stats.Total > 0 ? Math.Max(0, timeTyping - timeVoice) : 0;
+            var minutesSaved = TimeSavedEstimate.Minutes(stats.TotalWords, stats.Total);
 
             DispatcherQueue.TryEnqueue(() =>
             {
@@ -181,10 +164,7 @@ public sealed class MetricsPage : Page
                 _wordsCaptured!.Text = stats.TotalWords.ToString("N0");
                 _avgWords!.Text = avgWordsPerSession.ToString("N0");
 
-                if (minutesSaved < 60)
-                    _timeSaved!.Text = $"{minutesSaved:F0} min";
-                else
-                    _timeSaved!.Text = $"{minutesSaved / 60:F1} hrs";
+                _timeSaved!.Text = TimeSavedEstimate.CardText(minutesSaved);
             });
         }
         catch (Exception ex)

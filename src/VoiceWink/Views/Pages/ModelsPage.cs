@@ -458,7 +458,7 @@ public sealed class ModelsPage : Page
             {
                 Glyph = "\uE8D6", // Microphone icon
                 FontSize = 18,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             }
@@ -496,20 +496,7 @@ public sealed class ModelsPage : Page
         };
 
         // Active badge
-        var activeBadge = new Border
-        {
-            Background = AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88)), // AccentGreen at 20%
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(10, 4, 10, 4),
-            VerticalAlignment = VerticalAlignment.Center,
-            Child = new TextBlock
-            {
-                Text = "Active",
-                FontSize = 12,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen)
-            }
-        };
+        var activeBadge = AppTheme.CreateActiveStatusBadge();
 
         // TRN-7: a two-column Grid, NOT the horizontal StackPanel this used to be. A horizontal
         // StackPanel measures its children with INFINITE available width, so the subtitle's
@@ -659,9 +646,9 @@ public sealed class ModelsPage : Page
 
         var iconGlyph = model.IsDownloaded ? "\uE73E" : "\uE896"; // Checkmark or Download
         var iconColor = model.IsSelected
-            ? AppTheme.AccentGreen
+            ? AppTheme.AccentGreenText
             : model.IsDownloaded
-                ? AppTheme.AccentBlue
+                ? AppTheme.AccentBlueText
                 : AppTheme.SubtleText;
 
         var iconBorder = new Border
@@ -679,6 +666,8 @@ public sealed class ModelsPage : Page
                 VerticalAlignment = VerticalAlignment.Center
             }
         };
+        // The colour carries the meaning; the tooltip says it.
+        ToolTipService.SetToolTip(iconBorder, AppTheme.ModelStatusTooltip(model.IsSelected, model.IsDownloaded));
 
         var nameBlock = new TextBlock
         {
@@ -747,22 +736,7 @@ public sealed class ModelsPage : Page
         if (model.IsSelected)
         {
             // Green "Active" badge
-            var activeBadge = new Border
-            {
-                Background = AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88)), // AccentGreen 20%
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(10, 4, 10, 4),
-                MinWidth = 80,
-                VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock
-                {
-                    Text = "Active",
-                    FontSize = 12,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = AppTheme.Brush(AppTheme.AccentGreen),
-                    HorizontalAlignment = HorizontalAlignment.Center
-                }
-            };
+            var activeBadge = AppTheme.CreateActiveStatusBadge();
             rightPanel.Children.Add(activeBadge);
         }
 
@@ -771,7 +745,7 @@ public sealed class ModelsPage : Page
             if (!model.IsSelected)
             {
                 var selectBtn = AppTheme.CreateCompactButton("Select");
-                selectBtn.MinWidth = 80;
+                selectBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
                 selectBtn.Tapped += async (_, _) =>
                 {
                     // The English-only confirmation dialog that used to sit here is gone with the
@@ -830,6 +804,7 @@ public sealed class ModelsPage : Page
         else
         {
             var downloadBtn = AppTheme.CreateCompactButton("Download", isAccent: true);
+            downloadBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
             downloadBtn.Tapped += async (_, _) =>
             {
                 AppTheme.SetButtonEnabled(downloadBtn, false);
@@ -861,7 +836,7 @@ public sealed class ModelsPage : Page
         {
             Text = model.ErrorMessage,
             FontSize = 12,
-            Foreground = AppTheme.Brush(AppTheme.AccentRed),
+            Foreground = AppTheme.Brush(AppTheme.FailureText),
             TextWrapping = TextWrapping.Wrap,
             Visibility = string.IsNullOrEmpty(model.ErrorMessage) ? Visibility.Collapsed : Visibility.Visible,
             Margin = new Thickness(0, 8, 0, 0)
@@ -915,7 +890,7 @@ public sealed class ModelsPage : Page
             Width = 100,
             Height = 6,
             Value = model.DownloadProgress * 100,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
             Background = AppTheme.Brush(ColorHelper.FromArgb(40, 142, 142, 147)),
             CornerRadius = new CornerRadius(3),
             VerticalAlignment = VerticalAlignment.Center
@@ -1041,7 +1016,7 @@ public sealed class ModelsPage : Page
             {
                 Glyph = "\uE73E", // Checkmark
                 FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+                Foreground = AppTheme.Brush(AppTheme.AccentGreenText),
                 VerticalAlignment = VerticalAlignment.Center
             };
 
@@ -1049,7 +1024,7 @@ public sealed class ModelsPage : Page
             {
                 Text = "Key saved",
                 FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.AccentGreen),
+                Foreground = AppTheme.Brush(AppTheme.AccentGreenText),
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(4, 0, 0, 0)
             };
@@ -1058,7 +1033,7 @@ public sealed class ModelsPage : Page
             {
                 Text = "Edit",
                 FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlue),
+                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
                 VerticalAlignment = VerticalAlignment.Center,
                 Margin = new Thickness(8, 0, 0, 0)
             };
@@ -1249,6 +1224,7 @@ public sealed class ModelsPage : Page
         statusPanel.Visibility = Visibility.Collapsed;
 
         var saveBtn = AppTheme.CreateCompactButton("Save", isAccent: true);
+        ToolTipService.SetToolTip(saveBtn, AppTheme.SaveKeyTooltip);
         saveBtn.Tapped += async (_, _) =>
         {
             try
@@ -1304,16 +1280,16 @@ public sealed class ModelsPage : Page
                     if (!saveResult.IsSuccess())
                     {
                         statusIcon.Glyph = "\uE783"; // Error
-                        statusIcon.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                        statusIcon.Foreground = AppTheme.Brush(AppTheme.FailureText);
                         statusLabel.Text = saveResult == Services.System.ApiKeySaveResult.InvalidFormat ? Helpers.ApiKeyFormat.DescribeCandidate(key) : "Could not save the key on this device — try again";
-                        statusLabel.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                        statusLabel.Foreground = AppTheme.Brush(AppTheme.FailureText);
                         return;
                     }
                     Logger.Information("API key saved for provider: {Provider}", providerKey);
                     statusIcon.Glyph = "\uE73E"; // Checkmark
-                    statusIcon.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
+                    statusIcon.Foreground = AppTheme.Brush(AppTheme.AccentGreenText);
                     statusLabel.Text = "Key valid";
-                    statusLabel.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
+                    statusLabel.Foreground = AppTheme.Brush(AppTheme.AccentGreenText);
                     await Task.Delay(1500);
                     RefreshCloudProviders();
                 }
@@ -1328,9 +1304,9 @@ public sealed class ModelsPage : Page
                     if (!saveResult.IsSuccess())
                     {
                         statusIcon.Glyph = "\uE783"; // Error
-                        statusIcon.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                        statusIcon.Foreground = AppTheme.Brush(AppTheme.FailureText);
                         statusLabel.Text = saveResult == Services.System.ApiKeySaveResult.InvalidFormat ? Helpers.ApiKeyFormat.DescribeCandidate(key) : "Could not save the key on this device — try again";
-                        statusLabel.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                        statusLabel.Foreground = AppTheme.Brush(AppTheme.FailureText);
                         return;
                     }
                     statusIcon.Glyph = "\uE7BA"; // Warning
@@ -1351,9 +1327,9 @@ public sealed class ModelsPage : Page
                     }
                     passwordBox.Password = previousKey;
                     statusIcon.Glyph = "\uE783"; // Error
-                    statusIcon.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                    statusIcon.Foreground = AppTheme.Brush(AppTheme.FailureText);
                     statusLabel.Text = "Invalid API key";
-                    statusLabel.Foreground = AppTheme.Brush(AppTheme.AccentRed);
+                    statusLabel.Foreground = AppTheme.Brush(AppTheme.FailureText);
                 }
             }
             catch (Exception ex)
@@ -1385,9 +1361,9 @@ public sealed class ModelsPage : Page
 
         // ── Left side: cloud icon + model name ──────────────────
         var iconColor = isActive
-            ? AppTheme.AccentGreen
+            ? AppTheme.AccentGreenText
             : hasKey
-                ? AppTheme.AccentBlue
+                ? AppTheme.AccentBlueText
                 : AppTheme.SubtleText;
 
         var iconBg = isActive
@@ -1456,22 +1432,7 @@ public sealed class ModelsPage : Page
         if (isActive)
         {
             // Green "Active" badge
-            var activeBadge = new Border
-            {
-                Background = AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88)),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(10, 4, 10, 4),
-                MinWidth = 80,
-                VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock
-                {
-                    Text = "Active",
-                    FontSize = 12,
-                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                    Foreground = AppTheme.Brush(AppTheme.AccentGreen),
-                    HorizontalAlignment = HorizontalAlignment.Center
-                }
-            };
+            var activeBadge = AppTheme.CreateActiveStatusBadge();
             rightPanel.Children.Add(activeBadge);
         }
         else
@@ -1487,11 +1448,13 @@ public sealed class ModelsPage : Page
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(0, 0, 4, 0)
                 };
+                // The disabled Select beside it cannot show a tooltip (no hit testing), so the reason sits here.
+                AppTheme.SetIconLabel(warningIcon, "Needs this provider's API key");
                 rightPanel.Children.Add(warningIcon);
             }
 
             var selectBtn = AppTheme.CreateCompactButton("Select");
-            selectBtn.MinWidth = 80;
+            selectBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
             var modelName = model.Name; // capture for closure
 
             if (!hasKey)

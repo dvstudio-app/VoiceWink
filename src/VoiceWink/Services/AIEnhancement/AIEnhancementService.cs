@@ -1679,8 +1679,7 @@ public sealed class AIEnhancementService
     /// IMG-4: the batch's ONE shared read — today's exact validated multi-read with the
     /// count-scoped aggregate budget (<see cref="Helpers.ReferenceImagePolicy.MaxBatchTotalBytes"/>:
     /// N concurrent payload builds multiply the transient allocation, so the budget
-    /// divides by the version count to keep the batch's peak at ~the single-call worst
-    /// case). A budget overflow is rethrown with the COUNT-SPECIFIC limit in the message
+    /// divides by the version count, never below one full-size reference). A budget overflow is rethrown with the COUNT-SPECIFIC limit in the message
     /// — the inner read's message names the single-call constant, which would misstate
     /// the batch's actual bound. Backstop only: the dialog confirm gate enforces the
     /// same policy before any spend.

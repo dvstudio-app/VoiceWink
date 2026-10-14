@@ -241,9 +241,9 @@ public sealed class UpdatesPage : Page
                         // the page state at a glance.
                         _statusTextBlock.Foreground = _vm.LastOutcome switch
                         {
-                            UpdateCheckOutcome.UpToDate => AppTheme.Brush(AppTheme.AccentGreen),
+                            UpdateCheckOutcome.UpToDate => AppTheme.Brush(AppTheme.AccentGreenText),
                             UpdateCheckOutcome.UpdateAvailable => AppTheme.Brush(AppTheme.WarningText),
-                            UpdateCheckOutcome.Error => AppTheme.Brush(AppTheme.AccentRed),
+                            UpdateCheckOutcome.Error => AppTheme.Brush(AppTheme.FailureText),
                             _ => AppTheme.Brush(AppTheme.TextSecondary),
                         };
                         _statusTextBlock.Visibility = string.IsNullOrWhiteSpace(_vm.StatusText)
