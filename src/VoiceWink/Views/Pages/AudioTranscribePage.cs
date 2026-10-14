@@ -45,6 +45,9 @@ public sealed class AudioTranscribePage : Page
 
     private Border? _copyButton;
     private const string CopyButtonLabel = "Copy to Clipboard";
+
+    internal static readonly string UnsupportedFormatMessage =
+        $"Unsupported file type. Use {AudioFileProcessor.SupportedFormatsText}.";
     // A rapid re-tap must not let an older flip's revert land under a newer one (the History
     // copy glyph's generation guard, same reason).
     private int _copyFeedbackGeneration;
@@ -283,14 +286,9 @@ public sealed class AudioTranscribePage : Page
             {
                 var items = await e.DataView.GetStorageItemsAsync();
                 var file = items.OfType<Windows.Storage.StorageFile>().FirstOrDefault();
+                // TranscribeFileAsync refuses an unsupported type itself (TRN-76).
                 if (file != null)
-                {
-                    var ext = global::System.IO.Path.GetExtension(file.Path).ToLowerInvariant();
-                    if (ext is ".wav" or ".mp3" or ".m4a" or ".flac" or ".ogg")
-                        await TranscribeFileAsync(file.Path);
-                    else
-                        _statusText!.Text = "Unsupported file format. Use WAV, MP3, M4A, FLAC, or OGG.";
-                }
+                    await TranscribeFileAsync(file.Path);
             }
         };
 
@@ -473,11 +471,8 @@ public sealed class AudioTranscribePage : Page
     private async Task SelectAndTranscribeAsync()
     {
         var picker = new Windows.Storage.Pickers.FileOpenPicker();
-        picker.FileTypeFilter.Add(".wav");
-        picker.FileTypeFilter.Add(".mp3");
-        picker.FileTypeFilter.Add(".m4a");
-        picker.FileTypeFilter.Add(".flac");
-        picker.FileTypeFilter.Add(".ogg");
+        foreach (var ext in AudioFileProcessor.SupportedExtensions)
+            picker.FileTypeFilter.Add(ext);
         picker.SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.MusicLibrary;
 
         var mainWindow = App.MainWindow;
@@ -502,6 +497,17 @@ public sealed class AudioTranscribePage : Page
             // silently. An active control that discards input is worse than a disabled one; say so.
             if (_statusText is not null)
                 _statusText.Text = "Already transcribing — cancel the current file first.";
+            return;
+        }
+
+        // TRN-76: refused here, before any state changes, for every entry point — the drop zone and
+        // the picker (whose filter a typed file name gets past). The converter keeps its own guard as
+        // the backstop; this check is what keeps the refusal out of the failure log.
+        if (!AudioFileProcessor.IsSupportedFormat(filePath))
+        {
+            Logger.Information("File transcription refused: unsupported file type {Extension}",
+                global::System.IO.Path.GetExtension(filePath));
+            _statusText!.Text = UnsupportedFormatMessage;
             return;
         }
 
@@ -857,6 +863,12 @@ public sealed class AudioTranscribePage : Page
                 break;
             case Helpers.GpuSelfTestRefusedException refused:
                 Logger.Warning("Audio file transcription refused: {Reason} (TRN-64)", refused.Kind);
+                break;
+            case UnsupportedAudioFormatException unsupported:
+                // TRN-76 backstop: TranscribeFileAsync refuses these before conversion, so this arm
+                // is reached only if that check is bypassed. A user's file choice, never our defect.
+                Logger.Warning("Audio file transcription refused: unsupported file type {Extension}",
+                    unsupported.Extension);
                 break;
             case global::System.Net.Http.HttpRequestException or TimeoutException:
                 Logger.Warning("Audio file transcription failed: {ErrorType}: {ErrorMessage}",

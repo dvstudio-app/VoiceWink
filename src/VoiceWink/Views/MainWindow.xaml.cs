@@ -29,13 +29,25 @@ public sealed partial class MainWindow : Window
     /// the once-per-session License-page jump is not SPENT on a navigation that cannot land.</summary>
     public bool IsOnboarding => _isOnboarding;
     private bool _isRetryingNavigation;
-    private readonly List<Border> _navItems = new();
+    // UI-25: Buttons, not Borders — a Border takes no keyboard focus and is not announced as a
+    // control, so the sidebar could not be reached from the keyboard or a screen reader (A11Y-1).
+    private readonly List<Button> _navItems = new();
 
     // UPD-1b: the "update available" dot on the Updates nav entry. Held as a reference so
     // it can be toggled when a background poll fires; the bool is the source of truth so a
     // sidebar rebuild (CreateNavItem) re-applies the current state to a fresh element.
+    // UI-25: the same dot on the "More" header, which hides the Updates entry while collapsed.
     private Border? _updatesBadge;
+    private Border? _moreBadge;
     private bool _updatesBadgeOn;
+
+    // UI-25: the collapsed "More" group (Metrics, License, Updates, About). The bool survives a
+    // sidebar rebuild (theme change) so the group keeps the state the user left it in; it starts
+    // collapsed each launch and opens itself when a page inside it is shown.
+    private StackPanel? _moreItems;
+    private Button? _moreHeader;
+    private FontIcon? _moreChevron;
+    private bool _moreExpanded;
 
     // LNC-14 (a): the one-time Microsoft Store rating line's session state. The WINDOW's, built once in
     // the constructor from the settings it already reads, and handed to every Home page the factory
@@ -51,24 +63,8 @@ public sealed partial class MainWindow : Window
         return Helpers.NativeInterop.IsWindowVisible(hwnd) && !Helpers.NativeInterop.IsIconic(hwnd);
     }
 
-    private record NavEntry(string Label, string Glyph, string Tag);
-
-    private static readonly NavEntry[] NavEntries =
-    [
-        new("Home",            "\uE80F", "home"),
-        new("History",         "\uE81C", "history"),
-        new("Models",          "\uE8F1", "models"),
-        new("AI Enhancement",  "\uE945", "enhancement"),
-        new("Dictionary",      "\uE82D", "dictionary"),
-        new("App Mode",      "\uE7AC", "appmode"),
-        new("Transcribe File", "\uE8E6", "transcribe"),
-        new("Metrics",         "\uE9D2", "metrics"),
-        new("License",         "\uE192", "license"),
-        new("Updates",         "\uE895", "updates"),
-        new("Settings",        "\uE713", "settings"),
-        new("About",           "\uE946", "about"),
-        new("Log Viewer", "\uE7BA", "logviewer"),
-    ];
+    // The sidebar's entries and groups live in Helpers/SidebarLayout (UI-25), which is also the
+    // NavigateToPage allowlist, so the two cannot drift.
 
     public MainWindow() : this(deferLicenseRoute: false) { }
 
@@ -326,8 +322,9 @@ public sealed partial class MainWindow : Window
         {
             _isOnboarding = false;
 
-            // Force-refresh palette and brush cache so BuildUI uses the correct theme
-            // (onboarding may have changed the theme while OnThemeChanged was suppressed)
+            // Force-refresh palette and brush cache so BuildUI uses the correct theme (a Windows
+            // theme change during setup arrives while OnThemeChanged is suppressed; setup itself has
+            // set no theme since LNC-15 removed its Theme step)
             AppTheme.EnsurePalette();
 
             // Refresh cached singletons with any settings the wizard changed. (The Enhancement
@@ -523,12 +520,26 @@ public sealed partial class MainWindow : Window
         // Sidebar nav stack
         var navStack = new StackPanel { Spacing = 2, Margin = new Thickness(8, 0, 8, 0) };
 
-        foreach (var entry in NavEntries)
+        foreach (var entry in SidebarLayout.Main)
         {
             var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag);
             navStack.Children.Add(item);
             _navItems.Add(item);
         }
+
+        // UI-25: the "More" group — a header button toggling the Visibility of an indented
+        // StackPanel (no Expander: root CLAUDE.md, WinUI constraint 2).
+        _moreHeader = CreateMoreHeader();
+        navStack.Children.Add(_moreHeader);
+        _moreItems = new StackPanel { Spacing = 2, Margin = new Thickness(12, 0, 0, 0) };
+        foreach (var entry in SidebarLayout.More)
+        {
+            var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag);
+            _moreItems.Children.Add(item);
+            _navItems.Add(item);
+        }
+        navStack.Children.Add(_moreItems);
+        SetMoreExpanded(_moreExpanded);
 
         // Sidebar panel
         var sidebar = new Border
@@ -571,7 +582,116 @@ public sealed partial class MainWindow : Window
 
     private static readonly HashSet<string> DisabledNavTags = [];
 
-    private Border CreateNavItem(string label, string glyph, string tag)
+    /// <summary>
+    /// A sidebar row as a plain <see cref="Button"/> (UI-25): keyboard focus, Enter/Space and the
+    /// "button" role come with the control, which a tapped <c>Border</c> never had (A11Y-1). The
+    /// look is the old row's — transparent at rest, the active-pill brush under hover and press —
+    /// set through the Button's own resource keys, so the template keeps its focus visual. The
+    /// ACTIVE row's background is assigned by <see cref="NavigateTo"/>, which the template honours
+    /// in its Normal state.
+    /// </summary>
+    private static Button CreateSidebarButton(UIElement content, string accessibleName)
+    {
+        var button = new Button
+        {
+            Content = content,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12, 9, 12, 9),
+            BorderThickness = new Thickness(0),
+            Background = AppTheme.TransparentBrush,
+        };
+        var hover = AppTheme.Brush(AppTheme.ActivePillBg);
+        button.Resources["ButtonBackgroundPointerOver"] = hover;
+        button.Resources["ButtonBackgroundPressed"] = hover;
+        button.Resources["ButtonBackgroundDisabled"] = AppTheme.TransparentBrush;
+        foreach (var key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled" })
+            button.Resources[key] = AppTheme.TransparentBrush;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, accessibleName);
+        return button;
+    }
+
+    private Button CreateMoreHeader()
+    {
+        var foreground = AppTheme.Brush(AppTheme.SubtleText);
+        var icon = new FontIcon
+        {
+            Glyph = SidebarLayout.MoreGlyph,
+            FontSize = 15,
+            Foreground = foreground,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var text = new TextBlock
+        {
+            Text = SidebarLayout.MoreLabel,
+            FontSize = 13,
+            Foreground = foreground,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(12, 0, 0, 0)
+        };
+        _moreChevron = new FontIcon
+        {
+            FontSize = 10,
+            Foreground = foreground,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 1, 0, 0)
+        };
+        // The Updates dot, repeated here so a pending update is not hidden by a collapsed group.
+        _moreBadge = CreateUpdatesDot();
+        var label = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Children = { icon, text, _moreBadge }
+        };
+        // The chevron sits at the row's right edge (owner, 2026-10-13): a two-column Grid, the
+        // label in the star column, and the button stretching its content to the full row.
+        var inner = new Grid
+        {
+            ColumnDefinitions =
+            {
+                new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                new ColumnDefinition { Width = GridLength.Auto }
+            },
+            Children = { label, _moreChevron }
+        };
+        Grid.SetColumn(_moreChevron, 1);
+        var button = CreateSidebarButton(inner, SidebarLayout.MoreLabel);
+        button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        button.Click += (_, _) => SetMoreExpanded(!_moreExpanded);
+        return button;
+    }
+
+    private void SetMoreExpanded(bool expanded)
+    {
+        _moreExpanded = expanded;
+        if (_moreItems != null)
+            _moreItems.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        if (_moreChevron != null)
+            _moreChevron.Glyph = expanded ? "\uE70E" : "\uE70D"; // ChevronUp / ChevronDown
+        if (_moreHeader != null)
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(
+                _moreHeader, expanded ? "Expanded" : "Collapsed");
+    }
+
+    private Border CreateUpdatesDot() => new()
+    {
+        Width = 8,
+        Height = 8,
+        CornerRadius = new CornerRadius(4),
+        Background = AppTheme.Brush(AppTheme.AccentBlue),
+        VerticalAlignment = VerticalAlignment.Center,
+        // Optical nudge DOWN: the row's height is driven by the taller FontIcon, and a
+        // line box's geometric centre sits ABOVE the lowercase text mass — so a
+        // geometrically-centred dot reads as "high" next to "Updates". A TOP margin
+        // lowers the dot under VerticalAlignment.Center, toward the text's x-height.
+        // (Corrects the inverted UPD-3b lift, which used a bottom margin and pushed the
+        // dot further up — the exact misalignment reported on 1.23.304/2026-07-05.)
+        Margin = new Thickness(8, 3, 0, 0),
+        Visibility = _updatesBadgeOn ? Visibility.Visible : Visibility.Collapsed
+    };
+
+    private Button CreateNavItem(string label, string glyph, string tag)
     {
         var isDisabled = DisabledNavTags.Contains(tag);
         var foreground = isDisabled ? AppTheme.DimText : AppTheme.SubtleText;
@@ -603,59 +723,24 @@ public sealed partial class MainWindow : Window
 
         // UPD-1b: append a small "update available" dot to the Updates entry. It's added as
         // an extra child of `inner` (NOT a reshape to a Grid) precisely so NavigateTo's
-        // `item.Child as StackPanel` active-styling walk keeps working — that walk only
+        // `item.Content as StackPanel` active-styling walk keeps working — that walk only
         // restyles FontIcon / TextBlock children and ignores this Border. Initial visibility
         // follows the persisted bool so a rebuild restores the current state.
         if (tag == "updates")
         {
-            _updatesBadge = new Border
-            {
-                Width = 8,
-                Height = 8,
-                CornerRadius = new CornerRadius(4),
-                Background = AppTheme.Brush(AppTheme.AccentBlue),
-                VerticalAlignment = VerticalAlignment.Center,
-                // Optical nudge DOWN: the row's height is driven by the taller FontIcon, and a
-                // line box's geometric centre sits ABOVE the lowercase text mass — so a
-                // geometrically-centred dot reads as "high" next to "Updates". A TOP margin
-                // lowers the dot under VerticalAlignment.Center, toward the text's x-height.
-                // (Corrects the inverted UPD-3b lift, which used a bottom margin and pushed the
-                // dot further up — the exact misalignment reported on 1.23.304/2026-07-05.)
-                Margin = new Thickness(8, 3, 0, 0),
-                Visibility = _updatesBadgeOn ? Visibility.Visible : Visibility.Collapsed
-            };
+            _updatesBadge = CreateUpdatesDot();
             inner.Children.Add(_updatesBadge);
         }
 
-        var border = new Border
-        {
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(12, 9, 12, 9),
-            Background = AppTheme.TransparentBrush,
-            Tag = tag,
-            Opacity = isDisabled ? 0.5 : 1.0,
-            Child = inner
-        };
+        var button = CreateSidebarButton(inner, label);
+        button.Tag = tag;
+        button.Opacity = isDisabled ? 0.5 : 1.0;
+        button.IsEnabled = !isDisabled;
+        // Hover and press come from the Button's resource keys (CreateSidebarButton); the active
+        // row's pill is the same brush, so hovering it changes nothing, as before.
+        button.Click += (_, _) => NavigateTo(tag);
 
-        if (!isDisabled)
-        {
-            // Hover effect
-            border.PointerEntered += (_, _) =>
-            {
-                if (tag != _currentTag)
-                    border.Background = AppTheme.Brush(AppTheme.ActivePillBg);
-            };
-            border.PointerExited += (_, _) =>
-            {
-                if (tag != _currentTag)
-                    border.Background = AppTheme.TransparentBrush;
-            };
-
-            // Click
-            border.Tapped += (_, _) => NavigateTo(tag);
-        }
-
-        return border;
+        return button;
     }
 
     /// <summary>
@@ -687,8 +772,11 @@ public sealed partial class MainWindow : Window
     private void SetUpdatesBadge(bool on)
     {
         _updatesBadgeOn = on;
+        var visibility = on ? Visibility.Visible : Visibility.Collapsed;
         if (_updatesBadge != null)
-            _updatesBadge.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            _updatesBadge.Visibility = visibility;
+        if (_moreBadge != null)
+            _moreBadge.Visibility = visibility;
     }
 
     /// <summary>
@@ -710,12 +798,9 @@ public sealed partial class MainWindow : Window
     /// </summary>
     public bool NavigateToPage(string tag)
     {
-        var allowed = new[] {
-            "home", "history", "models", "enhancement", "dictionary",
-            "appmode", "transcribe", "metrics", "license", "updates",
-            "settings", "about", "logviewer", "legal"
-        };
-        if (!allowed.Contains(tag))
+        // The sidebar's entries plus the pages reached from inside another page (Log Viewer from
+        // Settings, Legal from About) — one list with the sidebar, so the two cannot drift (UI-25).
+        if (!SidebarLayout.NavigableTags.Contains(tag))
         {
             Logger.Warning("NavigateToPage rejected unknown tag: {Tag}", tag);
             return false;
@@ -742,18 +827,29 @@ public sealed partial class MainWindow : Window
         // OnPendingUpdateVersionChanged; it disappears when the pending update is applied
         // or withdrawn, not when the page is viewed.
 
+        // UI-25: a page inside the collapsed "More" group opens it, so the active entry is never
+        // hidden — the License redirects (LIC-2 at startup, LNC-11's trial-ended jump) land with
+        // their entry in view. BEFORE the same-page return (Codex diff r1): a user who collapsed
+        // More while on License and is then sent to License again must still see it.
+        if (SidebarLayout.IsInMoreGroup(tag) && !_moreExpanded)
+            SetMoreExpanded(true);
+
         if (tag == _currentTag && prebuilt == null) return;
         _currentTag = tag;
 
         Logger.Debug("Navigation: {Tag}", tag);
+
+        // A page with no sidebar entry highlights the entry it is reached from (Log Viewer →
+        // Settings, Legal → About).
+        var highlightTag = SidebarLayout.HighlightTagFor(tag);
 
         // Update visual state of nav items
         foreach (var item in _navItems)
         {
             var itemTag = item.Tag as string;
             if (itemTag != null && DisabledNavTags.Contains(itemTag)) continue;
-            var isActive = itemTag == tag;
-            var inner = item.Child as StackPanel;
+            var isActive = itemTag == highlightTag;
+            var inner = item.Content as StackPanel;
             if (inner == null) continue;
 
             if (isActive)

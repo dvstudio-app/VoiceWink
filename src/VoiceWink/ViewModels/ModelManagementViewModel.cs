@@ -626,14 +626,23 @@ public partial class ModelManagementViewModel : ObservableObject
     /// </summary>
     public void SelectCloudModel(string modelName)
     {
-        SelectedModelName = modelName;
-        _settings.SetString(AppDefaults.SelectedModelName, modelName);
-
-        // Deselect all local models
-        foreach (var m in Models)
-            m.IsSelected = false;
+        // A cloud name matches no local row, so every local row is deselected.
+        PersistSelectionWithoutLoading(modelName);
 
         Logger.Information("Cloud model selected: {Name}", modelName);
+    }
+
+    /// <summary>
+    /// Stores <paramref name="modelName"/> as the selected model and marks the rows to match, without
+    /// loading it and without rebuilding the rows — a running download keeps its row (LNC-15: Express
+    /// setup selects the recommendation, then starts its download).
+    /// </summary>
+    internal void PersistSelectionWithoutLoading(string modelName)
+    {
+        SelectedModelName = modelName;
+        _settings.SetString(AppDefaults.SelectedModelName, modelName);
+        foreach (var m in Models)
+            m.IsSelected = ModelDiskReconciliation.IsSameModel(m.Name, modelName);
     }
 
     /// <summary>TRN-37: the delete runs its blocking half on the pool — TryDeleteBoth's bounded

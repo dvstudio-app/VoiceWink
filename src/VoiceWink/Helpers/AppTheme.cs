@@ -165,19 +165,20 @@ public static class AppTheme
         public Windows.UI.Color RowHoverBg;
     }
 
-    // The five contrast-bearing fields (the two backgrounds text lands on, the accent that used to
-    // be misused as text, and the two *Text colours) come from the WinRT-free ThemeSwatches so the
-    // test host can pin the shipped values (LIC-20); ThemeTextContrastTests also pins that every one
-    // of these ten lines names its own theme and field. The rest of each palette stays inline.
+    // The contrast-bearing fields (the backgrounds text lands on, the two accents, the *Text colours
+    // and SubtleText, plus ActivePillBg, the sidebar's hover) come from the WinRT-free ThemeSwatches
+    // so the test host can pin the shipped values (LIC-20, UI-24); ThemeTextContrastTests also pins
+    // that every one of these lines names its own theme and field. The rest of each palette stays inline.
     private static Windows.UI.Color FromSwatch(Rgb s) => ColorHelper.FromArgb(255, s.R, s.G, s.B);
+    private static Windows.UI.Color FromSwatch(Rgb s, byte alpha) => ColorHelper.FromArgb(alpha, s.R, s.G, s.B);
 
     private static readonly Palette DarkPalette = new()
     {
         ContentBg       = FromSwatch(ThemeSwatches.Dark.ContentBg),     // #0D0D0F
-        SidebarBg       = ColorHelper.FromArgb(255, 26, 26, 30),        // #1A1A1E
+        SidebarBg       = FromSwatch(ThemeSwatches.Dark.SidebarBg),     // #1A1A1E
         CardBg          = FromSwatch(ThemeSwatches.Dark.CardBg),        // #1E1E22
         CardBorderColor = ColorHelper.FromArgb(255, 42, 42, 46),        // #2A2A2E
-        AccentBlue      = ColorHelper.FromArgb(255, 0, 122, 255),       // #007AFF
+        AccentBlue      = FromSwatch(ThemeSwatches.Dark.AccentBlue),    // #007AFF
         AccentGreen     = ColorHelper.FromArgb(255, 48, 209, 88),       // #30D158
         AccentRed       = ColorHelper.FromArgb(255, 255, 69, 58),       // #FF453A
         AccentAmber     = FromSwatch(ThemeSwatches.Dark.AccentAmber),   // #FF9500
@@ -185,10 +186,10 @@ public static class AppTheme
         WarningText     = FromSwatch(ThemeSwatches.Dark.WarningText),   // = the accent in the dark theme (8.8:1 / 7.6:1)
         TextPrimary     = ColorHelper.FromArgb(255, 255, 255, 255),     // white
         TextSecondary   = ColorHelper.FromArgb(255, 200, 200, 200),
-        SubtleText      = ColorHelper.FromArgb(255, 142, 142, 147),     // #8E8E93
+        SubtleText      = FromSwatch(ThemeSwatches.Dark.SubtleText),    // #98989D
         DimText         = ColorHelper.FromArgb(255, 99, 99, 102),       // #636366
-        ActivePillBg    = ColorHelper.FromArgb(51, 0, 122, 255),        // AccentBlue 20%
-        HoverBg         = ColorHelper.FromArgb(255, 38, 38, 42),        // #26262A
+        ActivePillBg    = FromSwatch(ThemeSwatches.Dark.AccentBlue, ThemeSwatches.Dark.ActivePillAlpha), // AccentBlue 20%
+        HoverBg         = FromSwatch(ThemeSwatches.Dark.HoverBg),       // #26262A
         RowBg           = ColorHelper.FromArgb(255, 24, 24, 28),        // #18181C
         RowHoverBg      = ColorHelper.FromArgb(255, 34, 34, 38),        // #222226
     };
@@ -196,10 +197,10 @@ public static class AppTheme
     private static readonly Palette LightPalette = new()
     {
         ContentBg       = FromSwatch(ThemeSwatches.Light.ContentBg),    // #F2F2F7
-        SidebarBg       = ColorHelper.FromArgb(255, 230, 230, 235),     // #E6E6EB
+        SidebarBg       = FromSwatch(ThemeSwatches.Light.SidebarBg),    // #E6E6EB
         CardBg          = FromSwatch(ThemeSwatches.Light.CardBg),       // white
         CardBorderColor = ColorHelper.FromArgb(255, 210, 210, 215),     // #D2D2D7
-        AccentBlue      = ColorHelper.FromArgb(255, 0, 122, 255),       // #007AFF
+        AccentBlue      = FromSwatch(ThemeSwatches.Light.AccentBlue),   // #007AFF
         AccentGreen     = ColorHelper.FromArgb(255, 40, 185, 75),       // #28B94B
         AccentRed       = ColorHelper.FromArgb(255, 255, 59, 48),       // #FF3B30
         AccentAmber     = FromSwatch(ThemeSwatches.Light.AccentAmber),  // #FF9500 — borders and badges only: 1.97:1 as text
@@ -207,10 +208,10 @@ public static class AppTheme
         WarningText     = FromSwatch(ThemeSwatches.Light.WarningText),  // #9A5B00 — 4.86:1 on ContentBg, 5.43:1 on CardBg
         TextPrimary     = ColorHelper.FromArgb(255, 0, 0, 0),           // black
         TextSecondary   = ColorHelper.FromArgb(255, 60, 60, 67),        // #3C3C43
-        SubtleText      = ColorHelper.FromArgb(255, 142, 142, 147),     // #8E8E93
+        SubtleText      = FromSwatch(ThemeSwatches.Light.SubtleText),   // #58585C
         DimText         = ColorHelper.FromArgb(255, 174, 174, 178),     // #AEAEB2
-        ActivePillBg    = ColorHelper.FromArgb(40, 0, 122, 255),        // AccentBlue 15%
-        HoverBg         = ColorHelper.FromArgb(255, 220, 220, 225),     // #DCDCE1
+        ActivePillBg    = FromSwatch(ThemeSwatches.Light.AccentBlue, ThemeSwatches.Light.ActivePillAlpha), // AccentBlue 15%
+        HoverBg         = FromSwatch(ThemeSwatches.Light.HoverBg),      // #DCDCE1
         RowBg           = ColorHelper.FromArgb(255, 245, 245, 248),     // #F5F5F8
         RowHoverBg      = ColorHelper.FromArgb(255, 235, 235, 238),     // #EBEBEE
     };

@@ -38,15 +38,10 @@ internal static class LocalModelsSection
         // Running checks captured BEFORE their results are read, so a settle in between is not missed.
         var runningChecks = LocalModelCatalog.All.ToDictionary(e => e.Tier,
             e => engine is not null && store.IsInstalled(e.Id) ? engine.WhenFirstUseCheckSettledAsync(e.Id) : null);
-        // The speed this PC measured for each installed model; null where nothing was measured.
-        // A deleted model's measurement still calibrates the others: deleting it must not move them.
-        var measuredMs = LocalModelCatalog.All.ToDictionary(e => e.Tier,
-            e => engine?.MeasuredSpeedMs(e.Id));
+        var (speedProfile, measuredMs) = ProfileAndMeasurements(engine, profile);
         // Every row on one scale for THIS PC (owner rule, 2026-10-03): measured where a check ran,
         // estimated from the PC type and calibrated by the measured rows everywhere else.
         var arm64 = ModelRatings.IsArm64Os;
-        // GPU acceleration off: the graphics card plays no part, so neither estimates nor floors count it.
-        var speedProfile = engine?.RunsOnProcessor == true ? profile with { LargestDedicatedVramBytes = null } : profile;
         var speeds = LocalModelRecommendation.Speeds(speedProfile, arm64, tier => measuredMs[tier]);
         var recommended = LocalModelRecommendation.Recommend(speedProfile, tier => measuredMs[tier], arm64);
         // The Models page's card spacing.
@@ -94,6 +89,31 @@ internal static class LocalModelsSection
         }
         return rows;
     }
+
+    /// <summary>
+    /// The built-in model recommended for this PC, measured where a check ran — or null when none
+    /// fits (under the memory floor, or memory unreadable). Express setup downloads only this
+    /// (LNC-15): unlike the AI step, which offers the catalog default when nothing fits
+    /// (<see cref="LocalModelRecommendation.SetupOffer"/>), it does not ask, so it never puts a model
+    /// that does not fit on a PC.
+    /// </summary>
+    internal static string? RecommendedPick(OnThisPcEngine? engine, LocalHardwareProfile profile)
+    {
+        var (speedProfile, measuredMs) = ProfileAndMeasurements(engine, profile);
+        var tier = LocalModelRecommendation.Recommend(speedProfile, t => measuredMs[t], ModelRatings.IsArm64Os);
+        return tier is { } t ? LocalModelCatalog.All.First(e => e.Tier == t).Id : null;
+    }
+
+    /// <summary>
+    /// The profile the speed estimates and floors read, and the speed this PC measured for each
+    /// model (null where nothing was measured). GPU acceleration off: the graphics card plays no
+    /// part, so neither estimates nor floors count it. A deleted model's measurement still
+    /// calibrates the others: deleting it must not move them.
+    /// </summary>
+    private static (LocalHardwareProfile SpeedProfile, IReadOnlyDictionary<LocalModelTier, int?> MeasuredMs)
+        ProfileAndMeasurements(OnThisPcEngine? engine, LocalHardwareProfile profile)
+        => (engine?.RunsOnProcessor == true ? profile with { LargestDedicatedVramBytes = null } : profile,
+            LocalModelCatalog.All.ToDictionary(e => e.Tier, e => engine?.MeasuredSpeedMs(e.Id)));
 
     /// <summary>Rebuilds the rows once a running first-use check has settled, so its time shows.</summary>
     private static async void RefreshWhenMeasured(Task running, Action measured)

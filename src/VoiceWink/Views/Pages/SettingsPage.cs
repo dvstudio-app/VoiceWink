@@ -1571,6 +1571,13 @@ public sealed class SettingsPage : Page
             out crashReportingSwitch);
         StripCardBorder(crashReporting);
 
+        // UI-25 (owner, 2026-10-13): the Log Viewer left the sidebar — most users never need it —
+        // and opens from here, beside the toggles that decide what the logs hold.
+        var openLogViewerButton = AppTheme.CreateSecondaryButton("Open Log Viewer",
+            (_, _) => App.MainWindowInstance?.NavigateToPage("logviewer"));
+        openLogViewerButton.HorizontalAlignment = HorizontalAlignment.Left;
+        openLogViewerButton.Margin = new Thickness(0, 8, 0, 0);
+
         var content = new StackPanel { Spacing = 4 };
         content.Children.Add(sectionHeader);
         content.Children.Add(promptTraceToggle);
@@ -1578,6 +1585,7 @@ public sealed class SettingsPage : Page
         content.Children.Add(keepRecordingsToggle);
         content.Children.Add(crashReporting);
         content.Children.Add(consentError);
+        content.Children.Add(openLogViewerButton);
         return AppTheme.CreateCard(content);
     }
 

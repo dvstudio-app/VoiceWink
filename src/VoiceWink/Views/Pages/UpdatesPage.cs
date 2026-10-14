@@ -49,9 +49,9 @@ public sealed class UpdatesPage : Page
     private TextBlock? _toggleWarningBlock;
 
     /// <summary>
-    /// The one wording for the automatic-install option. Shared verbatim with the onboarding
-    /// Updates step (ONB-3's "one option, one description" rule), and it names the restart
-    /// because that is the part a user would otherwise be surprised by.
+    /// The one wording for the automatic-install option, and it names the restart because that is
+    /// the part a user would otherwise be surprised by. Shared with setup's Updates step (Advanced
+    /// setup) under ONB-3's "one option, one description" rule.
     /// </summary>
     internal const string InstallToggleDescription =
         "Download and install updates in the background. VoiceWink restarts to finish — " +
@@ -165,8 +165,7 @@ public sealed class UpdatesPage : Page
             onChanged: on => _vm.AutomaticUpdateCheckEnabled = on,
             out _checkToggleSwitch);
 
-        // UPD-4b. Copy is character-identical to the onboarding step's — ONB-3's rule: one
-        // option, one description, so the wizard and Settings cannot describe it differently.
+        // UPD-4b. The copy is InstallToggleDescription, the one wording for this option.
         var installToggle = AppTheme.CreateToggleSetting(
             title: "Install updates automatically",
             description: InstallToggleDescription,

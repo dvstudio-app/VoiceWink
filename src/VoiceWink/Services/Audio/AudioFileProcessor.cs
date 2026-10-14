@@ -68,7 +68,7 @@ public sealed class AudioFileProcessor
             throw new FileNotFoundException("Audio file not found.", fullPath);
 
         if (!IsSupportedFormat(fullPath))
-            throw new ArgumentException($"Unsupported audio format: {Path.GetExtension(fullPath)}", nameof(inputPath));
+            throw new UnsupportedAudioFormatException(Path.GetExtension(fullPath), nameof(inputPath));
 
         var outputDir = _outputDir();
 
@@ -460,9 +460,32 @@ public sealed class AudioFileProcessor
         };
     }
 
-    public static bool IsSupportedFormat(string filePath)
-    {
-        var ext = Path.GetExtension(filePath).ToLowerInvariant();
-        return ext is ".wav" or ".mp3" or ".m4a" or ".flac" or ".ogg" or ".wma" or ".aac";
-    }
+    /// <summary>
+    /// The ONE list of file types Audio Transcribe accepts — the file picker's filter, the drop
+    /// handler's check and the converter's guard all read it (TRN-76). There used to be three
+    /// copies: the picker and the drop zone offered five types while the converter accepted seven,
+    /// and a type outside all of them reached the converter and was reported to Sentry as an Error.
+    /// </summary>
+    public static IReadOnlyList<string> SupportedExtensions { get; } =
+        [".wav", ".mp3", ".m4a", ".flac", ".ogg", ".wma", ".aac"];
+
+    /// <summary>The supported types as the user reads them: "WAV, MP3, … or AAC".</summary>
+    public static string SupportedFormatsText { get; } =
+        string.Join(", ", SupportedExtensions.SkipLast(1).Select(e => e.TrimStart('.').ToUpperInvariant()))
+        + " or " + SupportedExtensions[^1].TrimStart('.').ToUpperInvariant();
+
+    public static bool IsSupportedFormat(string filePath) =>
+        SupportedExtensions.Contains(Path.GetExtension(filePath).ToLowerInvariant());
+}
+
+/// <summary>
+/// A file whose type is not in <see cref="AudioFileProcessor.SupportedExtensions"/>. A user-input
+/// outcome, not a defect, so never logged at Error (TRN-76): Audio Transcribe refuses such a file
+/// before converting it, and logs this exception at Warning only if that check is bypassed. Still an
+/// <see cref="ArgumentException"/> so existing catches keep working.
+/// </summary>
+public sealed class UnsupportedAudioFormatException(string extension, string paramName)
+    : ArgumentException($"Unsupported audio format: {extension}", paramName)
+{
+    public string Extension { get; } = extension;
 }

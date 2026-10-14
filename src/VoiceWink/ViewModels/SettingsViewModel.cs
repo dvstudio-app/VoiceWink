@@ -451,6 +451,10 @@ public partial class SettingsViewModel : ObservableObject
         // repopulates it, and until then the static rules answer.
         _settings.Remove(Services.AIEnhancement.AIEnhancementService.ImageCapabilitiesKey);
 
+        // LNC-15: an Express setup download still pending would otherwise resume at the next start
+        // and switch AI clean-up on over the reset.
+        _settings.Remove(AppDefaults.ExpressBuiltInPending);
+
         Logger.Information("All settings reset to defaults");
     }
 }

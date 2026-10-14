@@ -532,6 +532,14 @@ public static class AppDefaults
     public const string LocalServerGraphicsOfferedModels = "localServerGraphicsOfferedModels";
 
     /// <summary>
+    /// LNC-15: the built-in AI model Express setup started downloading, until it is in and taken
+    /// into use (<c>BuiltInModelAdoption</c>), so a restart mid-download starts it again. App-managed,
+    /// NOT in <see cref="Defaults"/>: a pending job, not a preference — so export/import never
+    /// carries it, and "Reset all settings" removes it explicitly.
+    /// </summary>
+    public const string ExpressBuiltInPending = "expressBuiltInPending";
+
+    /// <summary>
     /// The speed stars the Models page's local rows and the built-in model rows last showed
     /// (<see cref="Helpers.SpeedRatingsNotice"/>), so a change is announced once. App-managed, NOT in
     /// <see cref="Defaults"/>: a record of what was shown, not a preference.

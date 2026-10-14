@@ -180,8 +180,9 @@ public sealed class AutoUpdateInstaller : IDisposable
     /// <para>Called by <c>UpdateViewModel</c>'s toggle hooks (the Settings → Updates surface, the
     /// one place a user can watch a download and opt out). The poll REMAINS as the backstop for
     /// writers that cannot reach this class without a forbidden locator call — onboarding's
-    /// relaunch-wizard path — where a residual window of at most one poll interval is the accepted
-    /// cost; the service's final token check before the updater hand-off bounds it there.</para>
+    /// relaunch-wizard path (the Updates step, Advanced setup only since LNC-15) and a settings
+    /// import — where a residual window of at most one poll interval is the accepted cost; the
+    /// service's final token check before the updater hand-off bounds it there.</para>
     /// </summary>
     public void NotifyPreferencesChanged()
     {
@@ -282,8 +283,8 @@ public sealed class AutoUpdateInstaller : IDisposable
             // It runs on the THREAD POOL, deliberately independent of the UI pump (Codex diff
             // r8). The first version was a WhenAny loop inside this method resuming with
             // ConfigureAwait(true) — so any long UI-thread block suspended it, and the worst
-            // offender is the opt-out gesture itself: onboarding's toggle flushes settings
-            // synchronously ON the UI thread, which parked the very poll that was supposed to
+            // offender is an opt-out that flushes settings synchronously ON the UI thread (setup's
+            // Updates toggle does), which parked the very poll that was supposed to
             // observe the opt-out while the download completed on a worker and handed off. The
             // "at most one poll interval" bound only holds if nothing on the UI thread can delay
             // the watcher; everything it does (settings reads, a CTS cancel) is thread-safe.

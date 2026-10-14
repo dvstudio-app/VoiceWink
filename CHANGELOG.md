@@ -17,6 +17,18 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.114.411] - 2026-10-14
+
+- A shorter sidebar: Settings, Metrics, License, Updates and About sit under More, and the Log Viewer opens from Settings → Diagnostics.
+- The sidebar can be used with the keyboard and a screen reader.
+
+- New Express setup: choose a language and a hotkey, and the speech and AI models download by themselves.
+
+- Turning off "Mute system audio while recording" during a recording no longer leaves the sound muted.
+
+- Audio Transcribe now accepts WMA and AAC files, and names the supported types when a file can't be used.
+- Muting system audio while recording keeps working after the muted speakers or headset are unplugged.
+
 ## [1.113.410] - 2026-10-12
 
 - OpenRouter image models now offer every ratio and size they publish, incl. 9:19.5, 20:9, 5:7, 768 and 1.5K.

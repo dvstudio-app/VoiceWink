@@ -858,6 +858,27 @@ public partial class App : Application, Services.IAppLifetime
             sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore>(),
             sp.GetRequiredService<IHttpClientFactory>(),
             gpuAccelerationEnabled ? global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Auto : global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Cpu));
+        // LNC-15: Express setup's background download of the built-in AI model, taken into use once
+        // it is in — through the AI Enhancement page's own view model (a row's Select, a finished
+        // download's list refresh, the switch), so an open page shows the change and the switch's
+        // handler activates a prompt when none is active. Resolved at use: the singleton view model
+        // is built on the UI thread, where the adoption runs.
+        services.AddSingleton(sp =>
+        {
+            var engine = sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine>();
+            return new global::VoiceWink.Services.AIEnhancement.LocalEngine.BuiltInModelAdoption(
+                sp.GetRequiredService<SettingsService>(),
+                sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore>(),
+                useModel: id =>
+                {
+                    var enhancementVm = sp.GetRequiredService<EnhancementViewModel>();
+                    enhancementVm.UseBuiltInModel(id);
+                    enhancementVm.RefreshOnThisPcModels();
+                    enhancementVm.ReloadFromSettings();
+                    enhancementVm.IsEnabled = true;
+                },
+                startFirstUseCheck: engine.StartFirstUseCheck);
+        });
         // Local-runtime seam: every local model goes through LocalModelPreparer, which is the ONE
         // authority on which engine serves a model name — the five call sites that used to reach
         // WhisperTranscriptionService directly now ask the preparer instead.
@@ -1196,13 +1217,10 @@ public partial class App : Application, Services.IAppLifetime
             // runtime startup. The handler is idempotent — guarded by the
             // Interlocked flag inside StartGatedRuntimeServices.
             //
-            // UPD-4b: the completion also reconciles the update scheduler with the wizard's
-            // check-updates choice. This exists for the Settings → "Relaunch setup wizard" path,
-            // where the scheduler is ALREADY RUNNING and the gated start below is a no-op — a
-            // user who launched with checks off and enabled them in the re-run would otherwise
-            // get no polling until the next launch. On a FIRST run it is a harmless re-derive
-            // (Start() just armed from the same setting). Wizard choices apply at Done, like
-            // every other onboarding decision — not per toggle-flip mid-wizard.
+            // UPD-4b: the completion also reconciles the update scheduler with the stored
+            // check-updates setting, for the wizard's Updates step (Advanced setup only since
+            // LNC-15) on a Settings → "Relaunch setup wizard" run, where the scheduler is ALREADY
+            // RUNNING.
             _mainWindow.OnboardingCompleted += () =>
             {
                 StartGatedRuntimeServices();
@@ -2761,6 +2779,18 @@ public partial class App : Application, Services.IAppLifetime
         // true.
         _licenseRevalidation = Services.GetRequiredService<LicenseRevalidationScheduler>();
         _licenseRevalidation.Start();
+
+        // LNC-15: resume a built-in AI model download Express setup started in an earlier session
+        // (on the UI thread, which the model store's progress needs; once per process). Fail-soft:
+        // resolving the store creates the Models folder, and a start must never fail on a resume.
+        try
+        {
+            _ = Services.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.BuiltInModelAdoption>().ResumePending();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning("Express setup: could not resume the built-in model download ({ErrorType})", ex.GetType().Name);
+        }
 
         // REL-4: show the "What's new" dialog after an update (fire-and-forget; self-guarded).
         _ = MaybeShowWhatsNewAsync();

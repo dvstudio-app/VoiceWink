@@ -16,10 +16,11 @@ using VoiceWink.ViewModels;
 namespace VoiceWink.Views.Pages;
 
 /// <summary>
-/// Onboarding wizard — 13-step flow: welcome, legal, theme, language, transcription
-/// choice, transcription config, AI enhancement, hotkeys, clipboard behavior,
-/// startup, license, crash reporting, done. All UI built in code to bypass
-/// PRI/XAML resource loading issues. Styled with AppTheme dark palette.
+/// Onboarding wizard — two paths since LNC-15 (2026-10-13), chosen on Welcome
+/// (<see cref="OnboardingStepFlow.Steps"/>): Express shows welcome, legal, language, hotkeys,
+/// license, help improve and done, and fills in the speech model and AI clean-up itself;
+/// Advanced also shows transcription choice, transcription config and AI enhancement. All UI
+/// built in code to bypass PRI/XAML resource loading issues.
 ///
 /// <para>The Legal step at index 1 (LGL-1) is the GDPR Art. 13 acceptance gate.
 /// It runs before any preference write so the user is informed of controller
@@ -60,8 +61,6 @@ public sealed class OnboardingPage : Page
 
     // Session state — preserved across Back/Forward navigation
     private string? _selectedHotkey;
-    private string? _selectedPasteLastHotkey;
-    private string? _selectedRedoLastHotkey;
     private string _selectedLanguage = "auto";
     private bool _useCloudTranscription;
     private List<Func<Task<bool>>>? _enhancementKeyValidators;
@@ -73,17 +72,22 @@ public sealed class OnboardingPage : Page
     // Step panel cache — preserves user selections when navigating Back
     private readonly Dictionary<int, UIElement> _stepCache = new();
 
-    // 14 since UPD-4b (2026-08-08) added the Updates step at index 12, immediately after Crash
-    // Reporting — the two network-egress consent screens sit together, and inserting there (rather
-    // than beside Startup Behavior) left the License step's cache exclusion and every existing
-    // ShowStep target untouched.
-    private const int TotalSteps = 14;
-
-    // The "Done" step is always the last one by index. Derive from TotalSteps so
-    // the caching logic automatically adapts when a step is added or removed.
-    private const int DoneStepIndex = TotalSteps - 1;
+    // Which steps a run shows lives in OnboardingStepFlow (LNC-15: Express and Advanced). The step
+    // indices are this page's switch cases and were NOT renumbered when Theme (2), Clipboard (8),
+    // Startup (9) and Updates (12) left both paths.
+    private const int DoneStepIndex = OnboardingStepFlow.DoneStepIndex;
 
     private const int AiEnhancementStepIndex = 6;
+
+    // Chosen on Welcome and re-chosen if the user goes Back there; not frozen (LNC-15). Express is
+    // the card Welcome opens on.
+    private SetupPath _path = SetupPath.Express;
+
+    // LNC-15: Express setup's built-in AI download, which must outlive this page, and the two
+    // singletons its finish writes the speech model and the AI provider through.
+    private readonly Services.AIEnhancement.LocalEngine.BuiltInModelAdoption _builtInAdoption;
+    private readonly ModelManagementViewModel _speechModels;
+    private readonly Services.AIEnhancement.AIEnhancementService _enhancement;
 
     /// <summary>Raised when the user completes the onboarding wizard.</summary>
     public event Action? OnboardingCompleted;
@@ -101,6 +105,11 @@ public sealed class OnboardingPage : Page
         // The AI step's built-in models (2026-10-04): the model store and the engine host, which
         // this view model already carries for the AI Enhancement page.
         _enhancementModels = App.Services.GetRequiredService<EnhancementViewModel>();
+        // LNC-15: what Express setup's finish writes through — read here, with the page's other
+        // dependencies, rather than inside the finish handler (the seam described below).
+        _builtInAdoption = App.Services.GetRequiredService<Services.AIEnhancement.LocalEngine.BuiltInModelAdoption>();
+        _speechModels = App.Services.GetRequiredService<ModelManagementViewModel>();
+        _enhancement = App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>();
         // Read ONCE, here, with the page's other dependencies: a CPU/build-flag probe, not I/O.
         // Fail-soft — anything that stops us answering means "no", which lands on the Whisper
         // backstop rather than throwing during a flow that has no user to report to yet.
@@ -175,11 +184,12 @@ public sealed class OnboardingPage : Page
 
     private void ShowStep(int step)
     {
-        // ONB-2: the legal step disappears from NAVIGATION once acceptance is recorded and the
-        // bundle is healthy. Resolved here rather than at each caller so every entry point — the
-        // Welcome button, Back from Theme, a re-show — goes through one rule.
-        var skipLegal = SkipLegalStep;
-        var resolved = OnboardingStepFlow.Resolve(step, _step, skipLegal);
+        // ONB-2 + LNC-15: a step the run does not show — the legal step once acceptance is recorded
+        // and the bundle is healthy, and the steps the chosen path leaves out — is passed over in
+        // the direction of travel. Resolved here rather than at each caller so every entry point —
+        // a Continue, a Back button's `_step - 1`, a re-show — goes through one rule.
+        var steps = OnboardingStepFlow.Steps(_path, SkipLegalStep);
+        var resolved = OnboardingStepFlow.Resolve(step, _step, steps);
         if (resolved != step)
         {
             ShowStep(resolved);
@@ -189,15 +199,18 @@ public sealed class OnboardingPage : Page
         _step = step;
         _contentPanel.Children.Clear();
 
-        int displayStep = OnboardingStepFlow.DisplayNumber(step, skipLegal);
-        _contentPanel.Children.Add(new TextBlock
+        // Welcome carries the path choice, so no total exists yet: no counter there.
+        if (step != OnboardingStepFlow.WelcomeStepIndex)
         {
-            Text = $"Step {displayStep} of {OnboardingStepFlow.EffectiveTotal(TotalSteps, skipLegal)}",
-            FontSize = 14,
-            Foreground = AppTheme.Brush(AppTheme.SubtleText),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 8)
-        });
+            _contentPanel.Children.Add(new TextBlock
+            {
+                Text = $"Step {OnboardingStepFlow.DisplayNumber(step, steps)} of {OnboardingStepFlow.Total(steps)}",
+                FontSize = 14,
+                Foreground = AppTheme.Brush(AppTheme.SubtleText),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+        }
 
         // Welcome (0), Legal (1), License (10), and Done (DoneStepIndex) are not
         // cached.
@@ -225,18 +238,15 @@ public sealed class OnboardingPage : Page
         {
             case 0: BuildWelcomeStep(); break;
             case 1: BuildLegalStep(); break;
-            case 2: BuildThemeStep(); break;
             case 3: BuildLanguageStep(); break;
             case 4: BuildTranscriptionChoiceStep(); break;
             case 5: BuildTranscriptionConfigStep(); break;
             case AiEnhancementStepIndex: BuildAiEnhancementStep(); break;
             case 7: BuildHotkeyStep(); break;
-            case 8: BuildClipboardStep(); break;
-            case 9: BuildStartupStep(); break;
             case 10: BuildLicenseStep(); break;
             case 11: BuildCrashReportingStep(); break;
-            case 12: BuildUpdatesStep(); break;
-            case 13: BuildDoneStep(); break;
+            case OnboardingStepFlow.UpdatesStepIndex: BuildUpdatesStep(); break;
+            case DoneStepIndex: BuildDoneStep(); break;
         }
 
         // Wrap newly added children in a container for caching
@@ -264,8 +274,35 @@ public sealed class OnboardingPage : Page
             "Voice-to-text for Windows. Record, transcribe, and paste at your cursor.",
             titleFontSize: 28, subtitleFontSize: 16);
 
+        // LNC-15 (owner, 2026-10-13): two paths. Express asks the language and the hotkey and sets
+        // up the rest; Advanced also asks the speech model and AI clean-up. Welcome is never cached,
+        // so a Back to it shows the path this run last chose.
+        var expressBorder = CreateSelectableOption(
+            "",
+            "Express setup",
+            "Choose a language and a hotkey. Everything else is set up for you.",
+            _path == SetupPath.Express);
+        var advancedBorder = CreateSelectableOption(
+            "",
+            "Advanced setup",
+            "Also choose the speech model and AI enhancement.",
+            _path == SetupPath.Advanced);
+
+        void Choose(SetupPath path)
+        {
+            _path = path;
+            UpdateOptionStyle(expressBorder, path == SetupPath.Express);
+            UpdateOptionChildColors(expressBorder, path == SetupPath.Express);
+            UpdateOptionStyle(advancedBorder, path == SetupPath.Advanced);
+            UpdateOptionChildColors(advancedBorder, path == SetupPath.Advanced);
+        }
+        expressBorder.Tapped += (_, _) => Choose(SetupPath.Express);
+        advancedBorder.Tapped += (_, _) => Choose(SetupPath.Advanced);
+        _contentPanel.Children.Add(expressBorder);
+        _contentPanel.Children.Add(advancedBorder);
+
         var startBtn = AppTheme.CreateAccentButton("Get Started");
-        startBtn.Tapped += (_, _) => ShowStep(1);
+        startBtn.Tapped += (_, _) => ShowStep(OnboardingStepFlow.LegalStepIndex);
         AddButtonRow(startBtn);
     }
 
@@ -346,28 +383,22 @@ public sealed class OnboardingPage : Page
                 Margin = new Thickness(0, 0, 0, 8),
             });
             var skipBtn = AppTheme.CreateAccentButton("Continue");
-            skipBtn.Tapped += (_, _) => ShowStep(2);
+            skipBtn.Tapped += (_, _) => ShowStep(3);
             AddButtonRow(CreateBackButton(), skipBtn);
             return;
         }
 
-        // The terms render inline and scroll within the page's single outer ScrollViewer. The previous
-        // design nested an inner height-capped ScrollViewer here, but its fixed chrome reservation
-        // under-counted the header card + agree-checkbox + button row on smaller / HiDPI windows,
-        // pushing the footer below the fold (UAT clip) and producing a double scrollbar. One scroll
-        // region = no double-scroll, and the checkbox + buttons can never be clipped off the bottom.
-        var termsPanel = new StackPanel
-        {
-            Spacing = 16,
-            Children =
-            {
-                AppTheme.CreateSectionHeader($"EULA · v{legal.Eula!.Version}"),
-                LegalMarkdownRenderer.Render(legal.Eula!.Body),
-                AppTheme.CreateSectionHeader($"Privacy Policy · v{legal.Privacy!.Version}"),
-                LegalMarkdownRenderer.Render(legal.Privacy!.Body),
-            },
-        };
-        _contentPanel.Children.Add(termsPanel);
+        // ONB-12 (tester feedback, 2026-10-13): the checkbox sat below both full documents, a long
+        // scroll away. Each document now sits behind its own link, folded until opened, so the
+        // checkbox and buttons are right under the header. The documents still render inline in the
+        // page's one scroll region when opened — the nested height-capped ScrollViewer an earlier
+        // design used clipped the footer on small / HiDPI windows and gave a double scrollbar.
+        // Not auto-scrolled or hidden: a link per document, with its version, opens the full text.
+        // The terms text is unchanged, so nobody is re-prompted.
+        _contentPanel.Children.Add(LegalDocumentToggle(
+            $"the EULA (v{legal.Eula!.Version})", legal.Eula!.Body));
+        _contentPanel.Children.Add(LegalDocumentToggle(
+            $"the Privacy Policy (v{legal.Privacy!.Version})", legal.Privacy!.Body));
 
         var checkbox = new CheckBox
         {
@@ -401,7 +432,7 @@ public sealed class OnboardingPage : Page
             try
             {
                 legal.Accept();
-                ShowStep(2);
+                ShowStep(3);
             }
             catch (Exception ex)
             {
@@ -418,85 +449,46 @@ public sealed class OnboardingPage : Page
         AddButtonRow(CreateBackButton(), continueBtn, declineBtn);
     }
 
-    // ────────────────────────────────────────────────────────────────
-    // Step 2: Theme
-    // ────────────────────────────────────────────────────────────────
-
-    private void BuildThemeStep()
+    /// <summary>
+    /// ONB-12: a link that opens one legal document inline below it (rendered on first open) and
+    /// folds it again. <paramref name="documentName"/> ("the EULA (v5)") names the document and its
+    /// version; the link reads "Read …" while folded and "Hide …" while open.
+    /// </summary>
+    private static StackPanel LegalDocumentToggle(string documentName, IReadOnlyList<MarkdownBlock> body)
     {
-        AddStepHeader("Choose Your Theme",
-            "Pick a look that suits you. You can change this later in Settings.");
-
-        var currentTheme = _settings.GetString(AppDefaults.ThemeMode, "System");
-        var themes = new[] { "System", "Dark", "Light" };
-        var labels = new[] { "System Default", "Dark", "Light" };
-        var icons = new[] { "\uE770", "\uE708", "\uE706" }; // Monitor, Moon, Sun
-        var descriptions = new[] { "Follows your Windows setting", "Easy on the eyes", "Classic bright look" };
-
-        for (int i = 0; i < themes.Length; i++)
+        var host = new StackPanel { Spacing = 8 };
+        var document = new StackPanel { Visibility = Visibility.Collapsed };
+        host.Children.Add(DisclosureLink($"Read {documentName}", 13, text =>
         {
-            var theme = themes[i];
-            var isSelected = theme == currentTheme;
+            if (document.Children.Count == 0)
+                document.Children.Add(LegalMarkdownRenderer.Render(body));
+            var open = document.Visibility != Visibility.Visible;
+            document.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+            text.Text = open ? $"Hide {documentName}" : $"Read {documentName}";
+        }));
+        host.Children.Add(document);
+        return host;
+    }
 
-            var iconBlock = new FontIcon
-            {
-                Glyph = icons[i],
-                FontSize = 20,
-                Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlue : AppTheme.TextSecondary),
-                Margin = new Thickness(0, 0, 12, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-
-            var textPanel = new StackPanel { Spacing = 2 };
-            textPanel.Children.Add(new TextBlock
-            {
-                Text = labels[i],
-                FontSize = 15,
-                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-                Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlue : AppTheme.TextSecondary)
-            });
-            textPanel.Children.Add(new TextBlock
-            {
-                Text = descriptions[i],
-                FontSize = 12,
-                Foreground = AppTheme.Brush(AppTheme.SubtleText)
-            });
-
-            var row = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                Children = { iconBlock, textPanel }
-            };
-
-            var border = new Border
-            {
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(20, 14, 20, 14),
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                Child = row
-            };
-            UpdateOptionStyle(border, isSelected);
-
-            border.Tapped += (_, _) =>
-            {
-                _settings.SetString(AppDefaults.ThemeMode, theme);
-                if (Enum.TryParse<ThemeMode>(theme, out var mode))
-                    AppTheme.SetTheme(mode);
-                // Update page-level theme and background
-                RequestedTheme = AppTheme.ElementTheme;
-                if (Content is Grid outerGrid)
-                    outerGrid.Background = AppTheme.Brush(AppTheme.ContentBg);
-                // Clear ALL cached steps so every page picks up new theme colors
-                _stepCache.Clear();
-                ShowStep(_step);
-            };
-
-            _contentPanel.Children.Add(border);
-        }
-
-        var themeNextBtn = AppTheme.CreateAccentButton("Continue");
-        themeNextBtn.Tapped += (_, _) => ShowStep(3);
-        AddButtonRow(CreateBackButton(), themeNextBtn);
+    /// <summary>
+    /// A link that opens or folds something on this page: an inline <c>Hyperlink</c>, so it takes
+    /// keyboard focus, answers Enter and reads as a link to a screen reader — the tap-only
+    /// <see cref="AppTheme.CreateActionLink"/> does neither (Codex plan r1 advisory), and these
+    /// links guard the legal texts and the consent details. <paramref name="onClick"/> gets the
+    /// link's text run so it can relabel it.
+    /// </summary>
+    private static TextBlock DisclosureLink(string text, double fontSize, Action<Microsoft.UI.Xaml.Documents.Run> onClick)
+    {
+        var run = new Microsoft.UI.Xaml.Documents.Run { Text = text };
+        var link = new Microsoft.UI.Xaml.Documents.Hyperlink
+        {
+            UnderlineStyle = Microsoft.UI.Xaml.Documents.UnderlineStyle.None,
+        };
+        link.Inlines.Add(run);
+        link.Click += (_, _) => onClick(run);
+        var block = new TextBlock { FontSize = fontSize };
+        block.Inlines.Add(link);
+        return block;
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -1432,9 +1424,10 @@ public sealed class OnboardingPage : Page
             : "for the best balance of speed and accuracy";
 
     /// <summary>Download size as onboarding prints it — MB, no decimals, matching the copy's tone.
-    /// Derived from the catalogue's exact byte count so it cannot drift from what is downloaded.</summary>
+    /// Derived from the catalogue's exact byte count so it cannot drift from what is downloaded.
+    /// A no-break space keeps "MB" on the number's line when the text wraps (owner, 2026-10-13).</summary>
     private static string FormatSize(TranscriptionModelInfo model) =>
-        $"{model.FileSizeBytes / 1_000_000} MB";
+        $"{model.FileSizeBytes / 1_000_000} MB";
 
     private void BuildLocalDetailPanel(StackPanel panel)
     {
@@ -1444,8 +1437,9 @@ public sealed class OnboardingPage : Page
 
         var infoText = new TextBlock
         {
-            // The reason clause and what authorises it live on RecommendationReason (ONB-4).
-            Text = $"The {displayName} model is recommended {RecommendationReason(recommended, _selectedLanguage)} ({FormatSize(recommended)}).",
+            // The reason clause and what authorises it live on RecommendationReason (ONB-4). The size
+            // sits beside the name, not at the end, where a wrap left "MB)." alone on a line.
+            Text = $"{displayName} ({FormatSize(recommended)}) is recommended {RecommendationReason(recommended, _selectedLanguage)}.",
             FontSize = 13,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             TextWrapping = TextWrapping.Wrap,
@@ -1735,7 +1729,7 @@ public sealed class OnboardingPage : Page
 
         var toggleSetting = AppTheme.CreateToggleSetting(
             "Enable AI Enhancement",
-            "Turn on AI-powered text enhancement and image generation.",
+            "Turn on AI enhancement and image generation.",
             currentEnabled,
             isOn =>
             {
@@ -1908,27 +1902,25 @@ public sealed class OnboardingPage : Page
                 TextWrapping = TextWrapping.Wrap
             });
             builtInCard.Children.Add(rowsHost);
-            // The two sections are alternatives, which their layout alone did not say (owner, 2026-10-09).
-            panel.Children.Add(new TextBlock
-            {
-                Text = "Pick one: a built-in model or a cloud provider.",
-                FontSize = 13,
-                Foreground = AppTheme.Brush(AppTheme.TextSecondary),
-                TextWrapping = TextWrapping.Wrap
-            });
-            // Not wrapped in a card: each model is its own card, as on the Models page.
+            // Every section has the same shape — title and one line OUTSIDE, the controls in a card
+            // below — and the two text choices are split by an "or", which says they are
+            // alternatives (owner, 2026-10-13: the built-in models sat bare while the cloud provider
+            // sat in a card, and the image card read as a third choice). Each model row is already
+            // its own card, as on the Models page.
             panel.Children.Add(builtInCard);
+            panel.Children.Add(OrDivider());
         }
 
-        var textCard = new StackPanel { Spacing = 10 };
-        textCard.Children.Add(AppTheme.CreateCardTitle("Cloud provider", cloudActive));
-        textCard.Children.Add(new TextBlock
+        var cloudSection = new StackPanel { Spacing = 12 };
+        cloudSection.Children.Add(AppTheme.CreateCardTitle("Cloud provider", cloudActive));
+        cloudSection.Children.Add(new TextBlock
         {
             Text = "Your text is sent to the provider you choose.",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             TextWrapping = TextWrapping.Wrap
         });
+        var textCard = new StackPanel { Spacing = 10 };
 
         // Only pre-select a provider the user previously chose from this list.
         var textProviderInit = StoredTextProvider() is { } tp && Array.IndexOf(allProviders, tp) >= 0 ? tp : (Services.AIEnhancement.AIProvider?)null;
@@ -1956,24 +1948,26 @@ public sealed class OnboardingPage : Page
             isImageModels: false,
             onKeySaved: UseCloud);
         ApplyActive();
-        panel.Children.Add(AppTheme.CreateCard(textCard));
+        cloudSection.Children.Add(AppTheme.CreateCard(textCard));
+        panel.Children.Add(cloudSection);
 
-        // ── Image Generation Provider ──
-        var imageCard = new StackPanel { Spacing = 10 };
-        imageCard.Children.Add(new TextBlock
+        // ── Image generation: its own section, set apart from the text choice above ──
+        var imageSection = new StackPanel { Spacing = 12, Margin = new Thickness(0, 24, 0, 0) };
+        imageSection.Children.Add(new TextBlock
         {
-            Text = "Image Generation",
+            Text = "Image generation",
             FontSize = 15,
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = AppTheme.Brush(AppTheme.TextPrimary)
         });
-        imageCard.Children.Add(new TextBlock
+        imageSection.Children.Add(new TextBlock
         {
             Text = "Describe an image by voice. Images are placed on your clipboard.",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             TextWrapping = TextWrapping.Wrap
         });
+        var imageCard = new StackPanel { Spacing = 10 };
 
         var rawImageProvider = _settings.GetString(AppDefaults.AiImageProvider, "");
         Services.AIEnhancement.AIProvider? imageProviderInit =
@@ -1992,10 +1986,43 @@ public sealed class OnboardingPage : Page
                 else
                     ApplyActive();
             });
-        panel.Children.Add(AppTheme.CreateCard(imageCard));
+        imageSection.Children.Add(AppTheme.CreateCard(imageCard));
+        panel.Children.Add(imageSection);
 
         // Store validators so the Continue button can trigger them
         _enhancementKeyValidators = [validateTextKey, validateImageKey];
+    }
+
+    /// <summary>A thin rule with "or" in the middle: the two text-enhancement choices are alternatives.</summary>
+    private static Grid OrDivider()
+    {
+        var grid = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 4, 0, 4) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Border Rule(int column)
+        {
+            var rule = new Border
+            {
+                Height = 1,
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = AppTheme.Brush(AppTheme.CardBorderColor),
+            };
+            Grid.SetColumn(rule, column);
+            return rule;
+        }
+        var label = new TextBlock
+        {
+            Text = "or",
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(Rule(0));
+        grid.Children.Add(label);
+        grid.Children.Add(Rule(2));
+        return grid;
     }
 
     /// <summary>
@@ -2420,11 +2447,9 @@ public sealed class OnboardingPage : Page
                 ? _settings.GetString(AppDefaults.HotkeyModifier, "RightAlt")
                 : null,
             KeyboardLayoutProfile.AnyInstalledLayoutNeedsAltGrForTyping());
-        _selectedPasteLastHotkey ??= _settings.GetString(AppDefaults.PasteLastHotkeyModifier, "");
-        _selectedRedoLastHotkey ??= _settings.GetString(AppDefaults.RedoLastHotkeyModifier, "");
-
-        AddStepHeader("Choose Your Hotkeys",
-            "These keys control recording, pasting, and redo. You can change them later in Settings.");
+        // The paste-last and redo-last hotkeys are set in Settings only (owner, 2026-10-13): setup
+        // asks for the one key a first dictation needs.
+        AddStepHeader("Choose Your Hotkey");
 
         // ── Warning text for conflict-prone keys (declared before selectors so lambdas can capture) ──
         var warningText = new TextBlock
@@ -2463,36 +2488,25 @@ public sealed class OnboardingPage : Page
         // revert is otherwise indistinguishable from the picker ignoring the click.
         string? refusalNote = null;
 
-        // The row labels, named once because each is used twice — as the editor's title and inside
-        // that row's HKY-10 note.
+        // The row label, named once because it is used twice — as the editor's title and inside
+        // the row's HKY-10 note.
         const string recordingTitle = "Recording hotkey";
-        const string pasteLastTitle = "Paste last";
-        const string redoLastTitle = "Redo last";
 
-        // HKY-10: one per row, set by that row's IncompleteChanged handler while its pickers hold a
-        // modifier with no key. Captured locals for the same reason refusalNote is one — UpdateWarning
-        // is declared BEFORE the editors, so it cannot reach them.
+        // HKY-10: set by the row's IncompleteChanged handler while its pickers hold a modifier with
+        // no key. A captured local for the same reason refusalNote is one — UpdateWarning is
+        // declared BEFORE the editor, so it cannot reach it.
         string? recordingIncomplete = null;
-        string? pasteLastIncomplete = null;
-        string? redoLastIncomplete = null;
 
         void UpdateWarning()
         {
             // Action notes first — they explain something the user just did — then the standing
-            // hazards. The HKY-10 notes join the refusal in that first group rather than REPLACING
-            // the hazards: while a row is incomplete its stored binding is untouched, so whatever
+            // hazard. The HKY-10 note joins the refusal in that first group rather than REPLACING
+            // the hazard: while the row is incomplete its stored binding is untouched, so whatever
             // hazard that binding carries is still live and still has to be shown.
             var lines = new List<string?>();
             if (refusalNote != null) lines.Add(refusalNote);
-            foreach (var note in new[] { recordingIncomplete, pasteLastIncomplete, redoLastIncomplete })
-            {
-                if (note != null) lines.Add(note);
-            }
-
-            lines.AddRange(new[] { _selectedHotkey, _selectedPasteLastHotkey, _selectedRedoLastHotkey }
-                .Select(GetKeyWarning)
-                .Where(w => w != null)
-                .Distinct());
+            if (recordingIncomplete != null) lines.Add(recordingIncomplete);
+            if (GetKeyWarning(_selectedHotkey) is { } hazard) lines.Add(hazard);
 
             if (lines.Count > 0)
             {
@@ -2518,79 +2532,35 @@ public sealed class OnboardingPage : Page
         //
         // The pickers STACK here because _contentPanel caps at 500 px: side by side they would leave
         // ~150 px for the title and description. That is the only difference from Settings.
-        //
-        // The secondary rows are CONSTRUCTED first so the recording handler can capture them as
-        // non-null locals; they are ADDED to the panel in display order below. The old code needed
-        // forward-declared nullable fields only because its closures captured raw ComboBoxes.
 
-        // The wizard edits only three roles, but it must SEE every binding that exists — including
-        // the generate-image hotkey it never shows and the prompt hotkeys it cannot edit. The
-        // hand-written list this replaces knew about neither, so onboarding could hand paste-last a
-        // key that silently killed one of them (Codex diff rounds 4 and 5). The snapshot is built
-        // from the live settings, so no screen carries its own idea of which hotkeys exist.
+        // The wizard edits only the recording role, but it must SEE every binding that exists —
+        // paste-last, redo-last and generate-image, which only Settings edits, and the prompt
+        // hotkeys. The hand-written list an earlier version carried knew about none of the hidden
+        // ones (Codex diff rounds 4 and 5). The snapshot is built from the live settings, so no
+        // screen carries its own idea of which hotkeys exist.
         HotkeyBindingSnapshot ConflictSnapshot() =>
             HotkeyBindingSnapshot.FromSettings(_settings.GetString, HotkeyPrompts.Read())
-                .With(HotkeyRole.Recording, _selectedHotkey)
-                .With(HotkeyRole.PasteLast, _selectedPasteLastHotkey)
-                .With(HotkeyRole.RedoLast, _selectedRedoLastHotkey);
+                .With(HotkeyRole.Recording, _selectedHotkey);
 
-        bool IsConflict(string candidate, HotkeyRole editing)
-            => HotkeyConflictScan.ForRole(ConflictSnapshot(), candidate, editing).Count > 0;
+        IReadOnlyList<HotkeyCollision> Clashes(string? binding) => string.IsNullOrEmpty(binding)
+            ? []
+            : HotkeyConflictScan.ForRole(ConflictSnapshot(), binding, HotkeyRole.Recording);
+        static string Names(IEnumerable<HotkeyCollision> clashes)
+            => string.Join(" and ", clashes.Select(c => c.Describe()).Distinct());
 
-        // Paste Last — revert to None on conflict
-        var pasteLastEditor = new HotkeyBindingEditor(
-            pasteLastTitle, includeNone: true, _selectedPasteLastHotkey!,
-            description: "Paste the last transcription again", stackPickers: true);
-        pasteLastEditor.IncompleteChanged += () =>
+        // A stored or seeded key that ALREADY clashes (an imported settings file, a hotkey set in
+        // Settings since) is never fixed by clearing the other binding — the step does not show it.
+        // Continue waits for a key that clashes with nothing (Codex plan r1, B2: the finish used to
+        // clear the other binding silently).
+        var hotkeyNextBtn = AppTheme.CreateAccentButton("Continue");
+        void UpdateContinue()
+            => AppTheme.SetButtonEnabled(hotkeyNextBtn, Clashes(_selectedHotkey).Count == 0, "Continue");
+        if (Clashes(_selectedHotkey) is { Count: > 0 } initialClashes)
         {
-            pasteLastIncomplete = pasteLastEditor.IsIncomplete
-                ? HotkeyWarnings.IncompleteBindingNote(pasteLastTitle, _selectedPasteLastHotkey)
-                : null;
-            UpdateWarning();
-        };
-        pasteLastEditor.ValueChanged += selected =>
-        {
-            // THREE things move together on every revert, and dropping any one of them is the
-            // defect class HKY-3's review found twice in this control: the field this step
-            // PERSISTS at completion, what the row SHOWS, and the advisory that DESCRIBES it.
-            // SetValue is deliberately silent — re-entering our own handler would loop — so unlike
-            // the raw ComboBox this replaces, nothing recomputes the other two for us.
-            if (IsConflict(selected, HotkeyRole.PasteLast))
-            {
-                _selectedPasteLastHotkey = "";
-                pasteLastEditor.SetValue("");
-                UpdateWarning();
-                return;
-            }
-            _selectedPasteLastHotkey = selected;
-            UpdateWarning();
-        };
+            refusalNote = $"{HotkeyKeyDisplay.Describe(_selectedHotkey)} clashes with {Names(initialClashes)}. "
+                          + "Choose another key.";
+        }
 
-        // Redo Last — revert to None on conflict
-        var redoLastEditor = new HotkeyBindingEditor(
-            redoLastTitle, includeNone: true, _selectedRedoLastHotkey!,
-            description: "Re-enhance with a different AI model", stackPickers: true);
-        redoLastEditor.IncompleteChanged += () =>
-        {
-            redoLastIncomplete = redoLastEditor.IsIncomplete
-                ? HotkeyWarnings.IncompleteBindingNote(redoLastTitle, _selectedRedoLastHotkey)
-                : null;
-            UpdateWarning();
-        };
-        redoLastEditor.ValueChanged += selected =>
-        {
-            if (IsConflict(selected, HotkeyRole.RedoLast))
-            {
-                _selectedRedoLastHotkey = "";
-                redoLastEditor.SetValue("");
-                UpdateWarning();
-                return;
-            }
-            _selectedRedoLastHotkey = selected;
-            UpdateWarning();
-        };
-
-        // Recording hotkey wins — clears conflicting secondary hotkeys
         var recordingEditor = new HotkeyBindingEditor(
             recordingTitle, includeNone: false, _selectedHotkey!,
             description: "Quick tap = hands-free • Hold = push-to-talk", stackPickers: true);
@@ -2610,64 +2580,36 @@ public sealed class OnboardingPage : Page
         };
         recordingEditor.ValueChanged += selected =>
         {
-            // Recording wins over the two rows this step SHOWS — but it cannot clear what it does
-            // not show, and until HKY-8 it never had to. A single-key recording binding always WINS
-            // the hook's press order, so the old wizard's worst case was killing someone else's
-            // hotkey. A COMBO can LOSE: a bare modifier bound elsewhere starts its own gesture on
-            // the modifier key-down and the active-gesture guard then eats the trigger
-            // (`HotkeyBinding.BareModifierBlocksCombo`). So a user who binds Generate image to bare
-            // Left Ctrl in Settings, relaunches the wizard and picks Ctrl + Space would have walked
-            // out of a completed wizard with RECORDING ITSELF inert — no warning, no revert (Kimi
-            // diff review r1; the sibling rows already asked the scan, this row predated it).
-            //
-            // Refuse rather than clear: the colliding roles here are ones the wizard never shows,
+            // A choice that collides with any other binding is REFUSED, never cleared: every other
+            // role is one this step does not show (paste-last and redo-last left it on 2026-10-13),
             // and Settings deliberately CONFIRMS before clearing a role rather than doing it
-            // silently. Secondary-role collisions are filtered out so "recording wins" below still
-            // works for the two rows this step does own.
-            if (!string.IsNullOrEmpty(selected))
+            // silently. Refusing matters beyond tidiness: a single-key recording binding always
+            // wins the hook's press order, but a COMBO can LOSE — a bare modifier bound elsewhere
+            // starts its own gesture on the modifier key-down and the active-gesture guard then
+            // eats the trigger (`HotkeyBinding.BareModifierBlocksCombo`), so accepting it would
+            // walk the user out of a completed wizard with RECORDING ITSELF inert (Kimi diff r1).
+            if (Clashes(selected) is { Count: > 0 } blocked)
             {
-                var blocked = HotkeyConflictScan
-                    .ForRole(ConflictSnapshot(), selected, HotkeyRole.Recording)
-                    .Where(c => c.Role is null or HotkeyRole.GenerateImage)
-                    .ToList();
-                if (blocked.Count > 0)
-                {
-                    // _selectedHotkey still holds the previous value — the assignment below is what
-                    // commits a choice — so this restores the field, the display and Value together.
-                    refusalNote =
-                        $"{HotkeyKeyDisplay.Describe(selected)} can't be used: it clashes with "
-                        + $"{string.Join(" and ", blocked.Select(c => c.Describe()).Distinct())}. "
-                        + $"Keeping {HotkeyKeyDisplay.Describe(_selectedHotkey)}.";
-                    recordingEditor.SetValue(_selectedHotkey);
-                    UpdateWarning();
-                    return;
-                }
+                // _selectedHotkey still holds the previous value — the assignment below is what
+                // commits a choice — so this restores the field, the display and Value together.
+                // "Keeping" only when the previous key is itself free to keep.
+                refusalNote =
+                    $"{HotkeyKeyDisplay.Describe(selected)} can't be used: it clashes with {Names(blocked)}. "
+                    + (Clashes(_selectedHotkey).Count > 0
+                        ? "Choose another key."
+                        : $"Keeping {HotkeyKeyDisplay.Describe(_selectedHotkey)}.");
+                recordingEditor.SetValue(_selectedHotkey);
+                UpdateWarning();
+                return;
             }
 
             refusalNote = null;
             _selectedHotkey = selected;
-            // Recording wins — clear any conflicting secondary hotkey
-            if (!string.IsNullOrEmpty(selected))
-            {
-                if (HotkeyBinding.Conflicts(selected, _selectedPasteLastHotkey))
-                {
-                    _selectedPasteLastHotkey = "";
-                    pasteLastEditor.SetValue("");
-                }
-                if (HotkeyBinding.Conflicts(selected, _selectedRedoLastHotkey))
-                {
-                    _selectedRedoLastHotkey = "";
-                    redoLastEditor.SetValue("");
-                }
-            }
             UpdateWarning();
+            UpdateContinue();
         };
 
-        // Constructed secondary-first so the recording handler captures them as non-null locals;
-        // ADDED to the panel in display order.
         _contentPanel.Children.Add(recordingEditor.Root);
-        _contentPanel.Children.Add(pasteLastEditor.Root);
-        _contentPanel.Children.Add(redoLastEditor.Root);
 
         UpdateWarning();
         _contentPanel.Children.Add(warningWrapper);
@@ -2683,9 +2625,9 @@ public sealed class OnboardingPage : Page
         {
             _contentPanel.Children.Add(new TextBlock
             {
-                Text = "Instant recording is on: VoiceWink keeps the microphone active so recording " +
-                       "starts the moment you press the hotkey, and Windows shows its microphone-in-use " +
-                       "indicator while VoiceWink runs. You can turn this off in Settings → Audio.",
+                // Shortened 2026-10-13 (owner: too much text); it still says why the indicator is lit.
+                Text = "The microphone stays open for instant recording, so Windows shows it as in use. " +
+                       "Change this in Settings → Audio.",
                 Foreground = AppTheme.Brush(AppTheme.SubtleText),
                 FontSize = 12,
                 TextWrapping = TextWrapping.Wrap,
@@ -2694,89 +2636,13 @@ public sealed class OnboardingPage : Page
             });
         }
 
-        var hotkeyNextBtn = AppTheme.CreateAccentButton("Continue");
-        hotkeyNextBtn.Tapped += (_, _) => ShowStep(8);
+        UpdateContinue();
+        hotkeyNextBtn.Tapped += (_, _) =>
+        {
+            if (Clashes(_selectedHotkey).Count > 0) return;
+            ShowStep(10);
+        };
         AddButtonRow(CreateBackButton(), hotkeyNextBtn);
-    }
-
-    // ────────────────────────────────────────────────────────────────
-    // Step 8: Clipboard & Paste Behavior
-    // ────────────────────────────────────────────────────────────────
-
-    private void BuildClipboardStep()
-    {
-        AddStepHeader("Clipboard & Paste Behavior",
-            "Control how VoiceWink interacts with your clipboard. You can change these later in Settings.");
-
-        // ── Restore Clipboard After Paste ──
-        var restoreClipboard = _settings.GetBool(AppDefaults.RestoreClipboardAfterPaste, false);
-        _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
-            "Restore Clipboard After Paste",
-            "After pasting text, the original clipboard contents are restored. Does not apply to generated images (they stay on the clipboard for you to paste manually).",
-            restoreClipboard,
-            isOn => _settings.SetBool(AppDefaults.RestoreClipboardAfterPaste, isOn)));
-
-        // ── Send Enter After Paste ──
-        var sendEnter = _settings.GetBoolDefaulted(AppDefaults.SendEnterAfterPaste);
-        _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
-            "Send Enter after paste",
-            // Says the consequence, not just the keystroke (launch defaults audit, 2026-09-13): in a
-            // chat app, Enter SENDS — a user who reads "press Enter" as "new line" finds out by
-            // sending a half-finished message.
-            "Automatically press Enter after pasting text (push-to-talk only) — in chat apps like Teams or Slack this sends the message immediately. Does not apply to images.",
-            sendEnter,
-            isOn => _settings.SetBool(AppDefaults.SendEnterAfterPaste, isOn)));
-
-        var clipNextBtn = AppTheme.CreateAccentButton("Continue");
-        clipNextBtn.Tapped += (_, _) => ShowStep(9);
-        AddButtonRow(CreateBackButton(), clipNextBtn);
-    }
-
-    // ────────────────────────────────────────────────────────────────
-    // Step 9: Startup Behavior
-    // ────────────────────────────────────────────────────────────────
-
-    private void BuildStartupStep()
-    {
-        // Subtitle covers minimizing too since ONB-3 added that toggle — the screen's job is how
-        // VoiceWink behaves around its window, not only how it starts.
-        AddStepHeader("Startup Behavior",
-            "Choose how VoiceWink starts and what happens when you minimize its window.");
-
-        // ── Launch at login ──
-        var launchAtLogin = _settings.GetBool(AppDefaults.LaunchAtLogin, true);
-        _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
-            "Launch at login",
-            "Start VoiceWink automatically when you sign in to Windows.",
-            launchAtLogin,
-            isOn => _settings.SetBool(AppDefaults.LaunchAtLogin, isOn)));
-
-        // ── Start minimized ──
-        var startMinimized = _settings.GetBool(AppDefaults.StartMinimized, true);
-        _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
-            "Start minimized",
-            "Start minimized to the system tray instead of showing the main window. VoiceWink is always available via the hotkey and tray icon.",
-            startMinimized,
-            isOn => _settings.SetBool(AppDefaults.StartMinimized, isOn)));
-
-        // ── Minimize to tray (ONB-3) ──
-        // Shipped in PR #227 but lived only on the Settings page, so the one screen whose job is
-        // "how does VoiceWink behave around its window" was missing a third of the answer.
-        // GetBoolDefaulted, not GetBool with a literal: it is the seam built for preferences that
-        // have an AppDefaults entry, so two call sites cannot disagree on a corrupt settings file.
-        // String is character-identical to the Settings toggle's — one option, one description.
-        var minimizeToTray = _settings.GetBoolDefaulted(AppDefaults.MinimizeToTray);
-        _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
-            "Minimize to tray",
-            "When you minimize the window, hide it to the system tray instead of the taskbar",
-            minimizeToTray,
-            isOn => _settings.SetBool(AppDefaults.MinimizeToTray, isOn)));
-
-        // Label is "Continue" (not "Finish Setup") because LIC-2 inserted License +
-        // Crash-Reporting steps after this one — this is no longer the last step.
-        var continueBtn = AppTheme.CreateAccentButton("Continue");
-        continueBtn.Tapped += (_, _) => ShowStep(10);
-        AddButtonRow(CreateBackButton(), continueBtn);
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -3092,11 +2958,30 @@ public sealed class OnboardingPage : Page
 
     private void BuildCrashReportingStep()
     {
+        // Layered (owner, 2026-10-13: too much text): the header names both things "Yes" does —
+        // including that the log holds the dictated text and the AI results, for 7 days (Codex plan
+        // r1, B1: "your prompts" alone under-disclosed it) — and that the choice can be changed
+        // later, all BEFORE the choice, as consent needs. It also names who receives the crash
+        // reports: since ONB-12 the privacy policy, which identifies the controller, is folded on the
+        // terms step, so nothing else on screen does (Codex plan r2, B3). The full lists sit one
+        // click away under "What's included", unchanged and still pinned.
         AddStepHeader("Help improve VoiceWink",
-            "Send anonymous crash reports so bugs get fixed before they affect more users, " +
-            "and keep a full log of your prompts on this PC so you can attach it to a problem report. Your choice.");
+            "Send crash reports to DV Studio and keep a 7-day log of your prompts, dictated text " +
+            "and AI results on this PC, for problem reports. You can change this later in Settings.");
 
-        _contentPanel.Children.Add(new TextBlock
+        var details = new StackPanel { Visibility = Visibility.Collapsed };
+        var detailsLink = DisclosureLink("What's included", 12, text =>
+        {
+            var show = details.Visibility != Visibility.Visible;
+            details.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            text.Text = show ? "Hide details" : "What's included";
+        });
+        detailsLink.HorizontalAlignment = HorizontalAlignment.Center;
+        detailsLink.Margin = new Thickness(0, 0, 0, 8);
+        _contentPanel.Children.Add(detailsLink);
+        _contentPanel.Children.Add(details);
+
+        details.Children.Add(new TextBlock
         {
             // REL-30: this list is CLOSED and it is the CONSENT surface — the Article 6(1)(a)
             // consent the privacy policy relies on is given here, so a category added to
@@ -3121,7 +3006,7 @@ public sealed class OnboardingPage : Page
             Margin = new Thickness(0, 0, 0, 8),
         });
 
-        _contentPanel.Children.Add(new TextBlock
+        details.Children.Add(new TextBlock
         {
             // The second half of what "Yes" records (owner decision 2026-09-13): the RAW prompt
             // trace, which never leaves the PC by itself. Named here because this step is the
@@ -3137,28 +3022,19 @@ public sealed class OnboardingPage : Page
             Margin = new Thickness(0, 0, 0, 8),
         });
 
-        _contentPanel.Children.Add(new TextBlock
-        {
-            Text = "You can change either any time in Settings → Diagnostics.",
-            Foreground = AppTheme.Brush(AppTheme.SubtleText),
-            FontSize = 12,
-            TextWrapping = TextWrapping.Wrap,
-            TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
-            Margin = new Thickness(0, 0, 0, 8),
-        });
-
+        // The next step is Updates on Advanced; ShowStep moves past it to Done on Express.
         var yesBtn = AppTheme.CreateAccentButton("Yes, help improve");
         yesBtn.Tapped += (_, _) =>
         {
             ApplyHelpImproveConsent(requested: true);
-            ShowStep(12);
+            ShowStep(OnboardingStepFlow.UpdatesStepIndex);
         };
 
         var noBtn = AppTheme.CreateSecondaryButton("No thanks");
         noBtn.Tapped += (_, _) =>
         {
             ApplyHelpImproveConsent(requested: false);
-            ShowStep(12);
+            ShowStep(OnboardingStepFlow.UpdatesStepIndex);
         };
 
         AddButtonRow(CreateBackButton(), yesBtn, noBtn);
@@ -3216,13 +3092,12 @@ public sealed class OnboardingPage : Page
     }
 
     // ────────────────────────────────────────────────────────────────
-    // Step 12: Updates (UPD-4b)
+    // Step 12: Updates (UPD-4b; Advanced only since LNC-15)
     // ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The update choices, offered at setup so every user decides rather than inheriting a
-    /// default silently (owner decision 2026-08-08). Sits directly after Crash Reporting: both
-    /// screens are about what VoiceWink does over the network on its own.
+    /// The two update choices. Advanced only (owner, 2026-10-13): Express keeps both shipped
+    /// defaults ON and the Done card shows them.
     ///
     /// <para>Both seeds use <c>GetBoolDefaulted</c>, never a literal — the ONB-3 rule, so the
     /// wizard and the Settings → Updates page cannot disagree about what the shipped default is,
@@ -3230,13 +3105,11 @@ public sealed class OnboardingPage : Page
     ///
     /// <para>Both writes go through <see cref="DiagnosticsConsent.Apply"/>, so a preference that
     /// cannot reach disk ends up OFF and SAYS so, instead of leaving a switch showing a state the
-    /// app is not in. That matters more here than on the Settings page: this is the one moment the
-    /// user is explicitly asked, and a silently-lost answer is the answer they will assume stuck.</para>
+    /// app is not in.</para>
     /// </summary>
     private void BuildUpdatesStep()
     {
-        AddStepHeader("Updates",
-            "Choose how VoiceWink keeps itself up to date. You can change both of these later in Updates.");
+        AddStepHeader("Updates");
 
         var warning = new TextBlock
         {
@@ -3253,40 +3126,49 @@ public sealed class OnboardingPage : Page
         ToggleSwitch? checkSwitch = null;
         ToggleSwitch? installSwitch = null;
 
-        // ── Check for updates automatically ──
+        // A failed enable is corrected by setting the switch back OFF, and setting IsOn raises
+        // Toggled again. Without this guard that second callback writes OFF, succeeds, and hides
+        // the warning the failed enable had just shown (Codex diff r1). UpdateViewModel's
+        // _suppressTogglePersist guards the same corrective write on the Updates page.
+        var correcting = false;
+        void Correct(ToggleSwitch? sw, bool effective)
+        {
+            if (sw is null || sw.IsOn == effective) return;
+            correcting = true;
+            try { sw.IsOn = effective; }
+            finally { correcting = false; }
+        }
+
         var checkOn = _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateCheckEnabled);
         _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
             "Check for updates automatically",
+            // The Settings → Updates wording: one option, one wording.
             "Automatically check for new VoiceWink versions in the background.",
             checkOn,
             isOn =>
             {
-                // No scheduler notify HERE — deliberately. That needed a new App.Services locator
-                // call (AGENTS.md forbids adding one), and wizard choices apply at Done anyway:
-                // App's OnboardingCompleted handler calls UpdateRuntimeCoordinator
-                // .ReconcileCheckSetting, which covers the relaunch-wizard path this notify
-                // existed for. A first run needs nothing (the scheduler starts from the persisted
-                // setting at the gated start).
+                if (correcting) return;
+                // No scheduler notify here: App's OnboardingCompleted handler reconciles the check
+                // setting (UpdateRuntimeCoordinator.ReconcileCheckSetting), and a first run's
+                // scheduler starts from the persisted setting at the gated start.
                 var effective = ApplyOnboardingToggle(AppDefaults.AutomaticUpdateCheckEnabled, isOn, warning);
-                if (checkSwitch is { } sw && sw.IsOn != effective) sw.IsOn = effective;
+                Correct(checkSwitch, effective);
                 // Installing is only ever triggered by a background check, so the install choice
-                // is meaningless without it. Grey the CONTROL, never the stored value — turning
-                // checks back on restores the user's own install preference.
+                // is meaningless without it. Grey the CONTROL, never the stored value.
                 if (installSwitch is { } inst) inst.IsEnabled = effective;
             },
             out checkSwitch));
 
-        // ── Install updates automatically (default ON — an opt-out) ──
         var installOn = _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateInstallEnabled);
         _contentPanel.Children.Add(AppTheme.CreateToggleSetting(
             "Install updates automatically",
-            // Character-identical to the Settings → Updates description: one option, one wording.
             UpdatesPage.InstallToggleDescription,
             installOn,
             isOn =>
             {
+                if (correcting) return;
                 var effective = ApplyOnboardingToggle(AppDefaults.AutomaticUpdateInstallEnabled, isOn, warning);
-                if (installSwitch is { } sw && sw.IsOn != effective) sw.IsOn = effective;
+                Correct(installSwitch, effective);
             },
             out installSwitch));
 
@@ -3295,7 +3177,7 @@ public sealed class OnboardingPage : Page
         _contentPanel.Children.Add(warning);
 
         var continueBtn = AppTheme.CreateAccentButton("Continue");
-        continueBtn.Tapped += (_, _) => ShowStep(13);
+        continueBtn.Tapped += (_, _) => ShowStep(DoneStepIndex);
         AddButtonRow(CreateBackButton(), continueBtn);
     }
 
@@ -3304,10 +3186,9 @@ public sealed class OnboardingPage : Page
     /// surfaces a warning when it could not be persisted.
     ///
     /// <para>A plain <c>SetBool</c> would not do: <c>SettingsService</c> debounces writes and its
-    /// <c>Save()</c> swallows failures, so the surrounding try/catch every other onboarding step
-    /// uses detects a throw from the CALL, not a failure of the WRITE.
-    /// <see cref="DiagnosticsConsent.Apply"/> flushes and reports, failing OFF in both
-    /// directions.</para>
+    /// <c>Save()</c> swallows failures, so a try/catch around the call detects a throw from the
+    /// CALL, not a failure of the WRITE. <see cref="DiagnosticsConsent.Apply"/> flushes and
+    /// reports, failing OFF in both directions.</para>
     /// </summary>
     private bool ApplyOnboardingToggle(string key, bool requested, TextBlock warning)
     {
@@ -3319,8 +3200,7 @@ public sealed class OnboardingPage : Page
         catch (Exception ex)
         {
             // Apply is already fail-safe internally; this catches a settings service that throws
-            // on the in-memory write itself. Never advance-blocking: the user's other choices and
-            // the rest of the wizard matter more than this one preference.
+            // on the in-memory write itself. Never advance-blocking.
             Logger.Warning(ex, "Persisting update preference {Key} failed during onboarding", key);
             warning.Text = "Couldn't save this setting. You can set it later in Updates.";
             warning.Visibility = Visibility.Visible;
@@ -3350,11 +3230,16 @@ public sealed class OnboardingPage : Page
             "VoiceWink is ready. Here's what was configured:",
             titleFontSize: 28);
 
+        // LNC-15: Express fills in what the Advanced path asks. The card shows that decision; the
+        // finish click carries it out, so going Back to change the language has written nothing.
+        ExpressSetupPlan? express = _path == SetupPath.Express ? DecideExpress() : null;
+
         // ── Configuration summary card ──
         var summaryPanel = new StackPanel { Spacing = 4 };
 
         // Transcription model
-        var modelName = _settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel);
+        var modelName = express?.Decision.SpeechModel
+                        ?? _settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel);
         var modelDisplay = ModelDisplayName.Resolve(modelName);
         summaryPanel.Children.Add(CreateSummaryRow("\uE8D6", "Transcription", modelDisplay));
 
@@ -3370,7 +3255,13 @@ public sealed class OnboardingPage : Page
         // stored for the selected text provider, read the way the AI step reads the provider
         // (raw setting, parsed).
         var enhancementOn = _settings.GetBool(AppDefaults.AiEnhancementEnabled, false);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE945", "Enhancement", EnhancementSummary(enhancementOn)));
+        var enhancementValue = express?.Decision.Ai switch
+        {
+            ExpressAiAction.UseInstalledNow => "ON",
+            ExpressAiAction.DownloadThenAdopt => "ON once its model is downloaded",
+            _ => EnhancementSummary(enhancementOn),
+        };
+        summaryPanel.Children.Add(CreateSummaryRow("\uE945", "AI enhancement", enhancementValue));
 
         // Recording Hotkey \u2014 the fields hold canonical strings; the summary speaks display names,
         // like every other surface (the seeded first-run default reads "Right Ctrl" here, not
@@ -3378,106 +3269,68 @@ public sealed class OnboardingPage : Page
         var hotkeyDisplay = HotkeyKeyDisplay.Describe(_selectedHotkey ?? "RightAlt");
         summaryPanel.Children.Add(CreateSummaryRow("\uE765", "Recording hotkey", hotkeyDisplay));
 
-        // Paste Last Hotkey
-        var pasteLastDisplay = string.IsNullOrEmpty(_selectedPasteLastHotkey)
-            ? "Not set"
-            : HotkeyKeyDisplay.Describe(_selectedPasteLastHotkey);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE77F", "Paste last hotkey", pasteLastDisplay));
-
-        // Redo Last Hotkey
-        var redoLastDisplay = string.IsNullOrEmpty(_selectedRedoLastHotkey)
-            ? "Not set"
-            : HotkeyKeyDisplay.Describe(_selectedRedoLastHotkey);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE72C", "Redo last hotkey", redoLastDisplay));
-
-        // Clipboard restore
-        var clipRestore = _settings.GetBool(AppDefaults.RestoreClipboardAfterPaste, false);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE8C8", "Clipboard restore", clipRestore ? "ON" : "OFF"));
-
-        // Send Enter
-        var sendEnter = _settings.GetBoolDefaulted(AppDefaults.SendEnterAfterPaste);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE751", "Send Enter after paste", sendEnter ? "ON" : "OFF"));
-
-        // Startup
+        // Startup. LNC-15 dropped the Startup screen, so this row is the one place setup says the app
+        // now starts with Windows; the other dropped screens' settings live only in Settings.
         var launchLogin = _settings.GetBool(AppDefaults.LaunchAtLogin, true);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE7E8", "Launch at login", launchLogin ? "ON" : "OFF"));
-        var startMin = _settings.GetBool(AppDefaults.StartMinimized, true);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE921", "Start minimized", startMin ? "ON" : "OFF"));
-        // The three answers the wizard asked for and then left out of its own summary (launch
-        // defaults audit, 2026-09-13): the ONB-3 tray toggle, the crash-report consent (REL-1a)
-        // and the two UPD-4b update choices. GetBoolDefaulted where a Defaults entry exists — the
-        // same seam their steps read, so the card cannot disagree with the switch it summarises.
-        var minimizeToTray = _settings.GetBoolDefaulted(AppDefaults.MinimizeToTray);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE921", "Minimize to tray", minimizeToTray ? "ON" : "OFF"));
+        summaryPanel.Children.Add(CreateSummaryRow("", "Launch at login", launchLogin ? "ON" : "OFF"));
+        // Updates: on both paths — Express never shows the step, so this row is where it says the
+        // app updates itself (owner, 2026-10-13).
+        summaryPanel.Children.Add(CreateSummaryRow("\uE895", "Updates", UpdatesSummary(
+            _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateCheckEnabled),
+            _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateInstallEnabled))));
         // One row for the "Help improve VoiceWink" answer, reading the TWO flags it set (a user can
         // diverge them in Settings before re-running the wizard, so the row reads the flags, never
         // the answer). Prompt logs = the RAW trace opt-in; the redacted summary is always kept.
         var crashReports = _settings.GetBoolDefaulted(AppDefaults.CrashReportingOptIn);
         var promptLogs = _settings.GetBoolDefaulted(AppDefaults.PromptTraceLoggingOptIn);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE7BA", "Help improve VoiceWink", HelpImproveSummary(crashReports, promptLogs)));
-        var updateCheck = _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateCheckEnabled);
-        var updateInstall = _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateInstallEnabled);
-        summaryPanel.Children.Add(CreateSummaryRow("\uE895", "Updates", UpdatesSummary(updateCheck, updateInstall)));
+        summaryPanel.Children.Add(CreateSummaryRow("", "Help improve VoiceWink", HelpImproveSummary(crashReports, promptLogs)));
 
         _contentPanel.Children.Add(AppTheme.CreateCard(summaryPanel));
+
+        if (express is { } plan && ExpressDownloadNote(plan.Decision) is { } note)
+        {
+            _contentPanel.Children.Add(new TextBlock
+            {
+                Text = note,
+                FontSize = 13,
+                Foreground = AppTheme.Brush(AppTheme.SubtleText),
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center,
+            });
+        }
 
         var finishBtn = AppTheme.CreateAccentButton("Start Using VoiceWink");
         finishBtn.Tapped += (_, _) =>
         {
+            // First, before ANY write: the recording hotkey must clash with nothing. The Hotkeys
+            // step refuses a clashing choice and holds Continue on a clashing stored or seeded key,
+            // but a binding can change in Settings while the wizard is open. Setup never clears the
+            // other binding (it does not show it — Codex plan r1, B2): it goes back to the Hotkeys
+            // step, rebuilt, which names the clash. (Until 2026-10-13 this handler CLEARED a
+            // colliding role or prompt hotkey — "recording wins", Fable diff r6 — which was right
+            // while the step showed the roles it cleared.)
+            var recordingBinding = _selectedHotkey ?? "RightAlt";
+            if (HotkeyConflictScan.ForRole(
+                    HotkeyBindingSnapshot.FromSettings(_settings.GetString, HotkeyPrompts.Read()),
+                    recordingBinding, HotkeyRole.Recording).Count > 0)
+            {
+                _stepCache.Remove(7);
+                ShowStep(7);
+                return;
+            }
+
+            // Express: the speech model and the built-in AI, before the AI provider seed below
+            // reads what is stored.
+            if (express is { } chosen)
+                ApplyExpress(chosen);
+
             // Persist hotkey selections now (deferred from hotkey step to avoid
             // saving intermediate choices if user navigates back or abandons)
-            _settings.SetString(AppDefaults.HotkeyModifier, _selectedHotkey ?? "RightAlt");
-            _settings.SetString(AppDefaults.PasteLastHotkeyModifier, _selectedPasteLastHotkey ?? "");
-            _settings.SetString(AppDefaults.RedoLastHotkeyModifier, _selectedRedoLastHotkey ?? "");
-
-            // Recording wins — against EVERYTHING, not just the two roles this wizard shows
-            // (Fable diff r6). The recording selector clears colliding pasteLast/redoLast in-step,
-            // but the wizard has no generate-image row and cannot edit prompts, so a recording
-            // choice colliding with either persisted BOTH: HandleKeyDown matches generate-image
-            // BEFORE recording, so `F8` recording beside `F8` generate-image left the RECORDING
-            // hotkey dead — and a prompt on the recording key was shadowed with only a log line.
-            // Applied here rather than in the selector because the wizard defers all persistence
-            // to this button precisely so abandoning it leaves no trace.
-            var recordingBinding = _selectedHotkey ?? "RightAlt";
-            var collisions = HotkeyConflictScan.ForRole(
-                HotkeyBindingSnapshot.FromSettings(_settings.GetString, HotkeyPrompts.Read()),
-                recordingBinding, HotkeyRole.Recording);
-            foreach (var collision in collisions)
-            {
-                if (collision.Role is { } role)
-                    _settings.SetString(HotkeyConflictScan.SettingsKeyFor(role), "");
-            }
-
-            // Reload BEFORE the prompt re-registration so prompts are filtered against the roles
-            // that were just persisted, not the pre-wizard ones.
+            // Only the recording hotkey: paste-last and redo-last are Settings-only (2026-10-13), so
+            // their stored values are left as they are.
+            _settings.SetString(AppDefaults.HotkeyModifier, recordingBinding);
             App.Services.GetRequiredService<Services.Input.HotkeyService>().ReloadHotkeys();
-
-            var shadowedPromptIds = collisions
-                .Where(c => c.IsPrompt)
-                .Select(c => c.PromptId)
-                .ToHashSet(StringComparer.Ordinal);
-            if (shadowedPromptIds.Count > 0)
-            {
-                try
-                {
-                    var enhancement = App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>();
-                    var prompts = enhancement.GetPrompts();
-                    foreach (var p in prompts.Where(p => shadowedPromptIds.Contains(p.Id)))
-                        p.Hotkey = null;
-                    enhancement.SavePrompts(prompts);
-                    App.Services.GetRequiredService<Services.Input.HotkeyService>().RegisterPromptHotkeys(
-                        prompts.Where(p => !string.IsNullOrEmpty(p.Hotkey))
-                               .Select(p => (p.Id, p.Hotkey!)));
-                }
-                catch (Exception ex)
-                {
-                    // Fail-soft, same posture as HotkeyPrompts.Read: an unclearable prompt hotkey
-                    // is shadowed (dead but harmless) — RegisterPromptHotkeys already refuses to
-                    // register a prompt a single-key role claims, so nothing double-fires.
-                    Log.ForContext<OnboardingPage>().Warning(ex,
-                        "Could not clear prompt hotkeys shadowed by the new recording hotkey");
-                }
-            }
 
             // Apply LaunchAtLogin to the Windows registry via the dedicated service.
             // Going through SettingsViewModel.LaunchAtLogin would no-op when the singleton VM
@@ -3501,6 +3354,92 @@ public sealed class OnboardingPage : Page
         };
         AddButtonRow(CreateBackButton(), finishBtn);
     }
+
+    /// <summary>Express setup's decision plus the built-in model it is about (null when none is offered).</summary>
+    private readonly record struct ExpressSetupPlan(ExpressSetupDecision Decision, string? BuiltInModelId);
+
+    /// <summary>
+    /// What Express fills in (LNC-15), read from what is STORED — <c>Contains</c>, never a read
+    /// that falls back to a default (see <see cref="ExpressSetupDefaults"/>). Writes nothing.
+    /// </summary>
+    private ExpressSetupPlan DecideExpress()
+    {
+        var stored = _settings.Contains(AppDefaults.SelectedModelName);
+        var storedValue = stored ? _settings.GetString(AppDefaults.SelectedModelName, "") : null;
+        var downloaded = _downloader.GetDownloadedModels();
+        bool OnDisk(string? name) => !string.IsNullOrEmpty(name) && downloaded.Contains(name, ModelDiskReconciliation.NameComparer);
+
+        var cloudRow = CloudModels.IsCloudModel(storedValue)
+            ? CloudModels.Models.FirstOrDefault(m => m.Name == CloudModels.Canonicalize(storedValue))
+            : null;
+        var cloudWithKey = cloudRow is not null && _apiKeys.HasApiKey(cloudRow.Provider.ToString().ToLowerInvariant());
+
+        var recommended = RecommendedLocalModel.Name;
+        var storedLocalRow = PredefinedModels.Models
+            .FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, storedValue));
+
+        var store = _enhancementModels.LocalModels;
+        var offered = Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered && store is not null;
+        var pick = offered
+            ? LocalModelsSection.RecommendedPick(_enhancementModels.OnThisPc, LocalHardwareProfile.Read())
+            : null;
+
+        var decision = ExpressSetupDefaults.Decide(
+            stored, storedValue,
+            storedIsServiceableLocal: PersistedLocalSelectionIsServiceable(storedValue, _parakeetAvailable),
+            storedIsCloudWithKey: cloudWithKey,
+            storedInstalled: OnDisk(storedValue),
+            storedCannotRecogniseLanguage: ModelLanguageSupport.CannotRecognise(storedLocalRow, _selectedLanguage),
+            recommendedModel: recommended,
+            recommendedInstalled: OnDisk(recommended),
+            builtInOffered: pick is not null,
+            aiProviderStored: _settings.Contains(AppDefaults.AiProvider),
+            aiSwitchedOff: _settings.Contains(AppDefaults.AiEnhancementEnabled)
+                           && !_settings.GetBool(AppDefaults.AiEnhancementEnabled),
+            builtInPickInstalled: pick is not null && store!.IsInstalled(pick));
+        return new ExpressSetupPlan(decision, pick);
+    }
+
+    /// <summary>
+    /// Carries out <see cref="DecideExpress"/>'s decision on the finish click (LNC-15). Both
+    /// downloads run on app-lifetime owners — the Models page's view model and
+    /// <see cref="Services.AIEnhancement.LocalEngine.BuiltInModelAdoption"/> — never this page's
+    /// download attempt, which its <c>Unloaded</c> handler cancels.
+    /// </summary>
+    private void ApplyExpress(ExpressSetupPlan plan)
+    {
+        var decision = plan.Decision;
+        var models = _speechModels;
+        // The rows' IsSelected too: the Models page reads them, and this singleton may have been
+        // built before the write, from the Defaults fallback.
+        if (decision.WriteSpeechModel)
+            models.PersistSelectionWithoutLoading(decision.SpeechModel);
+        if (decision.DownloadSpeechModel
+            && models.Models.FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, decision.SpeechModel)) is { } row)
+        {
+            // Fire-and-forget: the view model reports progress and errors on the Models page, and a
+            // recording made before it finishes joins this download (the manager's per-model lock).
+            _ = models.DownloadModelAsync(row);
+        }
+
+        if (plan.BuiltInModelId is not { } pick || decision.Ai == ExpressAiAction.LeaveAlone)
+            return;
+        _enhancement.SelectedProvider = Services.AIEnhancement.AIProvider.OnThisPc;
+        if (decision.Ai == ExpressAiAction.UseInstalledNow)
+            _builtInAdoption.UseNow(pick);
+        else
+            _ = _builtInAdoption.Start(pick);
+    }
+
+    /// <summary>The Done step's line about Express's background downloads, or null when nothing downloads.</summary>
+    internal static string? ExpressDownloadNote(ExpressSetupDecision decision)
+        => (decision.DownloadSpeechModel, decision.Ai == ExpressAiAction.DownloadThenAdopt) switch
+        {
+            (true, true) => "The speech and AI models download in the background.",
+            (true, false) => "The speech model downloads in the background.",
+            (false, true) => "The AI model downloads in the background.",
+            _ => null,
+        };
 
     // ────────────────────────────────────────────────────────────────
     // Shared helpers
@@ -3589,7 +3528,7 @@ public sealed class OnboardingPage : Page
 
     /// <summary>
     /// Creates a selectable option card with icon, title, and subtitle.
-    /// Used for cloud/local transcription and theme options.
+    /// Used for the Express / Advanced path cards and the cloud / local transcription cards.
     /// </summary>
     private static Border CreateSelectableOption(string glyph, string title, string subtitle, bool isSelected)
     {
@@ -3710,8 +3649,7 @@ public sealed class OnboardingPage : Page
     /// <summary>
     /// The Done card's Updates value, one row for the two UPD-4b choices. Install is only ever
     /// triggered by a background check, so "install ON, check OFF" is reported as checks off —
-    /// the same reading the Updates step enforces by greying the install switch. With install
-    /// off, a found update lights the sidebar badge and waits for "Apply &amp; restart".
+    /// the same reading the Updates step enforces by greying the install switch.
     /// </summary>
     internal static string UpdatesSummary(bool checkEnabled, bool installEnabled)
         => !checkEnabled ? "Automatic checks OFF"

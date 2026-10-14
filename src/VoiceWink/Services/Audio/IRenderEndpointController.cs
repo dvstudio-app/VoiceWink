@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using NAudio.CoreAudioApi;
 using Serilog;
 
@@ -9,6 +10,38 @@ namespace VoiceWink.Services.Audio;
 /// muted — by us on an earlier recording, or by someone else — and the caller must not assume
 /// ownership from this value alone.</param>
 public readonly record struct RenderMuteAttempt(string? EndpointId, bool MutedByUs);
+
+/// <summary>What one <see cref="IRenderEndpointController.Unmute"/> did. Any other failure THROWS.</summary>
+public enum RenderUnmuteOutcome
+{
+    Unmuted,
+
+    /// <summary>The endpoint is not there to unmute — removed, unplugged, not present or disabled —
+    /// on positive evidence only (<see cref="RenderEndpointGone"/>). Nothing was changed.</summary>
+    EndpointGone,
+}
+
+/// <summary>
+/// AUD-37: the HRESULTs that mean "this render endpoint is not there", and nothing else. Positive
+/// evidence only — a mute VoiceWink applied must never be given up on a device that is still
+/// present, so an unknown failure is never read as "gone".
+/// </summary>
+public static class RenderEndpointGone
+{
+    /// <summary><c>HRESULT_FROM_WIN32(ERROR_NOT_FOUND)</c> — <c>GetDevice</c> on an unknown id.</summary>
+    public const int NotFound = unchecked((int)0x80070490);
+
+    /// <summary><c>HRESULT_FROM_WIN32(ERROR_DEVICE_REMOVED)</c> — the VOICEWINK-F field failure, from
+    /// <c>set_Mute</c> on an endpoint that was unplugged after it was muted.</summary>
+    public const int DeviceRemoved = unchecked((int)0x80070651);
+
+    /// <summary><c>AUDCLNT_E_DEVICE_INVALIDATED</c> — the documented <c>IMMDevice::Activate</c> result
+    /// for an endpoint that has been removed.</summary>
+    public const int DeviceInvalidated = unchecked((int)0x88890004);
+
+    public static bool IsGoneHResult(int hresult) =>
+        hresult is NotFound or DeviceRemoved or DeviceInvalidated;
+}
 
 /// <summary>
 /// The render-endpoint operations <see cref="SystemAudioMuteService"/> needs, addressed BY ENDPOINT
@@ -49,8 +82,11 @@ public interface IRenderEndpointController
     /// </summary>
     RenderMuteAttempt MuteDefaultIfUnmuted();
 
-    /// <summary>Unmute one specific endpoint by id.</summary>
-    void Unmute(string endpointId);
+    /// <summary>
+    /// Unmute one specific endpoint by id. Returns <see cref="RenderUnmuteOutcome.EndpointGone"/> when
+    /// the endpoint is not there (AUD-37); throws for any other failure.
+    /// </summary>
+    RenderUnmuteOutcome Unmute(string endpointId);
 }
 
 /// <summary>
@@ -91,21 +127,37 @@ public sealed class NAudioRenderEndpointController : IRenderEndpointController
         }
     }
 
-    public void Unmute(string endpointId)
+    public RenderUnmuteOutcome Unmute(string endpointId)
     {
-        using var enumerator = new MMDeviceEnumerator();
-
-        // GetDevice THROWS for an unknown id; it never returns null. An endpoint that merely
-        // disappeared usually still resolves (Windows keeps Unplugged/NotPresent entries) and
-        // throws later, from the Activate inside AudioEndpointVolume. The caller treats both alike.
-        var device = enumerator.GetDevice(endpointId);
+        MMDevice? device = null;
         try
         {
+            using var enumerator = new MMDeviceEnumerator();
+
+            // GetDevice THROWS for an unknown id; it never returns null. An endpoint that merely
+            // disappeared usually still resolves (Windows keeps Unplugged/NotPresent entries) and
+            // reports a non-Active state — read BEFORE the AudioEndpointVolume getter, so a dead
+            // endpoint is never activated (AUD-11: endpoint COM calls stall under a held lock).
+            device = enumerator.GetDevice(endpointId);
+            if (device.State != DeviceState.Active)
+                return RenderUnmuteOutcome.EndpointGone;
+
             device.AudioEndpointVolume.Mute = false;
+            return RenderUnmuteOutcome.Unmuted;
+        }
+        // ONE catch over the whole body (AUD-37, Grok plan review): a removal racing the state read
+        // throws from GetDevice, from the State read, from the Activate inside the AudioEndpointVolume
+        // getter, or from set_Mute (the field stack). A narrower catch around set_Mute alone left the
+        // Activate path — the usual one — reporting "unknown failure", which kept the claim and
+        // blocked every later mute for the session.
+        catch (COMException ex) when (RenderEndpointGone.IsGoneHResult(ex.HResult))
+        {
+            return RenderUnmuteOutcome.EndpointGone;
         }
         finally
         {
-            DisposeQuietly(device);
+            if (device is not null)
+                DisposeQuietly(device);
         }
     }
 

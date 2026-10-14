@@ -7,18 +7,29 @@ namespace VoiceWink.Services.Audio;
 /// <summary>
 /// Mutes/unmutes system audio during recording, so speaker output cannot bleed into the capture.
 ///
-/// <para><b>One piece of state, and it is an OWNERSHIP claim.</b>
-/// <see cref="_mutedEndpointId"/> is non-null exactly while this service is holding a mute it has
-/// not yet restored, and it names the endpoint to restore. There is deliberately no companion
-/// boolean: the previous shape carried a <c>_didMuteAudio</c> flag beside the id, and every path
-/// that could desynchronise the two — a re-entrant mute, a failed unmute, a throw between the two
-/// assignments — stranded a mute that nothing could ever clear.</para>
+/// <para><b>The state is OWNERSHIP claims, in two places.</b>
+/// <see cref="_mutedEndpointId"/> is the ACTIVE claim: non-null exactly while this service holds a
+/// mute it has not restored on an endpoint it can still reach, and it names the endpoint to restore.
+/// <see cref="_parkedEndpointIds"/> holds mutes on endpoints that went AWAY before they could be
+/// restored (AUD-37) — an unplugged headset or dock. There is deliberately no companion boolean: the
+/// previous shape carried a <c>_didMuteAudio</c> flag beside the id, and every path that could
+/// desynchronise the two stranded a mute that nothing could ever clear.</para>
 ///
-/// <para><b>Two rules follow, and both are load-bearing.</b> (1) A mute is released ONLY by a
-/// successful unmute — never by observing that the endpoint is already muted, because this service
-/// cannot tell its own mute from a third party's by looking. (2) While a mute is held, a new
-/// recording does NOT take a different endpoint: overwriting the id is precisely what left the
-/// original muted forever. <see cref="IRenderEndpointController"/> carries the field evidence.</para>
+/// <para><b>Three rules follow, and all are load-bearing.</b> (1) A claim, active or parked, is
+/// released ONLY by a successful unmute — never by observing that the endpoint is already muted,
+/// because this service cannot tell its own mute from a third party's by looking. (The one move that
+/// is not a release: a parked id becoming the active claim again.) (2) While an ACTIVE claim is held,
+/// a new recording does NOT take a different endpoint: overwriting the id is precisely what left the
+/// original muted forever. <see cref="IRenderEndpointController"/> carries the field evidence.
+/// (3) A PARKED claim blocks nothing: an endpoint that is gone cannot bleed into a capture, and
+/// letting it block (the pre-AUD-37 shape) left every later recording of the session unmuted while
+/// each stop logged one Sentry Error against the removed device.</para>
+///
+/// <para><b>And one about the setting (AUD-38):</b> "Mute system audio while recording" gates
+/// APPLYING a mute, never releasing one — a claim this service holds is restored through the same
+/// release path whatever the setting says. The toggle itself does not release anything: a held claim
+/// may belong to a recording still in progress, and unmuting on the switch would open the speakers
+/// into a live capture. Idle claims wait for the next stop or for Dispose.</para>
 /// </summary>
 public sealed class SystemAudioMuteService : IDisposable
 {
@@ -28,9 +39,13 @@ public sealed class SystemAudioMuteService : IDisposable
     private readonly IRenderEndpointController _endpoints;
     private readonly object _lock = new();
 
-    /// <summary>The endpoint this service muted and has not yet restored — the whole of its
-    /// ownership state. Non-null means "we are holding a mute on this endpoint".</summary>
+    /// <summary>The ACTIVE claim: the endpoint this service muted and has not yet restored.
+    /// Non-null means "we are holding a mute on this endpoint", and it blocks taking another.</summary>
     private string? _mutedEndpointId;
+
+    /// <summary>AUD-37: mutes this service applied on endpoints that were gone when it tried to
+    /// restore them. Retried at every stop and at Dispose; they block nothing.</summary>
+    private readonly HashSet<string> _parkedEndpointIds = new(StringComparer.Ordinal);
 
     private CancellationTokenSource? _unmuteCts;
 
@@ -67,7 +82,8 @@ public sealed class SystemAudioMuteService : IDisposable
             // bleed is not suppressed for that take. That is the accepted trade — a stranded
             // mute is an incident the user cannot diagnose or clear, bleed on one overlapping
             // take is neither — and reaching it needs either a resumption delay > 0 with a
-            // quick successor, or an unmute that already failed.
+            // quick successor, or an unmute that failed on an endpoint that is still present
+            // (one that is GONE is parked instead, and blocks nothing — AUD-37).
             if (_mutedEndpointId is not null)
             {
                 Logger.Debug("System audio mute already held (dev={DeviceTag}); keeping it",
@@ -75,6 +91,8 @@ public sealed class SystemAudioMuteService : IDisposable
                 return;
             }
 
+            // Parked claims are NOT retried here: that would add endpoint COM calls to the
+            // recording-start path, inside this lock (AUD-11). The stop path retries them.
             try
             {
                 var attempt = _endpoints.MuteDefaultIfUnmuted();
@@ -86,8 +104,19 @@ public sealed class SystemAudioMuteService : IDisposable
                 }
                 else if (attempt.MutedByUs)
                 {
+                    // A fresh claim supersedes a parked one on the same endpoint.
+                    _parkedEndpointIds.Remove(attempt.EndpointId);
                     _mutedEndpointId = attempt.EndpointId;
                     Logger.Information("System audio muted (dev={DeviceTag})",
+                        CaptureDeviceTag.For(attempt.EndpointId));
+                }
+                else if (_parkedEndpointIds.Remove(attempt.EndpointId))
+                {
+                    // AUD-37: a device we muted, that went away before we could restore it, is back
+                    // as the default and still muted. That mute is ours — take it back as the active
+                    // claim, so this stop restores it.
+                    _mutedEndpointId = attempt.EndpointId;
+                    Logger.Information("System audio mute held on a returned device (dev={DeviceTag})",
                         CaptureDeviceTag.For(attempt.EndpointId));
                 }
                 else
@@ -111,12 +140,14 @@ public sealed class SystemAudioMuteService : IDisposable
     /// </summary>
     public async Task UnmuteAsync()
     {
-        if (!_settings.GetBool(AppDefaults.IsSystemMuteEnabled, true))
-            return;
-
+        // No setting check here (AUD-38): the setting gates APPLYING a mute (Mute()), never releasing
+        // one. A check here stranded the mute of a recording during which the user turned the feature
+        // off — the device stayed muted until quit. With nothing held the early-out below makes this a
+        // no-op, exactly as the feature-off path was before. Do not read the setting after the delay
+        // either: that would strand the same in-flight release.
         lock (_lock)
         {
-            if (_mutedEndpointId is null)
+            if (_mutedEndpointId is null && _parkedEndpointIds.Count == 0)
             {
                 Logger.Debug("Did not mute audio, skipping unmute");
                 return;
@@ -155,24 +186,74 @@ public sealed class SystemAudioMuteService : IDisposable
     {
         lock (_lock)
         {
-            var endpointId = _mutedEndpointId;
-            if (endpointId is null) return;
+            UnmuteActiveClaim();
+            RetryParkedClaims();
+        }
+    }
 
-            try
+    private void UnmuteActiveClaim()
+    {
+        var endpointId = _mutedEndpointId;
+        if (endpointId is null) return;
+
+        try
+        {
+            // By ID, NOT by current default: on a Bluetooth headset the default render
+            // endpoint has very likely changed since Mute() (HFP during capture, A2DP after).
+            if (_endpoints.Unmute(endpointId) == RenderUnmuteOutcome.Unmuted)
             {
-                // By ID, NOT by current default: on a Bluetooth headset the default render
-                // endpoint has very likely changed since Mute() (HFP during capture, A2DP after).
-                _endpoints.Unmute(endpointId);
                 _mutedEndpointId = null;
                 Logger.Information("System audio unmuted (dev={DeviceTag})", CaptureDeviceTag.For(endpointId));
+                return;
+            }
+
+            // AUD-37: the device is gone (unplugged headset or dock). Park the claim so it no
+            // longer blocks muting the device that replaced it, and restore it if it returns.
+            // Warning, not Error: the environment changed, nothing here is broken (Sentry
+            // VOICEWINK-F was one Error per recording for a whole session).
+            _mutedEndpointId = null;
+            _parkedEndpointIds.Add(endpointId);
+            Logger.Warning("Muted output device is no longer present; it will be unmuted if it returns (dev={DeviceTag})",
+                CaptureDeviceTag.For(endpointId));
+        }
+        catch (Exception ex)
+        {
+            // Keep the claim. Mute() refuses to replace a held endpoint, so this id survives
+            // until a later stop or Dispose restores it — the endpoint is still PRESENT (a gone
+            // one is parked above), so this is a failure we do not understand and must see.
+            Logger.Error(ex, "Failed to unmute system audio (dev={DeviceTag})",
+                CaptureDeviceTag.For(endpointId));
+        }
+    }
+
+    private void RetryParkedClaims()
+    {
+        if (_parkedEndpointIds.Count == 0) return;
+
+        // A copy: the loop removes restored ids from the set it would otherwise be enumerating.
+        foreach (var endpointId in _parkedEndpointIds.ToArray())
+        {
+            try
+            {
+                if (_endpoints.Unmute(endpointId) == RenderUnmuteOutcome.Unmuted)
+                {
+                    _parkedEndpointIds.Remove(endpointId);
+                    Logger.Information("System audio unmuted on a returned device (dev={DeviceTag})",
+                        CaptureDeviceTag.For(endpointId));
+                }
+                else
+                {
+                    // Still gone: the expected state of an unplugged device, checked every stop.
+                    Logger.Debug("Muted output device still not present (dev={DeviceTag})",
+                        CaptureDeviceTag.For(endpointId));
+                }
             }
             catch (Exception ex)
             {
-                // Keep the claim. Mute() refuses to replace a held endpoint, so this id survives
-                // until a later stop or Dispose restores it — the endpoint may simply be absent
-                // for a moment (headset mid-reconnect), and a stranded mute is the worse outcome.
-                Logger.Error(ex, "Failed to unmute system audio (dev={DeviceTag})",
-                    CaptureDeviceTag.For(endpointId));
+                // Keep the claim and try again at the next stop. Warning without the exception
+                // object: this repeats every stop while it lasts, and a stack each time is noise.
+                Logger.Warning("Could not unmute a returned output device: {ErrorType} (dev={DeviceTag})",
+                    ex.GetType().Name, CaptureDeviceTag.For(endpointId));
             }
         }
     }
