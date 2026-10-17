@@ -323,8 +323,10 @@ internal sealed class LlamaServerProcess
                 if (!verdict.Spawnable)
                 {
                     // Not charged: nothing was spawned. Sanitized - the reason can carry a certificate
-                    // subject, which is attacker-authored text on a planted file.
-                    Logger.Error("llama-server: refusing to spawn - {Reason}", LogValueSanitizer.SingleLine(verdict.RefusalReason));
+                    // subject, which is attacker-authored text on a planted file - and logged as
+                    // {LocalException}, which the Sentry path redacts: this Error IS a Sentry event, and
+                    // {Reason} carried that subject into it (2026-10-17, the parakeet-server sites' fix).
+                    Logger.Error("llama-server: refusing to spawn - {LocalException}", LogValueSanitizer.SingleLine(verdict.RefusalReason));
                     return default;
                 }
                 var apiKey = LlamaServerLaunch.NewApiKey();

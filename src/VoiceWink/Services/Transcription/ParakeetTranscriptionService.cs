@@ -131,6 +131,13 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
     /// <summary>True when this build and machine can actually run the engine.</summary>
     public bool IsAvailable => _featureEnabled && ParakeetNativeProbe.IsSupported;
 
+    /// <summary>Which half of <see cref="IsAvailable"/> said no, or null when it says yes — the two
+    /// need different words in front of the user (the build vs this processor).</summary>
+    internal ParakeetUnavailableCause? StaticUnavailableCause
+        => !_featureEnabled ? ParakeetUnavailableCause.BuildLever
+         : !ParakeetNativeProbe.IsSupported ? ParakeetUnavailableCause.CpuUnsupported
+         : null;
+
     /// <summary>
     /// Build (or reuse) the recognizer for a bundle directory. Cheap when already loaded — this sits
     /// behind the recording-start hot path, whose hotkey→pill latency is probe-pinned.
@@ -330,9 +337,15 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                     // failed is a NORMAL transcription failure (REL-12 retains the WAV, amber
                     // Retry) — never the misleading "No Parakeet model is loaded" a sherpa
                     // branch with no model would throw.
-                    throw new InvalidOperationException(
-                        "Built-in transcription is unavailable right now: the Parakeet engine could not start " +
-                        "and no legacy engine remains. Try again, or re-download the model.");
+                    //
+                    // Since 2026-10-17 the failure says WHICH cause, on the pill and in Sentry: three
+                    // causes (warm-up exit unconfirmed, the acquire's own failure, a GGUF that cannot
+                    // serve) used to share one generic sentence and one generic event.
+                    var report = acquire.Report
+                        ?? new ParakeetUnavailableReport(ParakeetUnavailableCause.EngineFailedToStart);
+                    try { ParakeetUnavailableReporter.Report(report); }
+                    catch (Exception ex) { Logger.Debug("Parakeet unavailable report failed: {ExceptionType}", ex.GetType().Name); }
+                    throw new LocalEngineUnavailableException(report);
                 }
                 else if (_recognizer is null)
                 {
@@ -418,7 +431,8 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
             var emptyChunks = plan.Count(c => c.Count == 0);
             if (plan.Count > 1 && emptyChunks > 0)
             {
-                Logger.Warning(
+                // Self-declared unreachable: a defect, so it reaches Sentry once per run (2026-10-17).
+                Logger.Write(Helpers.SessionErrorBudget.LevelFor("parakeet-zero-length-chunk"),
                     "Parakeet chunk plan contains {EmptyChunks} zero-length chunk(s) of {ChunkCount} — " +
                     "audio may be dropped at a join; this should be unreachable",
                     emptyChunks, plan.Count);

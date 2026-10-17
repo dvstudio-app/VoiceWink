@@ -1,9 +1,17 @@
 using Serilog;
+using VoiceWink.Helpers;
 
 namespace VoiceWink.Services.Transcription;
 
 /// <summary>
-/// Can this machine load sherpa-onnx at all (TRN-1 step 3)?
+/// Can this machine run the Parakeet engine this build ships (TRN-1 step 3; TRN-79)?
+///
+/// <para><b>TRN-79 (2026-10-17): the default engine is parakeet-server, and it needs the AVX2
+/// class.</b> This probe was written for sherpa-onnx and checked SSE2 only; after the TRN-29 flip
+/// made parakeet.cpp the default, a PC without AVX2 passed it, downloaded the model and had the
+/// child die with <c>0xC000001D</c> in GPU mode and again in the CPU retry (VOICEWINK-J/K/M). The
+/// requirement per binary now lives in <see cref="Helpers.EngineCpuRequirement"/>; the paragraphs
+/// below describe the sherpa floor, which still governs a <c>-p:PcppEnabled=false</c> build.</para>
 ///
 /// <para><b>Why a probe rather than a try/catch around the first use.</b> A missing CPU feature in
 /// native code is not an exception — it is an illegal instruction, which terminates the process.
@@ -46,30 +54,43 @@ internal static class ParakeetNativeProbe
 {
     private static ILogger Logger => Log.ForContext(typeof(ParakeetNativeProbe));
 
-    private static readonly Lazy<bool> Supported = new(Evaluate, isThreadSafe: true);
+    private static readonly Lazy<IReadOnlyList<string>> MissingLazy = new(EvaluateCurrent, isThreadSafe: true);
 
     /// <summary>True when the engine can be loaded on this machine.</summary>
-    internal static bool IsSupported => Supported.Value;
+    internal static bool IsSupported => MissingLazy.Value.Count == 0;
 
-    private static bool Evaluate()
+    /// <summary>What this processor lacks for the engine this build ships — empty when supported. The
+    /// Models page's reason line reads it.</summary>
+    internal static IReadOnlyList<string> MissingExtensions => MissingLazy.Value;
+
+    private static IReadOnlyList<string> EvaluateCurrent()
+        => Evaluate(CpuInstructionSets.Current, Environment.Is64BitProcess, PcppFeature.IsEnabled);
+
+    /// <summary>
+    /// The pure decision. <paramref name="pcppEnabled"/> picks the binary: the parakeet.cpp server
+    /// in every ordinary build (TRN-79: AVX2-class + BMI2 — this probe checked only SSE2 for it until
+    /// 2026-10-17, which is how a PC without AVX2 was offered Parakeet and its child died with an
+    /// illegal instruction), sherpa-onnx's SSE2 floor in a kill-switch build.
+    /// </summary>
+    internal static IReadOnlyList<string> Evaluate(CpuInstructionSets cpu, bool is64BitProcess, bool pcppEnabled)
     {
         // The runtime package ships win-x64 natives only. A 32-bit or ARM process cannot load them,
         // and finding that out via a BadImageFormatException mid-recording is worse than knowing now.
-        if (!Environment.Is64BitProcess)
+        if (!is64BitProcess)
         {
             Logger.Information("Parakeet unavailable: not a 64-bit process");
-            return false;
+            return [EngineCpuRequirements.NotX86];
         }
 
-        if (!global::System.Runtime.Intrinsics.X86.X86Base.IsSupported ||
-            !global::System.Runtime.Intrinsics.X86.Sse2.IsSupported)
+        var requirement = pcppEnabled ? EngineCpuRequirement.ParakeetServer : EngineCpuRequirement.X64Baseline;
+        var missing = EngineCpuRequirements.Missing(requirement, cpu);
+        if (missing.Count > 0)
         {
-            // onnxruntime's documented floor for its default x64 build. Below this the binary is not
-            // merely slow, it is unrunnable.
-            Logger.Information("Parakeet unavailable: CPU lacks the x64/SSE2 baseline onnxruntime requires");
-            return false;
+            // Below this the binary is not merely slow, it is unrunnable.
+            Logger.Information(
+                "Parakeet unavailable: processor lacks {Missing} (the engine needs {Required})",
+                string.Join(' ', missing), EngineCpuRequirements.Describe(requirement));
         }
-
-        return true;
+        return missing;
     }
 }

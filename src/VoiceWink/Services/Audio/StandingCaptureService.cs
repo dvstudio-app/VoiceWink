@@ -3,6 +3,7 @@ using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
 using Serilog;
+using Serilog.Events;
 using VoiceWink.Helpers;
 
 namespace VoiceWink.Services.Audio;
@@ -120,6 +121,9 @@ public sealed class StandingCaptureService : IDisposable
     // the same immediate-device-error the cold recorder guards) instead of resurrecting it as a
     // claimable session (Codex diff r3).
     private long _deadSession;
+    // The exception the dead session's RecordingStopped carried, so a died-at-birth start reports
+    // the device's own cause (its HRESULT) rather than the generic stand-in (2026-10-17).
+    private Exception? _deadException;
     private IWaveIn? _capture;
     private MMDevice? _device;
     private bool _running;
@@ -733,11 +737,16 @@ public sealed class StandingCaptureService : IDisposable
                 // intent-off abandon deliberately does NOT count as a failure — the user asked
                 // for exactly this outcome, and a later ON starts fresh.
                 bool diedAtBirth;
-                lock (_gate) { diedAtBirth = !_disposed && _deadSession == session; }
+                Exception? deathCause;
+                lock (_gate)
+                {
+                    diedAtBirth = !_disposed && _deadSession == session;
+                    deathCause = diedAtBirth ? _deadException : null;
+                }
                 if (diedAtBirth)
                 {
                     OnStartFailure(reason, "died-at-birth",
-                        new AudioCaptureUnavailableException("Standing capture stopped immediately after start."));
+                        deathCause ?? new AudioCaptureUnavailableException("Standing capture stopped immediately after start."));
                 }
                 return;
             }
@@ -769,12 +778,20 @@ public sealed class StandingCaptureService : IDisposable
             _parked = parked;
         }
 
-        Logger.Warning("Standing capture start failed ({Reason}, phase={Phase}, failures={Failures}): {ExType}",
-            reason, phase, failures, ex.GetType().Name);
+        Logger.Warning("Standing capture start failed ({Reason}, phase={Phase}, failures={Failures}): {ExType} hresult=0x{HResult:X8}",
+            reason, phase, failures, ex.GetType().Name, ex.HResult);
 
         if (parked)
         {
-            Logger.Information("Standing capture parked after {Failures} consecutive failures — will retry on device change", failures);
+            // A missing microphone, a stopped audio service, another app's exclusive hold or a
+            // privacy denial parks quietly; any other cause means instant recording does not work
+            // on this PC, which Sentry sees once per run.
+            var level = StandingCapturePolicy.IsExpectedUnavailableFailure(ex)
+                ? LogEventLevel.Information
+                : Helpers.SessionErrorBudget.LevelFor($"standing-capture-parked:{ex.GetType().Name}:0x{ex.HResult:X8}");
+            Logger.Write(level,
+                "Standing capture parked until a device change after {Failures} consecutive failures (last: {ExType} hresult=0x{HResult:X8}, phase={Phase})",
+                failures, ex.GetType().Name, ex.HResult, phase);
             return;
         }
 
@@ -922,12 +939,14 @@ public sealed class StandingCaptureService : IDisposable
             // Marks a capture that died AT BIRTH (synchronous RecordingStopped from inside
             // StartRecording) so the start's conditional publish refuses it (Codex diff r3).
             _deadSession = session;
+            _deadException = e.Exception;
             _running = false;
             if (_disposed) return;
         }
 
         if (e.Exception != null)
-            Logger.Warning("Standing capture: dead (RecordingStopped, {ExType})", e.Exception.GetType().Name);
+            Logger.Warning("Standing capture: dead (RecordingStopped, {ExType} hresult=0x{HResult:X8})",
+                e.Exception.GetType().Name, e.Exception.HResult);
         else
             Logger.Information("Standing capture: dead (RecordingStopped, no exception)");
 

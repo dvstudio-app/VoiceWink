@@ -50,6 +50,10 @@ public sealed class HomePage : Page
     // the window ends under an open Home page. 30 s keeps the minutes honest once the countdown is
     // below a day (the License page ticks at 5 s because it also re-projects command outcomes).
     private readonly StackPanel _trialPanel;
+
+    // The model downloads running in the background (Express setup starts them after its last
+    // screen), with Cancel, so the first page the user lands on says the app is not fully ready yet.
+    private readonly DownloadsCard _downloadsCard;
     private readonly TextBlock _trialText;
     private readonly TextBlock _trialLink;
     private DispatcherTimer? _trialTimer;
@@ -197,6 +201,10 @@ public sealed class HomePage : Page
             Visibility = Visibility.Collapsed,
             Children = { _trialText, _trialLink }
         };
+
+        // ── Background downloads ─────────────────────────────────────
+        _downloadsCard = new DownloadsCard("Downloads");
+        _downloadsCard.Element.Margin = new Thickness(0, 0, 0, LineGapBelow);
 
         // ── Store rating line (LNC-14 a) ─────────────────────────────
         // One plain link, no question in front of it and no reward; collapsed unless the prompt says
@@ -385,6 +393,7 @@ public sealed class HomePage : Page
                 title,
                 _timeSavedPill,
                 _trialPanel,
+                _downloadsCard.Element,
                 _storeRatingLink,
                 buttonContainer,
                 _statusBlock,

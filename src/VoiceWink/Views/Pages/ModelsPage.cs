@@ -637,15 +637,29 @@ public sealed class ModelsPage : Page
     private UIElement CreateModelCard(ModelItemViewModel model, LocalComputeSnapshot compute,
         TranscriptionSpeedStore? speeds)
     {
+        // A selected model still downloading is not in use yet (Express setup selects it before the
+        // download ends), so it is shown as a download until it is installed.
+        var isActive = model.IsSelected && model.IsDownloaded;
+
+        // A download started elsewhere (Express setup, a recording) changes these while the page is
+        // open; the card is rebuilt so it turns Active and loses its progress panel when it ends.
+        PropertyChangedEventHandler stateHandler = (_, e) =>
+        {
+            if (e.PropertyName is nameof(ModelItemViewModel.IsDownloaded) or nameof(ModelItemViewModel.IsDownloading))
+                RefreshModelList();
+        };
+        model.PropertyChanged += stateHandler;
+        _modelHandlers.Add((model, stateHandler));
+
         // ── Left side: icon + model info ──────────────────────────────
-        var iconBg = model.IsSelected
+        var iconBg = isActive
             ? AppTheme.Brush(ColorHelper.FromArgb(51, 48, 209, 88))   // green 20%
             : model.IsDownloaded
                 ? AppTheme.Brush(AppTheme.ActivePillBg)                // blue 20%
                 : AppTheme.Brush(ColorHelper.FromArgb(40, 142, 142, 147)); // subtle
 
         var iconGlyph = model.IsDownloaded ? "\uE73E" : "\uE896"; // Checkmark or Download
-        var iconColor = model.IsSelected
+        var iconColor = isActive
             ? AppTheme.AccentGreenText
             : model.IsDownloaded
                 ? AppTheme.AccentBlueText
@@ -667,7 +681,7 @@ public sealed class ModelsPage : Page
             }
         };
         // The colour carries the meaning; the tooltip says it.
-        ToolTipService.SetToolTip(iconBorder, AppTheme.ModelStatusTooltip(model.IsSelected, model.IsDownloaded));
+        ToolTipService.SetToolTip(iconBorder, AppTheme.ModelStatusTooltip(isActive, model.IsDownloaded));
 
         var nameBlock = new TextBlock
         {
@@ -717,6 +731,17 @@ public sealed class ModelsPage : Page
             Margin = new Thickness(12, 0, 0, 0),
             Children = { nameRow, descBlock }
         };
+        if (model.UnavailableReason.Length > 0)
+        {
+            textPanel.Children.Add(new TextBlock
+            {
+                Text = model.UnavailableReason,
+                FontSize = 12,
+                Foreground = AppTheme.Brush(AppTheme.WarningText),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+        }
 
         var leftPanel = new StackPanel
         {
@@ -733,32 +758,42 @@ public sealed class ModelsPage : Page
             VerticalAlignment = VerticalAlignment.Center
         };
 
-        if (model.IsSelected)
+        if (isActive)
         {
             // Green "Active" badge
             var activeBadge = AppTheme.CreateActiveStatusBadge();
             rightPanel.Children.Add(activeBadge);
         }
 
+        // TRN-79: a row whose engine cannot run on this PC offers neither Download nor Select (owner,
+        // 2026-10-17: shown, disabled, with the reason). Delete stays on an unselected downloaded row
+        // so the disk can be reclaimed.
+        var unavailable = model.UnavailableReason.Length > 0;
+
         if (model.IsDownloaded)
         {
             if (!model.IsSelected)
             {
-                var selectBtn = AppTheme.CreateCompactButton("Select");
-                selectBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
-                selectBtn.Tapped += async (_, _) =>
+                Border? selectBtn = null;
+                if (!unavailable)
                 {
-                    // The English-only confirmation dialog that used to sit here is gone with the
-                    // rows it guarded (2026-08-03): no catalogue model is English-only, so it could
-                    // only ever protect an unreachable state. `EnglishOnlyModelNaming.IsEnglishOnly`
-                    // survives for the two places where getting it wrong is silent — recognition
-                    // language and tokenizer vocabulary — but there is nothing left to warn about
-                    // at selection time.
-                    AppTheme.SetButtonEnabled(selectBtn, false, "Loading...");
-                    await _viewModel.SelectModelCommand.ExecuteAsync(model);
-                    RefreshModelList();
-                };
-                rightPanel.Children.Add(selectBtn);
+                    var select = AppTheme.CreateCompactButton("Select");
+                    select.MinWidth = AppTheme.ModelCardControlMinWidth;
+                    select.Tapped += async (_, _) =>
+                    {
+                        // The English-only confirmation dialog that used to sit here is gone with the
+                        // rows it guarded (2026-08-03): no catalogue model is English-only, so it could
+                        // only ever protect an unreachable state. `EnglishOnlyModelNaming.IsEnglishOnly`
+                        // survives for the two places where getting it wrong is silent — recognition
+                        // language and tokenizer vocabulary — but there is nothing left to warn about
+                        // at selection time.
+                        AppTheme.SetButtonEnabled(select, false, "Loading...");
+                        await _viewModel.SelectModelCommand.ExecuteAsync(model);
+                        RefreshModelList();
+                    };
+                    rightPanel.Children.Add(select);
+                    selectBtn = select;
+                }
 
                 var deleteBtn = AppTheme.CreateCompactButton("Delete", isDanger: true);
                 deleteBtn.Tapped += async (_, _) =>
@@ -788,7 +823,7 @@ public sealed class ModelsPage : Page
                         // rebuild the card before IsDownloaded flips (the UAT 15.16 dead-button
                         // class) and fault an unobserved task. (The toolkit strips the Async
                         // suffix, so the generated property is still DeleteModelCommand.)
-                        AppTheme.SetButtonEnabled(selectBtn, false);
+                        if (selectBtn is not null) AppTheme.SetButtonEnabled(selectBtn, false);
                         AppTheme.SetButtonEnabled(deleteBtn, false, "Deleting...");
                         await _viewModel.DeleteModelCommand.ExecuteAsync(model);
                         RefreshModelList();
@@ -801,7 +836,7 @@ public sealed class ModelsPage : Page
         {
             rightPanel.Children.Add(CreateDownloadProgressPanel(model));
         }
-        else
+        else if (!unavailable)
         {
             var downloadBtn = AppTheme.CreateCompactButton("Download", isAccent: true);
             downloadBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
@@ -864,7 +899,7 @@ public sealed class ModelsPage : Page
         var cardBorder = new Border
         {
             Background = AppTheme.Brush(AppTheme.CardBg),
-            BorderBrush = model.IsSelected
+            BorderBrush = isActive
                 ? AppTheme.Brush(ColorHelper.FromArgb(80, 48, 209, 88))  // subtle green border for active
                 : AppTheme.Brush(AppTheme.CardBorderColor),
             BorderThickness = new Thickness(1),
@@ -898,7 +933,7 @@ public sealed class ModelsPage : Page
 
         var progressText = new TextBlock
         {
-            Text = $"{(model.DownloadProgress * 100):F0}%",
+            Text = DownloadProgressText.Percent(model.DownloadProgress),
             FontSize = 11,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             VerticalAlignment = VerticalAlignment.Center,
@@ -906,7 +941,9 @@ public sealed class ModelsPage : Page
         };
 
         var cancelBtn = AppTheme.CreateCompactButton("Cancel", isDanger: true);
-        cancelBtn.Tapped += (_, _) => model.DownloadCts?.Cancel();
+        // The Downloads card's Cancel: it also stops a dictation waiting for this model, and a
+        // dictation does not start the model again by itself until a Download button asks.
+        cancelBtn.Tapped += (_, _) => Services.Transcription.BackgroundDownloads.Instance.Cancel(model.Name);
 
         PropertyChangedEventHandler progressHandler = (_, e) =>
         {
@@ -915,7 +952,7 @@ public sealed class ModelsPage : Page
                 DispatcherQueue.TryEnqueue(() =>
                 {
                     progressBar.Value = model.DownloadProgress * 100;
-                    progressText.Text = $"{(model.DownloadProgress * 100):F0}%";
+                    progressText.Text = DownloadProgressText.Percent(model.DownloadProgress);
                 });
             }
         };

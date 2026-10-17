@@ -52,6 +52,19 @@ public sealed class ParakeetLocalRuntime : ILocalTranscriptionRuntime
     /// <summary>Build lever AND CPU floor — see <see cref="ParakeetTranscriptionService.IsAvailable"/>.</summary>
     public bool IsAvailable => _parakeet.IsAvailable;
 
+    /// <summary>Which half of <see cref="IsAvailable"/> said no (build lever or processor), or null.</summary>
+    internal ParakeetUnavailableCause? StaticUnavailableCause => _parakeet.StaticUnavailableCause;
+
+    /// <summary>TRN-79: the build lever and the processor are different facts, so they read
+    /// differently.</summary>
+    public string UnavailableReason => StaticUnavailableCause switch
+    {
+        ParakeetUnavailableCause.BuildLever => "Not available in this version.",
+        ParakeetUnavailableCause.CpuUnsupported
+            => Helpers.EngineCpuRequirements.ReasonLine(ParakeetNativeProbe.MissingExtensions),
+        _ => "",
+    };
+
     public bool CanServe(string modelName) => Find(modelName) is not null;
 
     public string? Canonicalize(string modelName) => Find(modelName)?.Name;
@@ -75,17 +88,27 @@ public sealed class ParakeetLocalRuntime : ILocalTranscriptionRuntime
     }
 
     public async Task<PrepareOutcome> PrepareAsync(string modelName, string? language, CancellationToken ct)
+        => (await PrepareWithReportAsync(modelName, language, ct).ConfigureAwait(false)).Outcome;
+
+    /// <summary>
+    /// <see cref="PrepareAsync"/> with the cause of an Unavailable answer. Every Unavailable leaves
+    /// through <see cref="Unavailable"/>, which hands the report to
+    /// <see cref="ParakeetUnavailableReporter"/> — the one place it becomes a Sentry event — so the
+    /// preload, the Models page and the recording path all report, and none reports twice.
+    /// </summary>
+    public async Task<RuntimePrepareResult> PrepareWithReportAsync(string modelName, string? language, CancellationToken ct)
     {
         var model = Find(modelName);
         if (model is null) return PrepareOutcome.UnknownModel;
 
         // Checked BEFORE the install check: an unavailable engine must not send the caller down the
         // download path for a model it could never run.
-        if (!_parakeet.IsAvailable)
+        if (_parakeet.StaticUnavailableCause is { } staticCause)
         {
             Logger.Information(
-                "Parakeet is unavailable on this build or machine; '{Model}' cannot be prepared", model.Name);
-            return PrepareOutcome.Unavailable;
+                "Parakeet is unavailable on this build or machine ({Cause}); '{Model}' cannot be prepared",
+                staticCause, model.Name);
+            return Unavailable(new ParakeetUnavailableReport(staticCause));
         }
 
         // TRN-29 slice 4: with the pcpp backend registered, IT resolves what serves — after the
@@ -97,16 +120,18 @@ public sealed class ParakeetLocalRuntime : ILocalTranscriptionRuntime
         // so the decode at recording stop finds it ready.
         if (_pcppBackend is not null)
         {
-            switch (await _pcppBackend.PrepareAsync(ct).ConfigureAwait(false))
+            var prepared = await _pcppBackend.PrepareWithReportAsync(ct).ConfigureAwait(false);
+            switch (prepared.Outcome)
             {
                 case PcppPrepareOutcome.ServePcpp:
                     return PrepareOutcome.Loaded;
                 case PcppPrepareOutcome.NotDownloaded:
                     return PrepareOutcome.NotDownloaded;
                 case PcppPrepareOutcome.Unavailable:
-                    Logger.Warning(
-                        "The parakeet.cpp backend cannot serve and no legacy bundle remains; reporting unavailable");
-                    return PrepareOutcome.Unavailable;
+                    // A backend that cannot say why still reports — as an engine that would not
+                    // start, the honest reading of "bytes exist, nothing serves".
+                    return Unavailable(prepared.Report
+                        ?? new ParakeetUnavailableReport(ParakeetUnavailableCause.EngineFailedToStart));
                     // PcppPrepareOutcome.ServeSherpa: fall through.
             }
         }
@@ -153,11 +178,27 @@ public sealed class ParakeetLocalRuntime : ILocalTranscriptionRuntime
             // other). Reported as Unavailable rather than thrown, because it IS the same user-facing
             // fact — this machine cannot run the engine — and every caller already handles that
             // member without offering a download.
-            Logger.Error(ex, "The Parakeet native library did not load; reporting the engine unavailable");
-            return PrepareOutcome.Unavailable;
+            //
+            // Since 2026-10-17 the Sentry event is the reporter's (once per session per failure);
+            // the full exception stays in the local file under {LocalException}, which the Sentry
+            // enricher redacts by name, and the object is NOT attached (diagnostics.md: the
+            // enricher cannot redact LogEvent.Exception). The event carries type + HResult.
+            Logger.Warning("The Parakeet native library did not load; reporting the engine unavailable: {LocalException}",
+                ex.ToString());
+            var inner = ex is TypeInitializationException { InnerException: { } cause } ? cause : ex;
+            return Unavailable(new ParakeetUnavailableReport(ParakeetUnavailableCause.NativeLoadFailed,
+                Detail: $"{inner.GetType().Name} hresult=0x{inner.HResult:X8}"));
         }
 
         return PrepareOutcome.Loaded;
+    }
+
+    /// <summary>The one exit for an Unavailable answer: report, then return it with its cause.</summary>
+    private static RuntimePrepareResult Unavailable(ParakeetUnavailableReport report)
+    {
+        try { ParakeetUnavailableReporter.Report(report); }
+        catch (Exception ex) { Logger.Debug("Parakeet unavailable report failed: {ExceptionType}", ex.GetType().Name); }
+        return new RuntimePrepareResult(PrepareOutcome.Unavailable, report);
     }
 
     /// <summary>

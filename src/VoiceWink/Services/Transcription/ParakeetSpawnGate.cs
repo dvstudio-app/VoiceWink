@@ -39,7 +39,18 @@ public static class ParakeetSpawnGate
     /// (reason text comes from <see cref="ParakeetServerProvenance.DescribeRefusal"/>, which
     /// names BOTH branches — hash mismatch AND signature verdict — because a single-branch
     /// message hid a systematic release defect for a week in TRN-34).</summary>
-    public readonly record struct Verdict(bool Spawnable, string? RefusalReason);
+    public readonly record struct Verdict(bool Spawnable, string? RefusalReason, string? RefusalKind = null);
+
+    /// <summary>The refusal as a fixed token — <c>unsigned</c>, <c>signature-invalid</c> or
+    /// <c>wrong-signer</c> — for the once-per-session Sentry report (2026-10-17): the full reason
+    /// embeds the certificate SUBJECT, text whoever made the certificate controls.</summary>
+    internal static string KindOf(AuthenticodeSignature.Verdict signature)
+        => (signature.IsSignatureValid, signature.SignerSubject) switch
+        {
+            (false, null) => "unsigned",
+            (false, _) => "signature-invalid",
+            _ => "wrong-signer",
+        };
 
     /// <summary>
     /// May this exe spawn? <paramref name="verifySignature"/> is the TRN-34 Authenticode seam
@@ -57,7 +68,7 @@ public static class ParakeetSpawnGate
             : (verifySignature ?? AuthenticodeSignature.Verify)(exePath);
         return ParakeetServerProvenance.IsTrusted(hashMatches, signature)
             ? new Verdict(true, null)
-            : new Verdict(false, ParakeetServerProvenance.DescribeRefusal(signature));
+            : new Verdict(false, ParakeetServerProvenance.DescribeRefusal(signature), KindOf(signature));
     }
 
     /// <summary>Moved verbatim from `ParakeetServerProcess` (TRN-29 slice 2): unreadable =

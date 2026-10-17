@@ -686,19 +686,20 @@ public sealed class TranscriptionHistoryService
     /// operation across two days (Codex diff review R1). "Today" is that local calendar
     /// day as a half-open UTC interval over the stored UTC timestamps — rows on future
     /// local DAYS are excluded; a row stamped later within today still counts
-    /// (clock-skew tolerance, pinned by test).
+    /// (clock-skew tolerance, pinned by test). Image rows are not counted: the metrics
+    /// measure dictation (2026-10-15).
     /// </summary>
     internal async Task<MetricsAggregate> GetAggregateStatsAsync(LocalDayBoundary boundary, DateTime todayLocalDate, CancellationToken ct)
     {
         using var db = _dbFactory.CreateDbContext();
 
-        var total = await db.TranscriptionRecords.CountAsync(ct).ConfigureAwait(false);
+        var total = await db.TranscriptionRecords.Where(IsTextRow).CountAsync(ct).ConfigureAwait(false);
 
         if (total == 0)
             return new MetricsAggregate();
 
         var (todayStartUtc, todayEndUtc) = boundary.DayIntervalUtc(todayLocalDate);
-        var today = await db.TranscriptionRecords
+        var today = await db.TranscriptionRecords.Where(IsTextRow)
             .CountAsync(t => t.Timestamp >= todayStartUtc && t.Timestamp < todayEndUtc, ct).ConfigureAwait(false);
 
         // Use SQL aggregates to compute character and word counts without loading all text.
@@ -713,21 +714,30 @@ public sealed class TranscriptionHistoryService
             using var cmd = conn.CreateCommand();
             // Normalize whitespace: replace tabs/CR/LF with spaces, then collapse runs of
             // multiple spaces (3 passes of double→single handles up to 8 consecutive spaces).
+            // text_rows is IsTextRow in SQL: image rows carry a marker, not dictated words.
             cmd.CommandText = @"
-                WITH normalized AS (
+                WITH text_rows AS (
+                    SELECT Text, EnhancedText FROM TranscriptionRecords
+                    WHERE NOT WasEnhanced
+                       OR EnhancedText IS NULL
+                       OR EnhancedText NOT IN ($imageGenerated, $imageFailed)
+                ),
+                normalized AS (
                     SELECT REPLACE(REPLACE(REPLACE(
                         REPLACE(REPLACE(REPLACE(
                             TRIM(COALESCE(EnhancedText, Text)),
                         char(9), ' '), char(10), ' '), char(13), ' '),
                     '  ', ' '), '  ', ' '), '  ', ' ') AS t
-                    FROM TranscriptionRecords
+                    FROM text_rows
                 )
                 SELECT
-                    COALESCE((SELECT SUM(LENGTH(COALESCE(EnhancedText, Text))) FROM TranscriptionRecords), 0),
+                    COALESCE((SELECT SUM(LENGTH(COALESCE(EnhancedText, Text))) FROM text_rows), 0),
                     COALESCE(SUM(CASE WHEN t != ''
                         THEN (LENGTH(t) - LENGTH(REPLACE(t, ' ', ''))) + 1
                         ELSE 0 END), 0)
                 FROM normalized";
+            AddParameter(cmd, "$imageGenerated", TranscriptionRecord.ImageGeneratedMarker);
+            AddParameter(cmd, "$imageFailed", TranscriptionRecord.ImageFailedMarker);
 
             using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
             if (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -751,6 +761,33 @@ public sealed class TranscriptionHistoryService
         }
 
         return new MetricsAggregate { Total = total, Today = today };
+    }
+
+    /// <summary>
+    /// How many successful image generations History still holds, and how many of them fall
+    /// on <paramref name="todayLocalDate"/>. Read once by the lifetime-metrics correction
+    /// that takes images back out of totals counted before 2026-10-15.
+    /// </summary>
+    internal async Task<(int Total, int Today)> CountGeneratedImagesAsync(LocalDayBoundary boundary, DateTime todayLocalDate, CancellationToken ct)
+    {
+        using var db = _dbFactory.CreateDbContext();
+        var images = db.TranscriptionRecords
+            .Where(r => r.WasEnhanced && r.EnhancedText == TranscriptionRecord.ImageGeneratedMarker);
+        var total = await images.CountAsync(ct).ConfigureAwait(false);
+        if (total == 0)
+            return (0, 0);
+        var (todayStartUtc, todayEndUtc) = boundary.DayIntervalUtc(todayLocalDate);
+        var today = await images
+            .CountAsync(t => t.Timestamp >= todayStartUtc && t.Timestamp < todayEndUtc, ct).ConfigureAwait(false);
+        return (total, today);
+    }
+
+    private static void AddParameter(global::System.Data.Common.DbCommand cmd, string name, object value)
+    {
+        var p = cmd.CreateParameter();
+        p.ParameterName = name;
+        p.Value = value;
+        cmd.Parameters.Add(p);
     }
 }
 

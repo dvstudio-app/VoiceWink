@@ -1,6 +1,7 @@
 using System.Threading;
 using Serilog;
 using VoiceWink.Helpers;
+using VoiceWink.Models.Entities;
 using VoiceWink.Services.System;
 
 namespace VoiceWink.Services.Data;
@@ -96,16 +97,40 @@ public sealed class LifetimeMetricsService
         MetricsChanged?.Invoke();
     }
 
+    /// <summary>
+    /// A finished image generation. It counts as a day of use (LNC-14) and nothing else: the
+    /// totals, words and time saved measure dictation (2026-10-15 — images had been counted
+    /// as a two-word transcription of their history marker).
+    /// </summary>
+    public async Task RecordImageAsync(DateTime timestampUtc, CancellationToken ct = default)
+    {
+        await EnsureInitializedAsync(ct).ConfigureAwait(false);
+
+        await _stateLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _usageDays.Record(timestampUtc.Kind == DateTimeKind.Utc ? timestampUtc : timestampUtc.ToUniversalTime());
+        }
+        finally
+        {
+            _stateLock.Release();
+        }
+    }
+
     private async Task EnsureInitializedAsync(CancellationToken ct)
     {
-        if (TryReadState(out _))
+        if (TryReadState(out var fast) && fast.ImagesExcluded)
             return;
 
         await _stateLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (TryReadState(out _))
+            if (TryReadState(out var existing))
+            {
+                if (!existing.ImagesExcluded)
+                    await ExcludeImagesUnsafeAsync(existing, ct).ConfigureAwait(false);
                 return;
+            }
 
             var seeded = await SeedFromHistoryAsync(ct).ConfigureAwait(false);
             WriteStateUnsafe(seeded);
@@ -115,6 +140,31 @@ public sealed class LifetimeMetricsService
         {
             _stateLock.Release();
         }
+    }
+
+    /// <summary>
+    /// One-time correction of totals counted before 2026-10-15, when every successful image
+    /// generation was recorded as a transcription of <see cref="TranscriptionRecord.ImageGeneratedMarker"/>.
+    /// Takes back the images History still holds; an image whose row was deleted cannot be
+    /// found and stays counted. Never goes below zero. Runs under the state lock.
+    /// </summary>
+    private async Task ExcludeImagesUnsafeAsync(LifetimeMetricsState existing, CancellationToken ct)
+    {
+        var snap = Snapshot();
+        var state = NormalizeToday(MigrateIfLegacy(existing, snap), snap);
+        var (images, imagesToday) = await _history.CountGeneratedImagesAsync(_boundary, snap.TodayLocal, ct).ConfigureAwait(false);
+
+        var marker = TranscriptionRecord.ImageGeneratedMarker;
+        state = state with
+        {
+            Total = Math.Max(0, state.Total - images),
+            Today = Math.Max(0, state.Today - imagesToday),
+            TotalCharacters = Math.Max(0, state.TotalCharacters - (long)images * marker.Length),
+            TotalWords = Math.Max(0, state.TotalWords - images * CountWords(marker)),
+            ImagesExcluded = true
+        };
+        WriteStateUnsafe(state);
+        Logger.Information("Removed {Count} image generations from the lifetime metrics", images);
     }
 
     private async Task<LifetimeMetricsState> SeedFromHistoryAsync(CancellationToken ct)
@@ -132,7 +182,8 @@ public sealed class LifetimeMetricsService
             Total = aggregate.Total,
             Today = aggregate.Today,
             TotalCharacters = aggregate.TotalCharacters,
-            TotalWords = aggregate.TotalWords
+            TotalWords = aggregate.TotalWords,
+            ImagesExcluded = true
         };
     }
 
@@ -208,7 +259,8 @@ public sealed class LifetimeMetricsService
 
         return new LifetimeMetricsState
         {
-            TodayDateLocal = snap.TodayLocal
+            TodayDateLocal = snap.TodayLocal,
+            ImagesExcluded = true
         };
     }
 
@@ -246,5 +298,10 @@ public sealed class LifetimeMetricsService
         public int Today { get; init; }
         public long TotalCharacters { get; init; }
         public long TotalWords { get; init; }
+
+        /// <summary>True once these totals hold no image generations: seeded or started since
+        /// 2026-10-15, or corrected once by <see cref="ExcludeImagesUnsafeAsync"/>. Absent
+        /// (false) in a state written before then.</summary>
+        public bool ImagesExcluded { get; init; }
     }
 }

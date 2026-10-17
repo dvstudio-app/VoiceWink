@@ -32,6 +32,11 @@ public interface IParakeetServerChild : IDisposable
     uint Pid { get; }
     bool HasExited { get; }
 
+    /// <summary>The exit code once the child has exited, null while it runs or when unknown. What
+    /// separates the crash classes of a child that died before health (an illegal instruction, a
+    /// missing DLL, out of memory) — read before the child is retired, which disposes it.</summary>
+    uint? ExitCode => null;
+
     /// <summary>The loopback port the child is LISTENING on, read from the kernel's TCP table
     /// keyed by this child's PID — the server's own banner prints the requested port (literal
     /// 0), so the OS is the only trustworthy handoff, and PID attribution is what a same-user
@@ -305,6 +310,33 @@ public sealed class ParakeetServerProcess
     /// later cancellation escalation may kill.</summary>
     public readonly record struct ServerLease(Uri BaseUri, int Generation);
 
+    /// <summary>One acquire's outcome: a lease, or why there is none. The failure belongs to THIS
+    /// call — a shared "last failure" field would be overwritten by a concurrent acquire after the
+    /// gate releases and before the caller reads it (Codex plan r1, 2026-10-17).</summary>
+    public readonly record struct AcquireResult(ServerLease? Lease, ParakeetAcquireFailure? Failure);
+
+    /// <summary>The lease of <see cref="TryAcquireDetailedAsync"/>, for callers that need no cause.</summary>
+    public async Task<ServerLease?> TryAcquireAsync(
+        string exePath, string expectedExeSha256, string modelPath, string installIdentity,
+        CancellationToken ct)
+        => (await TryAcquireDetailedAsync(exePath, expectedExeSha256, modelPath, installIdentity, ct)
+            .ConfigureAwait(false)).Lease;
+
+    /// <summary>One failed launch, read from the child BEFORE it is retired (a retire disposes it,
+    /// after which its exit code is gone).</summary>
+    private ParakeetAttemptFailure DescribeAttempt(
+        IParakeetServerChild? child, ParakeetLaunchMode mode, string? pin, ParakeetAttemptOutcome outcome,
+        DateTime spawnedUtc)
+        => new(mode, pin, outcome,
+            child?.ExitCode,
+            child is null ? TimeSpan.Zero : _utcNow() - spawnedUtc,
+            child?.ObservedDevices.Count ?? 0,
+            child?.ObservedBackend is not null);
+
+    private static AcquireResult Failed(
+        ParakeetAcquireFailureKind kind, List<ParakeetAttemptFailure>? attempts = null, string? detail = null)
+        => new(null, new ParakeetAcquireFailure(kind, attempts?.ToArray() ?? [], detail));
+
     /// <summary>
     /// Ensure a healthy resident server for <paramref name="modelPath"/> and return its lease,
     /// or null when the backend cannot run this preparation (storm tripped, provenance refused —
@@ -317,12 +349,18 @@ public sealed class ParakeetServerProcess
     /// path, and a path-keyed cache would keep serving the prior install's resident model past the
     /// coordinator's fresh hash verdict. A live child whose identity differs is retired as an
     /// EXPECTED stop — never charged to the storm fuse.</para>
+    ///
+    /// <para>A null lease always comes with a <see cref="ParakeetAcquireFailure"/> naming why: the
+    /// pre-launch refusal, or every launch this call made with its exit code, lifetime and how far
+    /// it got (VOICEWINK-J/K/M, 2026-10-15: a GPU child and its CPU retry both died before health,
+    /// and nothing recorded why).</para>
     /// </summary>
-    public async Task<ServerLease?> TryAcquireAsync(
+    public async Task<AcquireResult> TryAcquireDetailedAsync(
         string exePath, string expectedExeSha256, string modelPath, string installIdentity,
         CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
+        var attempts = new List<ParakeetAttemptFailure>();
         try
         {
             // A predecessor whose exit is UNCONFIRMED blocks every successor: one child is the
@@ -334,7 +372,7 @@ public sealed class ParakeetServerProcess
                 if (!retiring.HasExited)
                 {
                     Logger.Warning("parakeet-server: predecessor still exiting - serving sherpa this preparation");
-                    return null;
+                    return Failed(ParakeetAcquireFailureKind.PredecessorExiting);
                 }
                 retiring.Dispose();
                 _retiring = null;
@@ -362,7 +400,7 @@ public sealed class ParakeetServerProcess
                 Logger.Information("parakeet-server: retired the GPU-served child so the next spawn is Cpu");
                 if (_retiring is not null)
                 {
-                    return null; // its exit is unconfirmed; no successor may spawn yet.
+                    return Failed(ParakeetAcquireFailureKind.PredecessorExiting); // its exit is unconfirmed; no successor may spawn yet.
                 }
             }
 
@@ -384,7 +422,7 @@ public sealed class ParakeetServerProcess
                 && _baseUri is not null)
             {
                 _generation++;
-                return new ServerLease(_baseUri, _generation);
+                return new AcquireResult(new ServerLease(_baseUri, _generation), null);
             }
 
             // A dead, wrong-model, or wrong-INSTALL child is retired first (a model or install
@@ -402,7 +440,7 @@ public sealed class ParakeetServerProcess
                 if (_retiring is not null)
                 {
                     // The old child has not confirmed its exit yet; no successor may spawn.
-                    return null;
+                    return Failed(ParakeetAcquireFailureKind.PredecessorExiting);
                 }
             }
 
@@ -413,10 +451,12 @@ public sealed class ParakeetServerProcess
                 if (!_stormTripped)
                 {
                     _stormTripped = true;
-                    Logger.Error("parakeet-server: crash storm tripped ({Count} involuntary exits in {Window}) - pcpp backend unrunnable until app restart",
+                    // Warning since 2026-10-17: the reporter's EngineStoppedForSession event carries
+                    // this to Sentry; an Error here made one storm two events (self-review).
+                    Logger.Warning("parakeet-server: crash storm tripped ({Count} involuntary exits in {Window}) - pcpp backend unrunnable until app restart",
                         _involuntaryExitsUtc.Count, ParakeetServerPolicy.StormWindow);
                 }
-                return null;
+                return Failed(ParakeetAcquireFailureKind.StormTripped);
             }
 
             // Provenance, per LAUNCH: a wrong binary never spawns and never charges the fuse.
@@ -430,8 +470,15 @@ public sealed class ParakeetServerProcess
                 // as file corruption and hid a systematic release defect for a week. Sanitized:
                 // the signature branch embeds the certificate SUBJECT, attacker-authored text on
                 // the planted-exe path, and this line reaches the support bundle.
-                Logger.Error("parakeet-server: refusing to spawn - {Reason}", LogValueSanitizer.SingleLine(gate.RefusalReason));
-                return null;
+                // Warning since 2026-10-17: the refusal travels in the acquire result and reaches
+                // Sentry ONCE per session through ParakeetUnavailableReporter; an Error here filed
+                // one event per acquire (Codex plan r1). The report carries the refusal KIND only —
+                // the reason embeds the certificate subject (self-review, privacy lens).
+                // {LocalException}: the reason can embed a certificate subject, and a Warning is a
+                // Sentry breadcrumb — the name-redacted property keeps it in the local file only
+                // (Codex + Kimi diff r1).
+                Logger.Warning("parakeet-server: refusing to spawn - {LocalException}", LogValueSanitizer.SingleLine(gate.RefusalReason));
+                return Failed(ParakeetAcquireFailureKind.SpawnRefused, detail: gate.RefusalKind ?? "refused");
             }
 
             // TRN-51 (codex plan round, Blocker 2): an Auto (GPU) child that exits BEFORE health
@@ -458,7 +505,8 @@ public sealed class ParakeetServerProcess
             if (child is null)
             {
                 Logger.Warning("parakeet-server: launch failed (job setup or process creation, launch mode {Mode}) - serving sherpa this preparation", mode);
-                return null;
+                attempts.Add(DescribeAttempt(null, mode, pin, ParakeetAttemptOutcome.LaunchFailed, _utcNow()));
+                return Failed(ParakeetAcquireFailureKind.AttemptsFailed, attempts);
             }
 
             // From this point the candidate child EXISTS and must never escape untracked:
@@ -563,7 +611,7 @@ public sealed class ParakeetServerProcess
                                         pin, LogValueSanitizer.SingleLine(served));
                                 }
                             }
-                            return new ServerLease(baseUri, _generation);
+                            return new AcquireResult(new ServerLease(baseUri, _generation), null);
                         }
                     }
                     await Task.Delay(ParakeetServerPolicy.HealthPollInterval, health.Token).ConfigureAwait(false);
@@ -580,21 +628,23 @@ public sealed class ParakeetServerProcess
                 // The BUDGET fired while an await hung (a probe that accepts and never
                 // answers): a health failure, not a user cancel and not a crash - retire and
                 // fall back instead of propagating a cancellation nobody requested.
+                attempts.Add(DescribeAttempt(child, mode, pin, ParakeetAttemptOutcome.HungProbe, spawnedUtc));
                 Retire(child);
                 RefusePinIfPinned(pin, "hung before health");
                 Logger.Warning("parakeet-server: health wait exceeded {Budget} (hung probe, launch mode {Mode}) - serving sherpa this preparation",
                     _probeBudget, mode);
-                return null;
+                return Failed(ParakeetAcquireFailureKind.AttemptsFailed, attempts);
             }
             catch (Exception ex)
             {
                 // A throwing probe is a health failure, not a lifecycle crash: retire the
                 // candidate and take the documented fallback. Never charge the fuse - the
                 // child did not exit on its own.
+                attempts.Add(DescribeAttempt(child, mode, pin, ParakeetAttemptOutcome.ProbeThrew, spawnedUtc));
                 Retire(child);
                 RefusePinIfPinned(pin, "its health probe threw");
                 Logger.Warning(ex, "parakeet-server: health probe threw (launch mode {Mode}) - serving sherpa this preparation", mode);
-                return null;
+                return Failed(ParakeetAcquireFailureKind.AttemptsFailed, attempts);
             }
 
             // TRN-68: the child's own rows asked for a pin — an EXPECTED stop, never charged.
@@ -606,7 +656,7 @@ public sealed class ParakeetServerProcess
                 if (_retiring is not null)
                 {
                     Logger.Warning("parakeet-server: predecessor exit unconfirmed - pinned respawn deferred to the next preparation (TRN-68)");
-                    return null;
+                    return Failed(ParakeetAcquireFailureKind.PredecessorExiting, attempts);
                 }
                 pin = respawnPin;
                 continue;
@@ -615,6 +665,11 @@ public sealed class ParakeetServerProcess
             // Health failure (budget expired, or the child died mid-wait): retire, charge the
             // fuse only when the child exited on its own, fall back.
             var exitedOnItsOwn = child.HasExited;
+            // Read BEFORE the retire, which disposes the child and with it the exit code.
+            var attempt = DescribeAttempt(child, mode, pin,
+                exitedOnItsOwn ? ParakeetAttemptOutcome.ExitedBeforeHealth : ParakeetAttemptOutcome.NeverHealthy,
+                spawnedUtc);
+            attempts.Add(attempt);
             Retire(child);
             // TRN-68: a PINNED attempt that failed in ANY way — died, or sat there without ever
             // reaching health — refuses the pin for the session BEFORE the retry decision below
@@ -630,14 +685,15 @@ public sealed class ParakeetServerProcess
                 // point of this branch is that a driver-shaped death must not consume a strike.
                 // TRN-68: a pinned child's death is the same driver-shaped death and takes the
                 // same retry — bounded at Auto → pinned → Cpu.
-                Logger.Warning("parakeet-server: Auto (GPU) child exited before health - retrying once on CPU (not charged to the storm fuse)");
+                Logger.Warning("parakeet-server: Auto (GPU) child exited before health ({Attempt}) - retrying once on CPU (not charged to the storm fuse)",
+                    attempt.Render());
                 if (_retiring is not null)
                 {
                     // The dead child has not confirmed its exit; the retry cannot spawn under
                     // the one-child invariant. Serve sherpa this preparation; the NEXT acquire
                     // starts from _launchMode (still Auto — no latch without a healthy retry).
                     Logger.Warning("parakeet-server: predecessor exit unconfirmed - CPU retry deferred to the next preparation");
-                    return null;
+                    return Failed(ParakeetAcquireFailureKind.PredecessorExiting, attempts);
                 }
                 mode = ParakeetLaunchMode.Cpu;
                 cpuRetried = true;
@@ -653,9 +709,11 @@ public sealed class ParakeetServerProcess
             // toggle-OFF machine whose child never reaches health the healthy line never fires,
             // and the two probe exits above return before this line, so each has to carry it
             // itself or the log holds no Parakeet-side evidence of the OFF state.
-            Logger.Warning("parakeet-server: not healthy within {Budget} (childExited={Exited}, launch mode {Mode}) - serving sherpa this preparation",
-                ParakeetServerPolicy.HealthBudget, exitedOnItsOwn, mode);
-            return null;
+            // Since 2026-10-17 the line names the attempt itself — exit code and lifetime — because
+            // "not healthy within 30s" read as a 30 s wait when the child had died after 3 s.
+            Logger.Warning("parakeet-server: not healthy ({Attempt}, budget {Budget}, childExited={Exited}, launch mode {Mode}) - serving sherpa this preparation",
+                attempt.Render(), ParakeetServerPolicy.HealthBudget, exitedOnItsOwn, mode);
+            return Failed(ParakeetAcquireFailureKind.AttemptsFailed, attempts);
             }
         }
         finally

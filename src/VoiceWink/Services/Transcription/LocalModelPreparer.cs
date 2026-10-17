@@ -73,6 +73,11 @@ public sealed class LocalModelPreparer
     /// name — never a substitution with some other model that happens to be available.
     /// </summary>
     public async Task<PrepareOutcome> PrepareAsync(string? modelName, string? language, CancellationToken ct)
+        => (await PrepareWithReportAsync(modelName, language, ct).ConfigureAwait(false)).Outcome;
+
+    /// <summary><see cref="PrepareAsync"/> plus the cause of an Unavailable answer — the recording
+    /// path and Audio Transcribe word their message from it.</summary>
+    public async Task<RuntimePrepareResult> PrepareWithReportAsync(string? modelName, string? language, CancellationToken ct)
     {
         var binding = TryResolve(modelName);
         if (binding is null)
@@ -80,16 +85,16 @@ public sealed class LocalModelPreparer
 
         // A speed check for another model stands down: this load must not wait behind its decode.
         SpeechSpeedCheck.Current?.CancelUnless(binding.CanonicalName);
-        var outcome = await binding.Runtime
-            .PrepareAsync(binding.CanonicalName, language, ct)
+        var result = await binding.Runtime
+            .PrepareWithReportAsync(binding.CanonicalName, language, ct)
             .ConfigureAwait(false);
-        if (outcome == PrepareOutcome.Loaded)
+        if (result.Outcome == PrepareOutcome.Loaded)
         {
             // 2026-10-03: a model loaded on this PC for the first time gets its one speed check.
             try { SpeechSpeedCheck.Current?.OfferAfterPrepare(binding.CanonicalName); }
             catch (Exception ex) { Serilog.Log.Debug("Speech speed check not offered: {ExceptionType}", ex.GetType().Name); }
         }
-        return outcome;
+        return result;
     }
 }
 

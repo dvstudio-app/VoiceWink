@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.115.412</Version>
-    <AssemblyVersion>1.115.412.0</AssemblyVersion>
-    <FileVersion>1.115.412.0</FileVersion>
+    <Version>1.116.414</Version>
+    <AssemblyVersion>1.116.414.0</AssemblyVersion>
+    <FileVersion>1.116.414.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
@@ -262,13 +262,19 @@
          (whisper / ggml-whisper / ggml-cpu-whisper / ggml-base-whisper) are DIFFERENT
          builds in the two packages, hash-verified 2026-09-01. This package's linux-x64
          ItemGroup carries NO Condition (59 MB of .so files a Windows app can never
-         execute), so the StripVulkanLinuxNatives target below removes them; the publish
+         execute), so the StripNonWinX64WhisperNatives target below removes them; the publish
          gate (scripts/check-publish-payload.ps1) fail-closes if the strip regresses on a
          package bump. Do NOT add the CUDA package: the GPU-stack investigation
          (2026-09-01) measured it MOOT here — it
          needs the CUDA Toolkit runtime on the USER's machine and silently falls back to
          Vulkan (proven by loaded-module inspection). -->
     <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
+    <!-- 2026-10-17: the no-AVX CPU build of the same runtime, pinned by
+         Helpers/WhisperBackendLog ONLY on a processor without the AVX2 class (AVX, AVX2, FMA,
+         F16C) — the other two runtimes need that class, so without it local Whisper could not
+         run there at all. Lands at runtimes\noavx\win-x64\ (~2.9 MB); its win-x86 and
+         linux-x64 sets are stripped by StripNonWinX64WhisperNatives below. -->
+    <PackageReference Include="Whisper.net.Runtime.NoAvx" Version="1.9.1" />
 
     <!-- sherpa-onnx: the SECOND native inference runtime. Pinned to the exact
          versions the CPU benchmark measured, so the numbers in
@@ -460,6 +466,31 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
 
+    <!-- And a third time beside the no-AVX whisper.dll at runtimes\noavx\win-x64\,
+         for the same reason as the Vulkan copies above: on a processor without the AVX2 class
+         the pin is [CpuNoAvx] alone, so that copy is the ONLY whisper.dll the process loads,
+         and it resolves its MSVC imports from its own directory. -->
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140.dll')">
+      <Link>runtimes\noavx\win-x64\vcruntime140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcruntime140_1.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcruntime140_1.dll')">
+      <Link>runtimes\noavx\win-x64\vcruntime140_1.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\msvcp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\msvcp140.dll')">
+      <Link>runtimes\noavx\win-x64\msvcp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\installer\runtime\vcredist\vcomp140.dll"
+             Condition="Exists('$(MSBuildThisFileDirectory)..\..\installer\runtime\vcredist\vcomp140.dll')">
+      <Link>runtimes\noavx\win-x64\vcomp140.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+
     <!-- parakeet-server.exe: the resident local-transcription helper the parakeet.cpp
          backend spawns - LOAD-BEARING in every ordinary build since the rollout flip
          (PcppEnabled defaults true; scripts/check-vcredist-payload.ps1 step 4 fail-closes
@@ -568,11 +599,16 @@
        to the copy pipeline (which both build and publish output flow through). Matched on
        the items' own TargetPath metadata so a package relayout on a future bump fails
        toward SHIPPING the files — which scripts/check-publish-payload.ps1's fail-closed
-       layout assertion then catches — never toward deleting someone else's payload. -->
-  <Target Name="StripVulkanLinuxNatives" BeforeTargets="AssignTargetPaths">
+       layout assertion then catches — never toward deleting someone else's payload.
+       Widened 2026-10-17 to Whisper.net.Runtime.NoAvx 1.9.1, whose .targets
+       carries NO Condition at all: its linux-x64 and win-x86 sets land under runtimes\noavx\
+       beside the win-x64 one, and only win-x64 can load in this x64-only app. -->
+  <Target Name="StripNonWinX64WhisperNatives" BeforeTargets="AssignTargetPaths">
     <ItemGroup>
       <None Remove="@(None)"
             Condition="$([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes/vulkan/linux-')) Or $([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes\vulkan\linux-'))" />
+      <None Remove="@(None)"
+            Condition="$([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes/noavx/linux-')) Or $([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes\noavx\linux-')) Or $([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes/noavx/win-x86/')) Or $([System.String]::Copy('%(None.TargetPath)').StartsWith('runtimes\noavx\win-x86\'))" />
     </ItemGroup>
   </Target>
 

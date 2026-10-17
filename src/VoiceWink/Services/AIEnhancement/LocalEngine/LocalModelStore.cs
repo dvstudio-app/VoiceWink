@@ -139,13 +139,37 @@ public sealed class LocalModelStore
             attempt = new LocalModelDownloadAttempt();
             _attempts[id] = attempt;
         }
-        var progress = new Progress<double>(attempt.Report);
-        attempt.Completion = RunAttemptAsync(id, attempt, progress);
+        // The Downloads card reads the download from here, whichever page started it, and its Cancel
+        // is this attempt's.
+        var relay = BackgroundDownloads.Instance.Begin(id, LocalModelCatalog.Find(id)?.DisplayName ?? id,
+            _descriptors.TryGetValue(id, out var descriptor) ? descriptor.FileSizeBytes : null,
+            cancel: attempt.Cancel, userStarted: true);
+        var startedOn = SynchronizationContext.Current;
+        // Reported when the Cancel is pressed, not when the download throws: a Cancel after the
+        // manager's last token check (the bundle being committed) completes Installed without an
+        // exception (Kimi diff r2). The attempt's source is never disposed, like this registration.
+        _ = attempt.Token.Register(() => RaiseCancelled(id, startedOn));
+        var progress = new Progress<double>(p =>
+        {
+            attempt.Report(p);
+            relay.Report(p);
+        });
+        attempt.Completion = RunAttemptAsync(id, attempt, progress, relay);
         return attempt;
     }
 
-    private async Task<LocalModelDownloadOutcome> RunAttemptAsync(string id, LocalModelDownloadAttempt attempt, IProgress<double> progress)
+    /// <summary>
+    /// Raised when the user cancels a download, wherever the Cancel came from (the AI page, the
+    /// Downloads card, setup's AI step) — on the thread that started it, like progress.
+    /// <see cref="BuiltInModelAdoption"/> turns off an AI switch that would otherwise fail
+    /// (Codex diff r1: a custom-setup download has no Express job watching it).
+    /// </summary>
+    internal event Action<string>? DownloadCancelled;
+
+    private async Task<LocalModelDownloadOutcome> RunAttemptAsync(
+        string id, LocalModelDownloadAttempt attempt, IProgress<double> progress, IDisposable relay)
     {
+        using var _ = relay;
         try
         {
             return await DownloadAsync(id, progress, attempt.Token).ConfigureAwait(false);
@@ -167,6 +191,27 @@ public sealed class LocalModelStore
                 _attempts.Remove(id);
             }
         }
+    }
+
+    private void RaiseCancelled(string id, SynchronizationContext? startedOn)
+    {
+        if (DownloadCancelled is not { } cancelled)
+            return;
+        void Raise()
+        {
+            try
+            {
+                cancelled(id);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("A download-cancelled subscriber threw: {ErrorType}", ex.GetType().Name);
+            }
+        }
+        if (startedOn is null)
+            Raise();
+        else
+            startedOn.Post(_ => Raise(), null);
     }
 
     internal async Task<LocalModelDownloadOutcome> DownloadAsync(string id, IProgress<double>? progress, CancellationToken ct)

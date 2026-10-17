@@ -410,6 +410,20 @@ internal sealed class NativeChildHandle : IDisposable
         }
     }
 
+    /// <summary>The child's exit code once it has exited; null while it runs, after this handle
+    /// is disposed, or when Windows will not say. Read BEFORE a retire, which disposes.</summary>
+    public uint? ExitCode
+    {
+        get
+        {
+            if (IsDisposed) return null;
+            return NativeInterop.GetExitCodeProcess(_process.hProcess, out var code)
+                   && code != NativeInterop.STILL_ACTIVE
+                ? code
+                : null;
+        }
+    }
+
     /// <summary>The loopback port the child is LISTENING on, read from the kernel's TCP table
     /// keyed by this child's pid — PID attribution is what a same-user spoofer cannot forge (TRN-29
     /// plan round, Blocker 2). Null until the socket opens.</summary>

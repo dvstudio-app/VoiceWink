@@ -42,22 +42,18 @@ public sealed class OnboardingPage : Page
     private StackPanel _contentPanel = null!;
 
     /// <summary>
-    /// When the download button last became Cancel — the arming window's origin (UI-3).
-    ///
-    /// <para>MONOTONIC, not wall clock. A <c>DateTime.UtcNow</c> difference goes NEGATIVE across a
-    /// clock rollback (an NTP correction, a VM resume), which would leave Cancel unarmed until the
-    /// clock caught up (Codex diff review r3). Subsecond interaction timing has no business reading
-    /// the wall clock.</para>
+    /// The speech step's recommended model row, watched while the step can show it: its download
+    /// runs on the Models page's view model and outlives this page (owner, 2026-10-17), so the step
+    /// rebuilds when the download starts, ends or fails rather than owning the transfer.
     /// </summary>
-    private long _downloadCancelShownTicks = -1;
+    private ModelItemViewModel? _watchedSpeechRow;
 
     /// <summary>
-    /// The in-flight model download's cancellation-provenance state, or <c>null</c> when none is
-    /// running (UI-3). Decision logic lives in <see cref="Helpers.DownloadAttemptState"/> — see its
-    /// remarks for why attempt-scoping matters. The token this attempt's work actually observes is
-    /// paired with it here, since the state type stays WinUI-free and testable.
+    /// The model selected before the speech step's Download selected the recommendation. A download
+    /// that ends without the model (Cancel, a failure) gives this back, so "Skip download for now"
+    /// still keeps a working selection (self-review, 2026-10-17); null once used or when there was none.
     /// </summary>
-    private (Helpers.DownloadAttemptState State, CancellationTokenSource Cts)? _downloadAttempt;
+    private string? _selectionBeforeSpeechDownload;
 
     // Session state — preserved across Back/Forward navigation
     private string? _selectedHotkey;
@@ -82,6 +78,12 @@ public sealed class OnboardingPage : Page
     // Chosen on Welcome and re-chosen if the user goes Back there; not frozen (LNC-15). Express is
     // the card Welcome opens on.
     private SetupPath _path = SetupPath.Express;
+
+    // Express setup's AI enhancement switch on the Done step: off by default while it is the newest
+    // and least tested core function (owner, 2026-10-17), and off skips the built-in AI model's
+    // download. Kept for the run, so Back and forward again show the same answer; written only by
+    // the finish click.
+    private bool _expressAiOn;
 
     // LNC-15: Express setup's built-in AI download, which must outlive this page, and the two
     // singletons its finish writes the speech model and the AI provider through.
@@ -139,21 +141,64 @@ public sealed class OnboardingPage : Page
         _useCloudTranscription = InitialUseCloud(_settings.GetString(AppDefaults.SelectedModelName, ""));
         _step = 0;
         BuildUI();
-        Unloaded += (_, _) => AbandonCurrentDownload();
+        // Leaving setup stops watching; the download itself carries on (the Downloads card on Home).
+        Unloaded += (_, _) => WatchSpeechRow(null);
     }
 
-    /// <summary>
-    /// Mark the in-flight download (if any) as abandoned and cancel it. The ONE place all three
-    /// non-user cancellers — Unload, Back, step reconstruction — route through, so none of them can
-    /// forget to set <c>Abandoned</c> the way the page-level flag was forgotten.
-    /// </summary>
-    private void AbandonCurrentDownload()
+    private void WatchSpeechRow(ModelItemViewModel? row)
     {
-        if (_downloadAttempt is not { } attempt) return;
-        var (state, cts) = attempt;
-        state.Abandoned = true;
-        cts.Cancel();
+        if (ReferenceEquals(row, _watchedSpeechRow))
+            return;
+        if (_watchedSpeechRow is not null)
+            _watchedSpeechRow.PropertyChanged -= OnSpeechRowChanged;
+        _watchedSpeechRow = row;
+        if (row is not null)
+            row.PropertyChanged += OnSpeechRowChanged;
     }
+
+    // Progress reports are left to the Downloads card; only a start, an end or a failure changes
+    // what the step says. Queued, so the step is never rebuilt inside the view model's setter.
+    private void OnSpeechRowChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(ModelItemViewModel.IsDownloading)
+            or nameof(ModelItemViewModel.IsDownloaded) or nameof(ModelItemViewModel.ErrorMessage)))
+        {
+            return;
+        }
+        // A success sets IsDownloaded before it clears IsDownloading, so this is a Cancel or a failure.
+        var endedWithoutModel = e.PropertyName == nameof(ModelItemViewModel.IsDownloading)
+            && sender is ModelItemViewModel { IsDownloading: false, IsDownloaded: false };
+        var row = sender as ModelItemViewModel;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (endedWithoutModel && row is not null)
+                RestoreSelectionBeforeSpeechDownload(row);
+            RebuildSpeechStep();
+        });
+    }
+
+    private void RestoreSelectionBeforeSpeechDownload(ModelItemViewModel row)
+    {
+        var previous = _selectionBeforeSpeechDownload;
+        _selectionBeforeSpeechDownload = null;
+        if (string.IsNullOrEmpty(previous)
+            || ModelDiskReconciliation.IsSameModel(previous, row.Name)
+            || !ModelDiskReconciliation.IsSameModel(_speechModels.SelectedModelName, row.Name))
+        {
+            return;   // nothing to give back, or the user has chosen another model since
+        }
+        _speechModels.PersistSelectionWithoutLoading(previous);
+        Logger.Information("Onboarding: speech model download ended without the model; previous selection kept");
+    }
+
+    private void RebuildSpeechStep()
+    {
+        _stepCache.Remove(SpeechStepIndex);
+        if (_step == SpeechStepIndex && !_useCloudTranscription && _watchedSpeechRow is not null)
+            ShowStep(SpeechStepIndex);
+    }
+
+    private const int SpeechStepIndex = 5;
 
     private void BuildUI()
     {
@@ -653,9 +698,6 @@ public sealed class OnboardingPage : Page
 
     private void BuildTranscriptionConfigStep()
     {
-        // Cancel any orphaned download from a previous visit
-        AbandonCurrentDownload();
-
         if (_useCloudTranscription)
         {
             AddStepHeader("Set Up Cloud Transcription",
@@ -741,6 +783,13 @@ public sealed class OnboardingPage : Page
             if (downloaded.Contains(modelName, ModelDiskReconciliation.NameComparer))
             {
                 var continueBtn = AppTheme.CreateAccentButton("Continue with Built-in Model");
+                continueBtn.Tapped += (_, _) => ShowStep(6);
+                AddButtonRow(CreateBackButton(), continueBtn);
+            }
+            else if (_watchedSpeechRow is { IsDownloading: true })
+            {
+                // The download carries on past this step (BuildLocalDetailPanel).
+                var continueBtn = AppTheme.CreateAccentButton("Continue");
                 continueBtn.Tapped += (_, _) => ShowStep(6);
                 AddButtonRow(CreateBackButton(), continueBtn);
             }
@@ -1468,10 +1517,11 @@ public sealed class OnboardingPage : Page
                 Margin = new Thickness(0, 4, 0, 0)
             });
 
-            _settings.SetString(AppDefaults.SelectedModelName, modelName);
-            var vm = App.Services.GetRequiredService<ModelManagementViewModel>();
-            vm.SelectedModelName = modelName;
-            vm.LoadModels(); // Refresh downloaded state
+            // In place, never LoadModels: rebuilding the rows would orphan a row whose download is
+            // running (the Downloads card and the stopped row find rows by name, the Models page
+            // holds the instances).
+            _speechModels.PersistSelectionWithoutLoading(modelName);
+            _speechModels.RefreshDownloadedState();
 
             // Continue button added via AddButtonRow by caller
         }
@@ -1482,228 +1532,57 @@ public sealed class OnboardingPage : Page
             // of UI-2's two raw-id leaks, so removing it closed both at once. Do not reinstate it: the
             // user is being offered a download, and which OTHER models they happen to hold is not
             // information that helps them decide.
-            var progressBar = new ProgressBar
-            {
-                Width = 300,
-                Height = 6,
-                Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
-                Background = AppTheme.Brush(ColorHelper.FromArgb(40, 142, 142, 147)),
-                CornerRadius = new CornerRadius(3),
-                Margin = new Thickness(0, 8, 0, 0)
-            };
-            var progressText = new TextBlock
-            {
-                Text = "0%",
-                FontSize = 11,
-                Foreground = AppTheme.Brush(AppTheme.SubtleText),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                Margin = new Thickness(0, 4, 0, 0)
-            };
-            panel.Children.Add(progressBar);
-            panel.Children.Add(progressText);
+            //
+            // The download runs on the Models page's view model, not on this page (owner, 2026-10-17):
+            // it carries on when the user moves on or finishes setup, the Downloads card shows its
+            // progress and Cancel here and on Home, and the step rebuilds when it starts, ends or
+            // fails (WatchSpeechRow). The model is selected when its download starts, as Express does.
+            var row = _speechModels.Models.FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, modelName));
+            WatchSpeechRow(row);
 
-            // UI-3: ONE button. Its label and palette follow the download's state — a greyed-out
-            // "Download X" sitting above a separate "Cancel Download" told the user the action they
-            // wanted was disabled, when it had simply moved.
-            var primaryLabel = $"Download {displayName} ({FormatSize(recommended)})";
-            var actionBtn = AppTheme.CreateActionToggleButton(primaryLabel, "Cancel Download");
-            actionBtn.Element.HorizontalAlignment = HorizontalAlignment.Center;
-            actionBtn.Element.Margin = new Thickness(0, 4, 0, 0);
-            panel.Children.Add(actionBtn.Element);
-
-            // Error text block — hidden until an error occurs
-            var errorText = new TextBlock
+            if (row is { IsDownloading: true })
             {
-                Foreground = AppTheme.Brush(AppTheme.FailureText),
-                FontSize = 13,
-                TextWrapping = TextWrapping.Wrap,
-                TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
-                Visibility = Visibility.Collapsed,
-                Margin = new Thickness(0, 4, 0, 0)
-            };
-            panel.Children.Add(errorText);
+                var card = new DownloadsCard(title: null,
+                    include: key => ModelDiskReconciliation.IsSameModel(key, modelName), showStopped: false);
+                card.Element.Margin = new Thickness(0, 8, 0, 0);
+                panel.Children.Add(card.Element);
+                return;
+            }
 
-            // Skip button added via AddButtonRow by caller if models already downloaded
+            var downloadBtn = AppTheme.CreateAccentButton($"Download {displayName} ({FormatSize(recommended)})");
+            downloadBtn.HorizontalAlignment = HorizontalAlignment.Center;
+            downloadBtn.Margin = new Thickness(0, 8, 0, 0);
+            panel.Children.Add(downloadBtn);
 
-            actionBtn.Element.Tapped += async (_, _) =>
+            // The last attempt's failure, as the view model words it (a Cancel leaves none).
+            if (!string.IsNullOrEmpty(row?.ErrorMessage))
             {
-                // ONE handler, branching on the button's own state, so the two actions cannot get
-                // out of step with the two labels.
-                if (actionBtn.IsCancelling)
+                panel.Children.Add(new TextBlock
                 {
-                    // Ignore a tap inside the arming window — it is the second half of a
-                    // double-click on Download, not a cancel. The window is the USER'S configured
-                    // double-click interval; see ActionToggleCore's remarks.
-                    if (!ActionToggleCore.CancelTapIsArmed(
-                            TimeSpan.FromMilliseconds(Environment.TickCount64 - _downloadCancelShownTicks),
-                            ActionToggleCore.ArmingWindow(NativeInterop.GetDoubleClickTime())))
-                        return;
+                    Text = row.ErrorMessage,
+                    Foreground = AppTheme.Brush(AppTheme.FailureText),
+                    FontSize = 13,
+                    TextWrapping = TextWrapping.Wrap,
+                    TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
+                    Margin = new Thickness(0, 4, 0, 0)
+                });
+            }
 
-                    // Mark THIS attempt user-cancelled — not abandoned. The completion path treats
-                    // the two differently, and Abandoned always wins if both end up set (see
-                    // DownloadAttemptState's remarks): a user who taps Cancel and then also
-                    // navigates away gets the navigation's answer.
-                    if (_downloadAttempt is { } cancelling)
-                    {
-                        var (cancellingState, cancellingCts) = cancelling;
-                        cancellingState.CancelledByUser = true;
-                        cancellingCts.Cancel();
-                    }
+            downloadBtn.Tapped += (_, _) =>
+            {
+                if (row is null)
+                {
+                    Logger.Warning("Onboarding: no Models row for the recommended model; download not started");
                     return;
                 }
-
-                // Reset error state from previous attempt
-                errorText.Visibility = Visibility.Collapsed;
-                progressBar.Value = 0;
-                progressText.Text = "0%";
-
-                actionBtn.ShowCancel();
-                _downloadCancelShownTicks = Environment.TickCount64;
-
-                // A fresh attempt, and `state`/`attemptCts` — the LOCALS — are what this closure
-                // checks at completion, never a re-read of `_downloadAttempt`. That is what makes
-                // the provenance attempt-scoped rather than page-global.
-                var state = new Helpers.DownloadAttemptState();
-                var attemptCts = new CancellationTokenSource();
-                _downloadAttempt = (state, attemptCts);
-                var ct = attemptCts.Token;
-
-                try
-                {
-                    var model = PredefinedModels.Models
-                        .First(m => ModelDiskReconciliation.IsSameModel(m.Name, modelName));
-                    var progress = new Progress<double>(p =>
-                    {
-                        progressBar.Value = p * 100;
-                        progressText.Text = $"{p * 100:F0}%";
-                    });
-                    await _downloader.DownloadModelAsync(model, progress, ct);
-
-                    // A completed-but-cancelled download is only a SUCCESS when `state` says so —
-                    // ShouldFinalize, not a raw check of one flag. `ModelDownloadManager` has no
-                    // cancellation check between its final commit and its return, so this line is
-                    // genuinely reachable however the token got cancelled (Codex diff review r5, r6).
-                    //
-                    // A page-level "cancelled by user" bool was wrong here: Back, Unload, and step
-                    // reconstruction all cancel the same token WITHOUT resetting a stale flag from an
-                    // earlier Cancel tap, so a user who tapped Cancel and then navigated away still
-                    // read as "keep it" — writing settings and forcing step 6 for a screen already
-                    // left. `state` is scoped to THIS attempt and `Abandoned` always overrides
-                    // `CancelledByUser` in `ShouldFinalize` for exactly that reason.
-                    //
-                    // Four versions of this branch, each wrong in a different way: a bare return (no
-                    // explanation), a message that still returned (installed but unselected), success
-                    // unconditionally (the Back-after-Cancel race), and now this.
-                    if (!state.ShouldFinalize(ct.IsCancellationRequested))
-                    {
-                        // The page is going away or the user is navigating. The bytes are on disk
-                        // and the Models page will find them; touching UI or settings from here
-                        // would be acting on behalf of a screen that no longer exists.
-                        Logger.Information("Onboarding download finished after the screen was abandoned — leaving state alone");
-                        return;
-                    }
-
-                    if (ct.IsCancellationRequested)
-                        Logger.Information("Onboarding download completed as the user's cancel arrived — keeping it");
-                    _settings.SetString(AppDefaults.SelectedModelName, modelName);
-                    var vm = App.Services.GetRequiredService<ModelManagementViewModel>();
-                    vm.SelectedModelName = modelName;
-                    vm.LoadModels(); // Refresh downloaded state after download
-
-                    // The download CHANGED what this step should say, so its cached panel is now a
-                    // lie: pressing Back restored "Download Whisper Small (264 MB)" plus the old
-                    // progress and Skip controls for a model that is already downloaded and
-                    // selected (Codex diff review). Every other branch that changes this step's
-                    // meaning already invalidates it — the cloud/local switches at :529 and :539 —
-                    // and completing a download is the same kind of change.
-                    _stepCache.Remove(5);
-
-                    ShowStep(6);
-                }
-                catch (OperationCanceledException)
-                {
-                    if (ct.IsCancellationRequested)
-                    {
-                        Logger.Information("Onboarding model download cancelled");
-                        // UI-3 side effect worth naming: the button now morphs to Cancel UNDER the
-                        // cursor, so the second click of a habitual double-click lands on it and
-                        // aborts a download the user meant to start. The old layout absorbed that
-                        // click on a disabled button. Silence would read as "Download doesn't work",
-                        // so say what happened (Kimi diff review).
-                        errorText.Text = "Download cancelled.";
-                        errorText.Visibility = Visibility.Visible;
-                    }
-                    else
-                    {
-                        Logger.Warning("Onboarding model download stalled (network timeout)");
-                        errorText.Text = "Download stalled. Check your internet connection and try again.";
-                        errorText.Visibility = Visibility.Visible;
-                    }
-                    progressBar.Value = 0;
-                    progressText.Text = "0%";
-                }
-                catch (Services.Transcription.ModelSourceIOException ex) when (ex.InnerException is OperationCanceledException)
-                {
-                    // Same stall restoration as ModelManagementViewModel's arm (Kimi,
-                    // verification round): TRN-33's RemoteAsync re-types a stall OCE as a typed
-                    // source failure, which would otherwise fall to the generic handler.
-                    // LOG-1's shape since NET-5c (the same as the Models page's stall arm).
-                    Logger.Warning("Onboarding model download stalled (network timeout): {ErrorType}({InnerErrorType}): {ErrorMessage}",
-                        ex.GetType().Name, ex.InnerException?.GetType().Name, ex.Message);
-                    errorText.Text = "Download stalled. Check your internet connection and try again.";
-                    errorText.Visibility = Visibility.Visible;
-                    progressBar.Value = 0;
-                    progressText.Text = "0%";
-                }
-                catch (HttpRequestException ex)
-                {
-                    // LOG-1 shape (NET-5c): a network failure is environmental and fully surfaced on
-                    // the line below - Warning (Error+ forwards to Sentry, and this arm sent an event
-                    // per offline download), type + message, never the object (Kimi, PR #975).
-                    Logger.Warning("Onboarding model download failed (HTTP): {ErrorType}: {ErrorMessage}",
-                        ex.GetType().Name, ex.Message);
-                    errorText.Text = "Download failed. Check your internet connection and try again.";
-                    errorText.Visibility = Visibility.Visible;
-                    progressBar.Value = 0;
-                    progressText.Text = "0%";
-                }
-                catch (Services.Transcription.ModelLocalIOException ex)
-                {
-                    // NET-5b: the disk is full (mid-write, or the free-space pre-check refused). The
-                    // same arm as ModelManagementViewModel's - environmental, Warning (Error+
-                    // forwards to Sentry), and copy that says what to do instead of "try again".
-                    // The self-review found this page had no arm for either raise class.
-                    Logger.Warning("Onboarding model download stopped, disk full: {ErrorType}: {ErrorMessage}",
-                        ex.GetType().Name, ex.Message);
-                    errorText.Text = "Not enough disk space. Free some space and download again.";
-                    errorText.Visibility = Visibility.Visible;
-                    progressBar.Value = 0;
-                    progressText.Text = "0%";
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error(ex, "Onboarding model download failed");
-                    errorText.Text = "Download failed. Please try again.";
-                    errorText.Visibility = Visibility.Visible;
-                    progressBar.Value = 0;
-                    progressText.Text = "0%";
-                }
-                finally
-                {
-                    // Retire THIS attempt. The `ReferenceEquals` guard is defensive — a new attempt
-                    // can only start after this one's button returns to primary, which happens right
-                    // here, so `_downloadAttempt` cannot legitimately be anything else yet — but a
-                    // guard costs nothing and means a future reordering fails safe instead of
-                    // clobbering a newer attempt's reference. Compared by the STATE object's
-                    // identity, since the field holds a value tuple.
-                    if (_downloadAttempt is { } current && ReferenceEquals(current.State, state))
-                        _downloadAttempt = null;
-                    attemptCts.Dispose();
-
-                    // Back to the primary action — the SAME finally that restored both buttons
-                    // before, so the restore point is unchanged.
-                    actionBtn.ShowPrimary();
-                }
+                _selectionBeforeSpeechDownload = _settings.GetString(AppDefaults.SelectedModelName, "");
+                _speechModels.PersistSelectionWithoutLoading(modelName);
+                _ = _speechModels.DownloadModelAsync(row);
+                // Refused before it started (an update being applied, a runtime that cannot run here):
+                // no IsDownloading change will come, so the selection goes back now.
+                if (row is { IsDownloading: false, IsDownloaded: false })
+                    RestoreSelectionBeforeSpeechDownload(row);
+                RebuildSpeechStep();
             };
         }
     }
@@ -3274,13 +3153,28 @@ public sealed class OnboardingPage : Page
         // stored for the selected text provider, read the way the AI step reads the provider
         // (raw setting, parsed).
         var enhancementOn = _settings.GetBool(AppDefaults.AiEnhancementEnabled, false);
-        var enhancementValue = express?.Decision.Ai switch
+        // Express: the built-in model is a switch here, so a user on a small disk or a metered
+        // connection can skip its download (owner, 2026-10-16). The line under the card follows it.
+        TextBlock? downloadNote = null;
+        void RefreshDownloadNote()
         {
-            ExpressAiAction.UseInstalledNow => "ON",
-            ExpressAiAction.DownloadThenAdopt => "ON once its model is downloaded",
-            _ => EnhancementSummary(enhancementOn),
-        };
-        summaryPanel.Children.Add(CreateSummaryRow("\uE945", "AI enhancement", enhancementValue));
+            if (downloadNote is null || express is not { } current) return;
+            var text = ExpressDownloadNote(current, _expressAiOn);
+            downloadNote.Text = text ?? "";
+            downloadNote.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+        }
+        if (express is { } offer && offer.Decision.Ai != ExpressAiAction.LeaveAlone && offer.BuiltInModelId is not null)
+        {
+            summaryPanel.Children.Add(CreateSummaryToggleRow("\uE945", "AI enhancement", _expressAiOn, on =>
+            {
+                _expressAiOn = on;
+                RefreshDownloadNote();
+            }));
+        }
+        else
+        {
+            summaryPanel.Children.Add(CreateSummaryRow("\uE945", "AI enhancement", EnhancementSummary(enhancementOn)));
+        }
 
         // Recording Hotkey \u2014 the fields hold canonical strings; the summary speaks display names,
         // like every other surface (the seeded first-run default reads "Right Ctrl" here, not
@@ -3306,17 +3200,18 @@ public sealed class OnboardingPage : Page
 
         _contentPanel.Children.Add(AppTheme.CreateCard(summaryPanel));
 
-        if (express is { } plan && ExpressDownloadNote(plan.Decision) is { } note)
+        if (express is not null)
         {
-            _contentPanel.Children.Add(new TextBlock
+            downloadNote = new TextBlock
             {
-                Text = note,
-                FontSize = 13,
-                Foreground = AppTheme.Brush(AppTheme.SubtleText),
+                FontSize = 14,
+                Foreground = AppTheme.Brush(AppTheme.TextPrimary),
                 TextWrapping = TextWrapping.Wrap,
                 TextAlignment = Microsoft.UI.Xaml.TextAlignment.Center,
                 HorizontalAlignment = HorizontalAlignment.Center,
-            });
+            };
+            _contentPanel.Children.Add(downloadNote);
+            RefreshDownloadNote();
         }
 
         var finishBtn = AppTheme.CreateAccentButton("Start Using VoiceWink");
@@ -3443,6 +3338,13 @@ public sealed class OnboardingPage : Page
 
         if (plan.BuiltInModelId is not { } pick || decision.Ai == ExpressAiAction.LeaveAlone)
             return;
+        if (!_expressAiOn)
+        {
+            // Turned off on the Done step: nothing downloads, and the switch is stored OFF so a
+            // relaunched wizard (and the built-in model adoption) read it as the user's choice.
+            _settings.SetBool(AppDefaults.AiEnhancementEnabled, false);
+            return;
+        }
         _enhancement.SelectedProvider = Services.AIEnhancement.AIProvider.OnThisPc;
         if (decision.Ai == ExpressAiAction.UseInstalledNow)
             _builtInAdoption.UseNow(pick);
@@ -3450,13 +3352,38 @@ public sealed class OnboardingPage : Page
             _ = _builtInAdoption.Start(pick);
     }
 
-    /// <summary>The Done step's line about Express's background downloads, or null when nothing downloads.</summary>
-    internal static string? ExpressDownloadNote(ExpressSetupDecision decision)
-        => (decision.DownloadSpeechModel, decision.Ai == ExpressAiAction.DownloadThenAdopt) switch
+    /// <summary>The Done step's line about what Express downloads, for this plan and the AI switch.</summary>
+    private static string? ExpressDownloadNote(ExpressSetupPlan plan, bool aiOn)
+    {
+        var decision = plan.Decision;
+        var speech = decision.DownloadSpeechModel
+            ? PredefinedModels.Models.FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, decision.SpeechModel))
+            : null;
+        var ai = aiOn && decision.Ai == ExpressAiAction.DownloadThenAdopt && plan.BuiltInModelId is { } id
+            ? Services.AIEnhancement.LocalEngine.LocalModelCatalog.Find(id)
+            : null;
+        return ExpressDownloadNote(
+            speech is null ? null : (speech.DisplayName, speech.FileSizeBytes),
+            ai is null ? null : (ai.DisplayName, ai.ToDownloadDescriptor().FileSizeBytes));
+    }
+
+    /// <summary>
+    /// The Done step's line about Express's background downloads, or null when nothing downloads.
+    /// It names each model and its size, and says what waits for it: a dictation waits for the
+    /// speech model, and AI enhancement turns on once its model is in.
+    /// </summary>
+    internal static string? ExpressDownloadNote((string Name, long Bytes)? speech, (string Name, long Bytes)? ai)
+        => (speech, ai) switch
         {
-            (true, true) => "The speech and AI models download in the background.",
-            (true, false) => "The speech model downloads in the background.",
-            (false, true) => "The AI model downloads in the background.",
+            ({ } s, { } a) => $"After you finish, {s.Name} ({DownloadProgressText.Size(s.Bytes)}) and {a.Name} " +
+                              $"({DownloadProgressText.Size(a.Bytes)}) download in the background; Home shows their " +
+                              $"progress, with Cancel. Dictation works once {s.Name} has downloaded, AI enhancement " +
+                              $"once {a.Name} has.",
+            ({ } s, null) => $"After you finish, {s.Name} ({DownloadProgressText.Size(s.Bytes)}) downloads in the " +
+                             "background; Home shows its progress, with Cancel. Dictation works once it has downloaded.",
+            (null, { } a) => $"After you finish, {a.Name} ({DownloadProgressText.Size(a.Bytes)}) downloads in the " +
+                             "background; Home shows its progress, with Cancel. AI enhancement turns on once it has " +
+                             "downloaded.",
             _ => null,
         };
 
@@ -3685,23 +3612,6 @@ public sealed class OnboardingPage : Page
     /// </summary>
     private static Border CreateSummaryRow(string glyph, string label, string value)
     {
-        var icon = new FontIcon
-        {
-            Glyph = glyph,
-            FontSize = 16,
-            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
-            Margin = new Thickness(0, 0, 10, 0),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
-        var labelBlock = new TextBlock
-        {
-            Text = label,
-            FontSize = 14,
-            Foreground = AppTheme.Brush(AppTheme.SubtleText),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-
         var valueBlock = new TextBlock
         {
             Text = value,
@@ -3720,6 +3630,48 @@ public sealed class OnboardingPage : Page
             TextAlignment = TextAlignment.Right,
             Margin = new Thickness(16, 0, 0, 0)
         };
+        return CreateSummaryRow(glyph, label, valueBlock);
+    }
+
+    /// <summary>
+    /// A Done-step row whose value is a switch: Express setup's AI enhancement row, which the user can
+    /// still turn off before anything downloads.
+    /// </summary>
+    private static Border CreateSummaryToggleRow(string glyph, string label, bool isOn, Action<bool> toggled)
+    {
+        var toggle = new ToggleSwitch
+        {
+            IsOn = isOn,
+            OnContent = "ON",
+            OffContent = "OFF",
+            MinWidth = 0,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(16, 0, 0, 0),
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(toggle, label);
+        toggle.Toggled += (_, _) => toggled(toggle.IsOn);
+        return CreateSummaryRow(glyph, label, toggle);
+    }
+
+    private static Border CreateSummaryRow(string glyph, string label, FrameworkElement valueElement)
+    {
+        var icon = new FontIcon
+        {
+            Glyph = glyph,
+            FontSize = 16,
+            Foreground = AppTheme.Brush(AppTheme.AccentBlueText),
+            Margin = new Thickness(0, 0, 10, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var labelBlock = new TextBlock
+        {
+            Text = label,
+            FontSize = 14,
+            Foreground = AppTheme.Brush(AppTheme.SubtleText),
+            VerticalAlignment = VerticalAlignment.Center
+        };
 
         var leftPanel = new StackPanel
         {
@@ -3732,9 +3684,9 @@ public sealed class OnboardingPage : Page
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         Grid.SetColumn(leftPanel, 0);
-        Grid.SetColumn(valueBlock, 1);
+        Grid.SetColumn(valueElement, 1);
         grid.Children.Add(leftPanel);
-        grid.Children.Add(valueBlock);
+        grid.Children.Add(valueElement);
 
         return new Border
         {
@@ -3803,11 +3755,7 @@ public sealed class OnboardingPage : Page
     private Border CreateBackButton()
     {
         var btn = AppTheme.CreateSecondaryButton("Back");
-        btn.Tapped += (_, _) =>
-        {
-            AbandonCurrentDownload();
-            ShowStep(_step - 1);
-        };
+        btn.Tapped += (_, _) => ShowStep(_step - 1);
         return btn;
     }
 

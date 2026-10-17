@@ -24,8 +24,9 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 /// <see cref="AppDefaults.ExpressBuiltInPending"/> until the job ends;
 /// <see cref="ResumePending"/> runs once per launch from <c>App.StartGatedRuntimeServices</c>
 /// (the UI thread, behind the legal gate — the LIC-23 scheduler's seat). The built-in models are
-/// bundles, which <c>ModelDownloadManager</c> restarts from zero rather than resuming. A Cancel on the
-/// AI Enhancement page ends the job for good. A failure keeps it for ONE more attempt at the next
+/// bundles, which <c>ModelDownloadManager</c> restarts from zero rather than resuming. A Cancel (the
+/// AI Enhancement page, the Downloads card) ends the job for good, and turns off an AI switch that
+/// would otherwise fail every dictation. A failure keeps it for ONE more attempt at the next
 /// start; a resumed attempt that fails too drops it, so a model that cannot be fetched is not
 /// downloaded again at every launch.</para>
 ///
@@ -43,27 +44,46 @@ internal sealed class BuiltInModelAdoption
     private readonly Func<string, bool> _isInstalled;
     private readonly Action<string> _useModel;
     private readonly Action<string>? _startFirstUseCheck;
+    private readonly Action? _switchAiOff;
+    private readonly Func<AIProvider>? _activeTextProvider;
+    private readonly Func<string?>? _activeBuiltInModel;
+    private readonly Func<bool>? _activePromptIsImage;
     private readonly HashSet<LocalModelDownloadAttempt> _watched = new();
     private bool _resumed;
 
     /// <param name="useModel">Takes the model into use: provider, model, the AI switch ON, residency.</param>
     /// <param name="startFirstUseCheck">The engine's first-use GPU check, as a finished download on the AI page runs it.</param>
+    /// <param name="switchAiOff">Turns the AI switch off, as the AI page's switch does.</param>
+    /// <param name="activeTextProvider">The provider the ACTIVE prompt cleans with (its override first).</param>
+    /// <param name="activeBuiltInModel">The built-in model the active prompt would use, or null.</param>
+    /// <param name="activePromptIsImage">Whether the active prompt generates images (it uses no text model).</param>
     internal BuiltInModelAdoption(SettingsService settings, LocalModelStore store,
-        Action<string> useModel, Action<string>? startFirstUseCheck)
-        : this(settings, store.StartDownload, store.IsInstalled, useModel, startFirstUseCheck)
+        Action<string> useModel, Action<string>? startFirstUseCheck, Action? switchAiOff = null,
+        Func<AIProvider>? activeTextProvider = null, Func<string?>? activeBuiltInModel = null,
+        Func<bool>? activePromptIsImage = null)
+        : this(settings, store.StartDownload, store.IsInstalled, useModel, startFirstUseCheck, switchAiOff,
+               activeTextProvider, activeBuiltInModel, activePromptIsImage)
     {
+        // Every Cancel, not only of the Express job's download (Codex diff r1).
+        store.DownloadCancelled += _ => SwitchAiOffIfNothingCanServe();
     }
 
     /// <summary>Test seam: the store's two members as delegates, so an attempt's outcome can be set.</summary>
     internal BuiltInModelAdoption(SettingsService settings,
         Func<string, LocalModelDownloadAttempt> startDownload, Func<string, bool> isInstalled,
-        Action<string> useModel, Action<string>? startFirstUseCheck)
+        Action<string> useModel, Action<string>? startFirstUseCheck, Action? switchAiOff = null,
+        Func<AIProvider>? activeTextProvider = null, Func<string?>? activeBuiltInModel = null,
+        Func<bool>? activePromptIsImage = null)
     {
         _settings = settings;
+        _activeTextProvider = activeTextProvider;
+        _activeBuiltInModel = activeBuiltInModel;
+        _activePromptIsImage = activePromptIsImage;
         _startDownload = startDownload;
         _isInstalled = isInstalled;
         _useModel = useModel;
         _startFirstUseCheck = startFirstUseCheck;
+        _switchAiOff = switchAiOff;
     }
 
     /// <summary>Takes an installed model into use now — Express setup when the pick is already on disk.</summary>
@@ -151,6 +171,7 @@ internal sealed class BuiltInModelAdoption
             if (attempt.IsCancellationRequested)
             {
                 Logger.Information("Express setup: built-in model download cancelled; not restarted");
+                SwitchAiOffIfNothingCanServe();
                 Clear();
                 return;
             }
@@ -179,8 +200,10 @@ internal sealed class BuiltInModelAdoption
         }
         catch (OperationCanceledException) when (attempt.IsCancellationRequested)
         {
-            // A Cancel on the AI page: the user ended it, so it is not restarted at the next launch.
+            // A Cancel (the AI page, the Downloads card): the user ended it, so it is not restarted
+            // at the next launch.
             Logger.Information("Express setup: built-in model download cancelled; not restarted");
+            SwitchAiOffIfNothingCanServe();
             Clear();
         }
         catch (Exception ex)
@@ -202,6 +225,35 @@ internal sealed class BuiltInModelAdoption
         {
             _watched.Remove(attempt);
         }
+    }
+
+    /// <summary>
+    /// After a Cancel: an AI switch turned ON meanwhile (the AI page's, during the download) is
+    /// turned off when the built-in models are the provider and no installed one is selected —
+    /// left on, every dictation would fail "No AI model selected" (owner, 2026-10-17). A switch
+    /// that is off, another provider, or an installed model in use is left as it is.
+    /// </summary>
+    internal void SwitchAiOffIfNothingCanServe()
+    {
+        // An active image prompt uses no text model, so a text model's Cancel cannot fail it (Codex r2).
+        if (!_settings.GetBool(AppDefaults.AiEnhancementEnabled) || _activePromptIsImage?.Invoke() == true)
+            return;
+        // The ACTIVE prompt decides, its own provider and model overrides included (Kimi diff r1):
+        // a prompt routed to another provider leaves the switch alone, and a prompt on the built-in
+        // models is judged by its own model. The global settings are the fallback where no
+        // service is wired (the test seam).
+        var onBuiltIn = _activeTextProvider is not null
+            ? _activeTextProvider() == AIProvider.OnThisPc
+            : string.Equals(_settings.GetString(AppDefaults.AiProvider, ""), nameof(AIProvider.OnThisPc), StringComparison.Ordinal);
+        if (!onBuiltIn)
+            return;
+        var current = _activeBuiltInModel is not null
+            ? _activeBuiltInModel() ?? ""
+            : _settings.GetString(AppDefaults.AiModelKey(AIProvider.OnThisPc), "");
+        if (!string.IsNullOrEmpty(current) && _isInstalled(current))
+            return;
+        Logger.Information("Express setup: AI enhancement switched off; its model download was cancelled");
+        _switchAiOff?.Invoke();
     }
 
     private void Clear()

@@ -133,7 +133,11 @@ internal sealed class PasteDeliveryVerifier
             // same rule as an Unknown read: the relaxed block was granted against a
             // promise of proof, and a fault produces none.
             var mustNotClaimSuccess = deliveryUnconfirmed || ctx.ProofRequired;
-            Logger.Warning("Paste delivery verification faulted: {ExType} — {Disposition}",
+            // The verifier's contract is "never throws": a fault is our defect, so its cause reaches
+            // Sentry once per exception type per run, with the stack (2026-10-17; it was Warning with
+            // the type only). The exception comes from our UIA/clipboard reads, never user text.
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("paste-verify-fault:" + ex.GetType().Name), ex,
+                "Paste delivery verification faulted: {ExType} — {Disposition}",
                 ex.GetType().Name, mustNotClaimSuccess ? "uncertain (no delivery proof)" : "failing open");
             if (!mustNotClaimSuccess)
                 return new PasteDeliveryReport(PasteDeliveryOutcome.Delivered, true, "fault:fail-open");

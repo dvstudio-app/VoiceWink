@@ -17,6 +17,21 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.116.414] - 2026-10-17
+
+- A model download that gets no answer from the server now retries within 30 seconds instead of sitting at 0 %, and its progress moves sooner.
+- Express setup names the models it downloads and their sizes; AI enhancement starts off, and a switch turns it on.
+- Home shows each model download with a progress bar and Cancel; a model shows as Active only once it has downloaded, and reads "Verifying…" at 100%.
+- A model download started during setup keeps going after setup.
+- A dictation made while its model downloads shows the download's progress instead of 0%.
+- When Parakeet can't run on a PC, the message says why and what to do.
+- Local Whisper now runs on older processors without AVX2.
+- The Models page says when this PC can't run a model, and offers no download for it.
+
+## [1.115.413] - 2026-10-16
+
+- Metrics and time saved no longer count generated images as transcriptions.
+
 ## [1.115.412] - 2026-10-14
 
 - Setup asks about crash reports; keeping a prompt log on your PC is a separate switch, off by default.

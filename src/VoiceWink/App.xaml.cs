@@ -156,6 +156,14 @@ public partial class App : Application, Services.IAppLifetime
     /// <summary>Default location for the opt-in probe — see <see cref="Helpers.CrashOptInReader"/>.</summary>
     private static string DefaultSettingsPath => Helpers.AppPaths.SettingsFile;
 
+    // Whether the configuration BuildLoggerConfiguration last built carries the Sentry sink.
+    private static bool _loggerBuiltWithSentry;
+
+    /// <summary>The Error budgets count a cause only while the Sentry sink is live: cleared before
+    /// a logger closes, published after its replacement is in place. A report in between is an
+    /// Error that counts nothing — at worst one extra event, never a cause lost (Codex verify r1).</summary>
+    private static void PublishSentrySinkState() => Helpers.SentrySinkState.Attached = _loggerBuiltWithSentry;
+
     /// <summary>
     /// Build the canonical Serilog configuration used by the app: file sink under
     /// <see cref="Helpers.AppPaths.LogsDir"/>, a Debug sink, and the optional Sentry
@@ -212,7 +220,12 @@ public partial class App : Application, Services.IAppLifetime
                 // either way (DataErasureService closes the sink and deletes the Logs directory).
                 retainedFileCountLimit: 14,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
-        if (SentryInitializer.IsInitialized)
+        // Read once, so the flag the Error budgets consult describes exactly the logger built here.
+        // It is PUBLISHED by each caller only after Log.Logger holds this logger (Codex verify r1):
+        // set here, a report racing the gap would be counted against the old, closed logger.
+        var sentryAttached = SentryInitializer.IsInitialized;
+        _loggerBuiltWithSentry = sentryAttached;
+        if (sentryAttached)
         {
             cfg = cfg.WriteTo.Logger(lc => lc
                 .Enrich.With<Services.System.LogRedactionEnricher>()
@@ -234,6 +247,7 @@ public partial class App : Application, Services.IAppLifetime
     /// </summary>
     internal static void ClearAndReinitializeLogs()
     {
+        Helpers.SentrySinkState.Attached = false;
         Log.CloseAndFlush();
 
         if (Directory.Exists(LogDirectory))
@@ -246,6 +260,7 @@ public partial class App : Application, Services.IAppLifetime
         }
 
         Log.Logger = BuildLoggerConfiguration().CreateLogger();
+        PublishSentrySinkState();
     }
 
     /// <summary>
@@ -260,8 +275,10 @@ public partial class App : Application, Services.IAppLifetime
     /// </summary>
     internal static void ReattachLogSinks()
     {
+        Helpers.SentrySinkState.Attached = false;
         Log.CloseAndFlush();
         Log.Logger = BuildLoggerConfiguration().CreateLogger();
+        PublishSentrySinkState();
     }
 
     public App()
@@ -327,6 +344,7 @@ public partial class App : Application, Services.IAppLifetime
         // line — a slow or failing START is the case that detail is needed for most.
         Helpers.LogLevelControl.Apply(Helpers.VerboseLoggingReader.Read(DefaultSettingsPath));
         Log.Logger = BuildLoggerConfiguration().CreateLogger();
+        PublishSentrySinkState();
 
         // INS-4: registered AFTER the logger is configured, deliberately. A Listen failure logs a
         // Warning, and above this line Serilog's default sink is silent — so the one diagnostic
@@ -422,6 +440,12 @@ public partial class App : Application, Services.IAppLifetime
         // background, once per app version (marker), fully behind the TRN-34 spawn gate, and
         // invisible to the storm fuse — see GpuWarmup's class doc for the pinned invariants.
         ConfigureGpuWarmup();
+
+        // A Cancel of the selected speech model keeps it on the Downloads card with a Download
+        // button, whichever caller was downloading it — a dictation included (Codex diff r2).
+        // Resolved at the Cancel, which runs on the UI thread (the card, the Models page).
+        global::VoiceWink.Services.Transcription.BackgroundDownloads.Instance.CancelledByUser +=
+            key => Services.GetRequiredService<ModelManagementViewModel>().KeepCancelledModelListed(key);
     }
 
     private void ConfigureGpuWarmup()
@@ -449,7 +473,9 @@ public partial class App : Application, Services.IAppLifetime
         // Hoisted const read (the VadFeature CS0162 idiom).
         var pcppEnabled = Helpers.PcppFeature.IsEnabled;
         GpuWarmup.ParakeetPlan? parakeetPlan = null;
-        if (pcppEnabled && s_parakeetLaunchMode == ParakeetLaunchMode.Auto)
+        // TRN-79: never on a processor parakeet-server cannot run — the warm-up spawns the child
+        // whenever its model is on disk, and on such a PC the child dies with an illegal instruction.
+        if (pcppEnabled && s_parakeetLaunchMode == ParakeetLaunchMode.Auto && ParakeetNativeProbe.IsSupported)
         {
             var exePath = Path.Combine(AppContext.BaseDirectory, "runtimes", "win-x64", "parakeet-server.exe");
             parakeetPlan = new GpuWarmup.ParakeetPlan(
@@ -877,7 +903,18 @@ public partial class App : Application, Services.IAppLifetime
                     enhancementVm.ReloadFromSettings();
                     enhancementVm.IsEnabled = true;
                 },
-                startFirstUseCheck: engine.StartFirstUseCheck);
+                startFirstUseCheck: engine.StartFirstUseCheck,
+                switchAiOff: () =>
+                {
+                    // Reloaded first: setup writes the switch directly, so the singleton can hold a
+                    // stale false and the assignment would change nothing (Codex diff r1).
+                    var enhancementVm = sp.GetRequiredService<EnhancementViewModel>();
+                    enhancementVm.ReloadFromSettings();
+                    enhancementVm.IsEnabled = false;
+                },
+                activeTextProvider: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().ActiveTextProvider(),
+                activeBuiltInModel: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().ActiveBuiltInModel(),
+                activePromptIsImage: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().GetActivePrompt()?.IsImageGeneration == true);
         });
         // Local-runtime seam: every local model goes through LocalModelPreparer, which is the ONE
         // authority on which engine serves a model name — the five call sites that used to reach

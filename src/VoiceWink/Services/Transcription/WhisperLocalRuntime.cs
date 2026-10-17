@@ -1,4 +1,5 @@
 using Serilog;
+using VoiceWink.Helpers;
 using VoiceWink.Models;
 
 namespace VoiceWink.Services.Transcription;
@@ -41,18 +42,30 @@ public sealed class WhisperLocalRuntime : ILocalTranscriptionRuntime
     /// machine-dependent, slow and memory-heavy — and the reviewer safety overlay forbids touching
     /// that directory at all.</para>
     /// </summary>
-    internal WhisperLocalRuntime(WhisperTranscriptionService whisper, Func<string, string?> resolvePath)
+    internal WhisperLocalRuntime(
+        WhisperTranscriptionService whisper, Func<string, string?> resolvePath, CpuInstructionSets? cpu = null)
     {
         _whisper = whisper;
         _resolvePath = resolvePath;
+        _cpu = cpu ?? CpuInstructionSets.Current;
     }
+
+    private readonly CpuInstructionSets _cpu;
 
     public ITranscriptionService Service => _whisper;
 
-    /// <summary>Always available: whisper.cpp ships in every build, behind no lever, and its native
-    /// library has no CPU-feature floor this app checks. Constant rather than a probe so the shipped
-    /// engine's behaviour is unchanged by the seam.</summary>
-    public bool IsAvailable => true;
+    /// <summary>TRN-79: whisper.cpp ships in every build, behind no lever, in two CPU builds — the
+    /// AVX2-class one and the no-AVX one <c>WhisperBackendLog</c> pins on a processor without that
+    /// class — so it runs wherever either requirement is met. Before 2026-10-17 this was a constant
+    /// <c>true</c> with no CPU check at all.</summary>
+    public bool IsAvailable => EngineCpuRequirements.WhisperRuntimeRunnable(_cpu);
+
+    /// <summary>What this processor lacks for the build of last resort — the no-AVX one; empty while
+    /// <see cref="IsAvailable"/>. The Models page's reason line reads it.</summary>
+    internal IReadOnlyList<string> MissingExtensions
+        => IsAvailable ? [] : EngineCpuRequirements.Missing(EngineCpuRequirement.WhisperNoAvx, _cpu);
+
+    public string UnavailableReason => EngineCpuRequirements.ReasonLine(MissingExtensions);
 
     /// <summary>Catalog membership, case-insensitively. NOT file existence — see the interface.</summary>
     public bool CanServe(string modelName) => Find(modelName) is not null;
@@ -86,6 +99,15 @@ public sealed class WhisperLocalRuntime : ILocalTranscriptionRuntime
         var model = Find(modelName);
         if (model is null)
             return PrepareOutcome.UnknownModel;
+
+        // TRN-79: before the file is even resolved, so a selection made before this check existed
+        // never reaches the native loader on a processor neither Whisper build can run.
+        if (!IsAvailable)
+        {
+            Logger.Information(
+                "Whisper unavailable: processor lacks {Missing}", string.Join(' ', MissingExtensions));
+            return PrepareOutcome.Unavailable;
+        }
 
         // GetSingleFileModelPath returns null when the file is absent — that null IS the existence signal,
         // the same one ModelManagementViewModel's select gate uses. Downloading is the CALLER's

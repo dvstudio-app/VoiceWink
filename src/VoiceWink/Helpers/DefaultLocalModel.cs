@@ -8,7 +8,8 @@ namespace VoiceWink.Helpers;
 /// <para>Parakeet when the machine can actually run it, Whisper Small when it cannot — the fallback
 /// is the whole reason this is a function rather than a constant. Parakeet is unusable on four
 /// classes of install the app already models: the <c>-p:ParakeetEnabled=false</c> build lever, a CPU
-/// below the SSE2 floor, a NATIVE arm64 process, and a native library that will not load. The first
+/// the shipped engine cannot run on (since TRN-79 the AVX2 class + BMI2 for parakeet-server; SSE2 in a
+/// sherpa build), a NATIVE arm64 process, and a native library that will not load. The first
 /// three are answered by <c>ParakeetTranscriptionService.IsAvailable</c> BEFORE anything is
 /// downloaded, which matters because the alternative is recommending a 670 MB download and then
 /// failing to load it — <c>PrepareOutcome.Unavailable</c> only arrives after the bytes are on

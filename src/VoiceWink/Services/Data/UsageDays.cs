@@ -9,7 +9,8 @@ namespace VoiceWink.Services.Data;
 /// or an image finished on it (LNC-14). It decides when the one-time Microsoft Store rating line and
 /// the License page's "Leave a review" link appear ("after about seven / five days of real use").
 ///
-/// <para>Recorded by <see cref="LifetimeMetricsService.RecordTranscriptionAsync"/>, the one place every
+/// <para>Recorded by <see cref="LifetimeMetricsService.RecordTranscriptionAsync"/> and
+/// <see cref="LifetimeMetricsService.RecordImageAsync"/>, the one place every
 /// completed dictation and image is already recorded whether or not History is on, inside that
 /// service's lock. Counted forward from the first build that has it: History can be off, auto-deleted
 /// or wiped, so it is no source to backfill from. Local only — nothing reads it but the two links.</para>

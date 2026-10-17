@@ -104,9 +104,12 @@ public sealed class ClipboardService
     /// </summary>
     private static bool TryOpenClipboard(int maxRetries = 3)
     {
+        int lastError = 0;
         for (int i = 0; i < maxRetries; i++)
         {
             if (NativeInterop.OpenClipboard(IntPtr.Zero)) return true;
+            // Read before the sleep: any later Win32 call may overwrite it.
+            lastError = Marshal.GetLastWin32Error();
             global::System.Threading.Thread.Sleep(50 * (i + 1));
         }
 
@@ -133,8 +136,8 @@ public sealed class ClipboardService
             // third spelling; a quoted shape is safe here because a Windows process name cannot
             // contain a quote (unlike the device names above, which is why those use EOL).
             Logger.Warning(
-                "OpenClipboard failed after {Retries} retries; clipboard owner=0x{Owner:X} pid={Pid} ownerProc=\"{OwnerProcess}\"",
-                maxRetries, owner, ownerPid, global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(ownerName));
+                "OpenClipboard failed after {Retries} retries (win32 error {Win32Error}); clipboard owner=0x{Owner:X} pid={Pid} ownerProc=\"{OwnerProcess}\"",
+                maxRetries, lastError, owner, ownerPid, global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(ownerName));
         }
         catch (Exception ex)
         {
@@ -289,14 +292,17 @@ public sealed class ClipboardService
                 var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)bytes.Length);
                 if (hGlobal == IntPtr.Zero)
                 {
-                    Logger.Warning("GlobalAlloc failed");
+                    Logger.Warning("GlobalAlloc failed (win32 error {Win32Error}, {Bytes} bytes)",
+                        Marshal.GetLastWin32Error(), bytes.Length);
                     return false;
                 }
 
                 var ptr = NativeInterop.GlobalLock(hGlobal);
                 if (ptr == IntPtr.Zero)
                 {
+                    var lockError = Marshal.GetLastWin32Error();
                     NativeInterop.GlobalFree(hGlobal);
+                    Logger.Warning("GlobalLock failed (win32 error {Win32Error}, {Bytes} bytes)", lockError, bytes.Length);
                     return false;
                 }
 
@@ -311,7 +317,10 @@ public sealed class ClipboardService
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to set clipboard text");
+            // Once per exception type per run: a PC that throws here throws on every dictation
+            // (Kimi diff r1, the same bound as the paste path's "clipboard-set").
+            Logger.Write(global::VoiceWink.Helpers.SessionErrorBudget.LevelFor("clipboard-set-threw:" + ex.GetType().Name),
+                ex, "Failed to set clipboard text");
             return false;
         }
     }
@@ -830,7 +839,10 @@ public sealed class ClipboardService
         // "text left on clipboard for manual Ctrl+V" guarantee.
         if (!SetClipboardCoreUnderLease(text))
         {
-            Logger.Error("Failed to set clipboard for paste");
+            // One event per run: the lines above name the cause, and a PC that refuses every
+            // clipboard write would otherwise file one Sentry event per dictation.
+            Logger.Write(global::VoiceWink.Helpers.SessionErrorBudget.LevelFor("clipboard-set"),
+                "Failed to set clipboard for paste");
             if (savedClipboard != null)
             {
                 try

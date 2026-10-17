@@ -28,11 +28,18 @@ namespace VoiceWink.Helpers;
 /// behaviour under it is measured, not assumed.</para>
 ///
 /// <para><b>Why not the library default order.</b> The default is
-/// [Cuda, Cuda12, Vulkan, CoreML, OpenVino, Cpu, CpuNoAvx]: five probes that can never find our
-/// payload (we ship exactly two runtimes), CUDA confusion TRN-45 measured, and <c>CpuNoAvx</c>
-/// maps to a package this app does not reference — a probe that cannot succeed. Pre-AVX
-/// machines cannot run local Whisper either way, and the VAD gate already fail-opens to its RMS
-/// fallback on its own CPU-feature probe.</para>
+/// [Cuda, Cuda12, Vulkan, CoreML, OpenVino, Cpu, CpuNoAvx]: probes that can never find our
+/// payload and CUDA confusion TRN-45 measured. We ship three runtimes and pin exactly the ones
+/// this processor can run.</para>
+///
+/// <para><b>TRN-79 (2026-10-17): the no-AVX runtime.</b> The CPU and Vulkan runtimes each ship
+/// one <c>ggml-cpu-whisper.dll</c> built for the AVX2 class (AVX, AVX2, FMA, F16C), and
+/// Whisper.net's own loader checks AVX/AVX2/FMA for the CPU runtime only — not F16C, not Vulkan.
+/// So on a processor without that class the pin is <c>[CpuNoAvx]</c> alone, decided BEFORE the
+/// Vulkan probe, which would otherwise map that directory's ggml modules. GPU acceleration is
+/// unavailable to Whisper there; the probe result is null, the GPU-off shape every reader
+/// already handles. The Silero VAD gate runs on that runtime too (its segments measured identical
+/// to the AVX2 build's over 270 recordings, 2026-10-17).</para>
 ///
 /// <para><b>What the log line may carry:</b> the <see cref="RuntimeLibrary"/> enum name, and for
 /// a declined Vulkan the probe outcome plus our own DLL basenames — never paths, models, or
@@ -84,6 +91,10 @@ public static class WhisperBackendLog
     /// its measured zero-ICD auto-fallback, one fewer moving part.</para>
     /// </summary>
     public static WhisperBackendPinResult PinLoadOrder(bool gpuAccelerationEnabled = true)
+        => PinLoadOrder(gpuAccelerationEnabled, CpuInstructionSets.Current);
+
+    /// <summary>The pin against stated processor facts — the seam the no-AVX tests drive.</summary>
+    internal static WhisperBackendPinResult PinLoadOrder(bool gpuAccelerationEnabled, CpuInstructionSets cpu)
     {
         var alreadyLoaded = RuntimeOptions.LoadedLibrary;
         if (alreadyLoaded is not null)
@@ -94,9 +105,22 @@ public static class WhisperBackendLog
             return new WhisperBackendPinResult(WhisperBackendPin.AlreadyLoaded, null);
         }
 
+        // TRN-79: before the GPU toggle and the Vulkan probe — both other runtimes need the AVX2
+        // class, and the probe maps the Vulkan directory's ggml modules.
+        var avx2Missing = EngineCpuRequirements.Missing(EngineCpuRequirement.GgmlAvx2, cpu);
+        if (avx2Missing.Count > 0)
+        {
+            RuntimeOptions.RuntimeLibraryOrder = [.. DecideCpuOrder(avx2Class: false)];
+            Logger.Warning(
+                "Processor lacks {Missing} — pinning the no-AVX Whisper runtime (no GPU acceleration for Whisper)",
+                string.Join(' ', avx2Missing));
+            RegisterVulkanDeviceLoggerOnce();
+            return new WhisperBackendPinResult(WhisperBackendPin.Pinned, null);
+        }
+
         if (!gpuAccelerationEnabled)
         {
-            RuntimeOptions.RuntimeLibraryOrder = [RuntimeLibrary.Cpu];
+            RuntimeOptions.RuntimeLibraryOrder = [.. DecideCpuOrder(avx2Class: true)];
             // Information, not Warning: this is the user's own setting doing what it says.
             Logger.Information("GPU acceleration disabled by setting — pinning CPU-only load order");
             RegisterVulkanDeviceLoggerOnce();
@@ -345,6 +369,12 @@ public static class WhisperBackendLog
         => outcome == VulkanSupport.Available
             ? [RuntimeLibrary.Vulkan, RuntimeLibrary.Cpu]
             : [RuntimeLibrary.Cpu];
+
+    /// <summary>TRN-79: the CPU-only order for a processor with or without the AVX2 class. Never
+    /// both: a fall-through from the AVX2 build to the no-AVX one would first load the build that
+    /// faults on this processor.</summary>
+    internal static RuntimeLibrary[] DecideCpuOrder(bool avx2Class)
+        => avx2Class ? [RuntimeLibrary.Cpu] : [RuntimeLibrary.CpuNoAvx];
 
     /// <summary>File-completeness half of the probe, separated for tests: the Vulkan runtime
     /// directory must hold every DLL of the whisper.cpp chain. Returns the missing basenames

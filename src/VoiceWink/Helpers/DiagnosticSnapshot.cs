@@ -65,7 +65,8 @@ internal sealed record DiagnosticFacts(
     string VerboseLogging,
     string HistoryCleanup,
     string RemoveFillerWords,
-    string CrashReports)
+    string CrashReports,
+    string Cpu = DiagnosticSnapshot.Unknown)
 {
     /// <summary>True when the process runs under emulation — the architectures differ.</summary>
     public bool Emulated => !string.Equals(ProcessArchitecture, OsArchitecture, StringComparison.OrdinalIgnoreCase);
@@ -116,13 +117,17 @@ internal static class DiagnosticSnapshot
             VerboseLogging: Flag(settings, AppDefaults.VerboseLoggingEnabled),
             HistoryCleanup: Flag(settings, AppDefaults.IsTranscriptionCleanupEnabled),
             RemoveFillerWords: Flag(settings, AppDefaults.RemoveFillerWords),
-            CrashReports: Flag(settings, AppDefaults.CrashReportingOptIn));
+            CrashReports: Flag(settings, AppDefaults.CrashReportingOptIn),
+            // 2026-10-17: the processor's instruction sets + brand — whether a prebuilt native
+            // engine can run here at all (VOICEWINK-J/K/M had no way to say).
+            Cpu: Safe(() => CpuInstructionSets.Current.Render()));
     }
 
     /// <summary>One log line, key=value, for the session's first Information entry.</summary>
     public static string RenderLine(DiagnosticFacts f)
         => $"app={f.AppVersion} os=\"{f.OsDescription}\" arch={f.ProcessArchitecture}/{f.OsArchitecture}"
          + (f.Emulated ? " (emulated)" : "")
+         + $" cpu=[{f.Cpu}]"
          + $" runtime=\"{f.Runtime}\" channel={f.Channel} updateChecks={(f.UpdateChecksCompiledIn ? "on" : "off")}"
          + $" culture={f.UiCulture} model={f.SelectedModel} language={f.Language} gpu={f.GpuAcceleration}"
          + $" instantRecording={f.InstantRecording} aiEnhancement={f.AiEnhancement} aiProvider={f.AiProvider}"
@@ -137,6 +142,7 @@ internal static class DiagnosticSnapshot
         b.AppendLine($"  app version:       {f.AppVersion}");
         b.AppendLine($"  os:                {f.OsDescription}");
         b.AppendLine($"  architecture:      process {f.ProcessArchitecture} on {f.OsArchitecture}{(f.Emulated ? " (emulated)" : "")}");
+        b.AppendLine($"  processor:         {f.Cpu}");
         b.AppendLine($"  runtime:           {f.Runtime}");
         b.AppendLine($"  channel:           {f.Channel} (update checks {(f.UpdateChecksCompiledIn ? "compiled in" : "off in this build")})");
         b.AppendLine($"  ui culture:        {f.UiCulture}");

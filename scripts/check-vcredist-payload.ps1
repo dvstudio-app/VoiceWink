@@ -42,6 +42,8 @@
 #      (installer/runtime/llama-arm64/MANIFEST.psd1: ARM64, unsigned, no loader copy) and its
 #      two ARM64 VC++ copies (installer/runtime/vcredist-arm64/MANIFEST.psd1).
 #   5. ggml-vulkan-whisper.dll beside the Vulkan whisper.dll (the backend itself).
+#   6. The no-AVX runtime at runtimes\noavx\win-x64\: exactly one whisper.dll there,
+#      partitioned out of step 1's CPU set, its three ggml siblings and its own four VC++ DLLs.
 #
 # Exit codes: 0 = pass - 1 = at least one check failed - 2 = invalid arguments.
 
@@ -405,8 +407,14 @@ $allWinX64 = @(
     Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'whisper.dll' -ErrorAction SilentlyContinue |
         Where-Object { (Split-Path $_.DirectoryName -Leaf) -eq 'win-x64' }
 )
-$whisperMatches = @($allWinX64 | Where-Object { (Split-Path (Split-Path $_.DirectoryName -Parent) -Leaf) -ne 'vulkan' })
-$vulkanMatches = @($allWinX64 | Where-Object { (Split-Path (Split-Path $_.DirectoryName -Parent) -Leaf) -eq 'vulkan' })
+# Since 2026-10-17: a THIRD home, runtimes\noavx\win-x64\ (the no-AVX CPU build the app pins
+# on a processor without the AVX2 class). It must be partitioned out of the CPU set explicitly -
+# the CPU rule is "anything not vulkan", so without this the CPU check would see two matches and
+# fail as ambiguous on every publish.
+$runtimeKind = { param($f) Split-Path (Split-Path $f.DirectoryName -Parent) -Leaf }
+$whisperMatches = @($allWinX64 | Where-Object { (& $runtimeKind $_) -notin 'vulkan', 'noavx' })
+$vulkanMatches = @($allWinX64 | Where-Object { (& $runtimeKind $_) -eq 'vulkan' })
+$noAvxMatches = @($allWinX64 | Where-Object { (& $runtimeKind $_) -eq 'noavx' })
 
 if ($whisperMatches.Count -eq 0) {
     Add-Failure "No CPU 'win-x64\whisper.dll' found under $root. Expected the published Whisper x64 native lib at runtimes\win-x64\whisper.dll. Cannot verify VC++ siblings without it."
@@ -578,6 +586,45 @@ else {
             }
             else {
                 Write-Host "[OK]  ggml-vulkan-whisper.dll present (x64)" -ForegroundColor Green
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Step 6 - the no-AVX whisper.dll directory (2026-10-17)
+# ---------------------------------------------------------------------------
+# On a processor without the AVX2 class the app pins [CpuNoAvx] ALONE, so this copy is the only
+# whisper.dll such a process loads: without it, or without its four VC++ siblings, local Whisper
+# cannot run on exactly the PCs this runtime ships for, and nothing else would notice.
+if ($noAvxMatches.Count -eq 0) {
+    Add-Failure "No 'runtimes\noavx\win-x64\whisper.dll' found under $root. The no-AVX whisper runtime is missing from the payload - on a processor without AVX2 local Whisper cannot run. Verify the Whisper.net.Runtime.NoAvx package reference and its copy items fired."
+}
+elseif ($noAvxMatches.Count -gt 1) {
+    $nDirs = ($noAvxMatches | ForEach-Object { $_.DirectoryName }) -join '; '
+    Add-Failure "Ambiguous: $($noAvxMatches.Count) 'noavx\win-x64\whisper.dll' found ($nDirs). Expected exactly one."
+}
+else {
+    $noAvxDir = $noAvxMatches[0].DirectoryName
+    $noAvxMachine = Get-PeMachine $noAvxMatches[0].FullName
+    if ($noAvxMachine -ne $expectedMachine) {
+        Add-Failure "noavx\win-x64\whisper.dll PE machine is '$noAvxMachine', expected '$expectedMachine' (x64)."
+    }
+    else {
+        Write-Host "[OK]  no-AVX whisper.dll located: $($noAvxMatches[0].FullName)" -ForegroundColor Green
+        Test-VcSiblingSet -dirPath $noAvxDir -label 'no-AVX'
+        foreach ($native in 'ggml-base-whisper.dll', 'ggml-cpu-whisper.dll', 'ggml-whisper.dll') {
+            $nativePath = Join-Path $noAvxDir $native
+            if (-not (Test-Path -LiteralPath $nativePath -PathType Leaf)) {
+                Add-Failure "$native NOT FOUND at $nativePath - the no-AVX runtime chain is incomplete, so local Whisper cannot load on a processor without AVX2."
+                continue
+            }
+            $nativeMachine = Get-PeMachine $nativePath
+            if ($nativeMachine -ne $expectedMachine) {
+                Add-Failure "noavx $native PE machine is '$nativeMachine', expected '$expectedMachine' (x64)."
+            }
+            else {
+                Write-Host "[OK]  noavx $native present (x64)" -ForegroundColor Green
             }
         }
     }

@@ -797,7 +797,12 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            Logger.Warning(ex, "License gate: GetCachedStatus threw — failing closed and blocking recording");
+            // Every press is refused while this throws, and the read is our own code (settings,
+            // DPAPI, fingerprint) — a defect by definition, so its cause reaches Sentry: Error the
+            // first time per exception type in this run, Warning after (2026-10-17; it was Warning
+            // only, so a PC whose license read failed was invisible).
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("license-gate-threw:" + ex.GetType().Name), ex,
+                "License gate: GetCachedStatus threw — failing closed and blocking recording");
             blockedMessage = LicenseStatusUnknownMessage;
             return false;
         }
@@ -853,7 +858,9 @@ public partial class MainViewModel : ObservableObject
             case LicenseStatus.DisabledReadOnly:
                 return "License disabled — open the License page";
             default:
-                Logger.Warning("License gate: unclassified blocked status {Status} — using generic message", status);
+                // A status this switch does not classify is a missing arm — our defect (2026-10-17).
+                Logger.Write(Helpers.SessionErrorBudget.LevelFor("license-gate-unclassified:" + status),
+                    "License gate: unclassified blocked status {Status} — using generic message", status);
                 return LicenseStatusUnknownMessage;
         }
     }
@@ -1749,9 +1756,7 @@ public partial class MainViewModel : ObservableObject
                     {
                         try
                         {
-                            await RecordLifetimeMetricsAsync(
-                                Models.Entities.TranscriptionRecord.ImageGeneratedMarker,
-                                DateTime.UtcNow, CancellationToken.None);
+                            await RecordImageMetricsAsync(DateTime.UtcNow);
                         }
                         catch (Exception ex)
                         {
@@ -2034,8 +2039,7 @@ public partial class MainViewModel : ObservableObject
             // metric verbatim.
             recordMetricsAsync: () => req.Count > 1
                 ? Task.CompletedTask
-                : RecordLifetimeMetricsAsync(
-                    Models.Entities.TranscriptionRecord.ImageGeneratedMarker, completedAtUtc, CancellationToken.None),
+                : RecordImageMetricsAsync(completedAtUtc),
             saveImageAsync: () => SaveGeneratedImageAsync(generation.ImageBytes, generation.Kind),
             writeRowAsync: async (historyEnabled, imagePath) =>
             {
@@ -4520,9 +4524,16 @@ public partial class MainViewModel : ObservableObject
             // Sentry), and the one start failure whose cause the pill CAN name, because the typed
             // exception says so; the cause-neutral rule below is about not GUESSING.
             var diskFull = ex is Services.Transcription.ModelLocalIOException;
+            // 2026-10-17: an engine that cannot run is the second start failure whose cause the
+            // pill CAN name — the typed exception carries it, and its Sentry event (with the
+            // cause) was already sent once by the runtime's reporter, so this line is Warning.
+            var engineUnavailable = ex as Services.Transcription.LocalEngineUnavailableException;
             if (diskFull)
                 Logger.Warning("Failed to start recording, disk full: {ErrorType}: {ErrorMessage}",
                     ex.GetType().Name, ex.Message);
+            else if (engineUnavailable is not null)
+                Logger.Warning("Failed to start recording, speech engine unavailable: {Cause}",
+                    engineUnavailable.Cause?.ToString() ?? "unknown");
             else
                 Logger.Error(ex, "Failed to start recording");
             HandleStartRecordingFailureCleanup(startupRecordingPath);
@@ -4533,7 +4544,9 @@ public partial class MainViewModel : ObservableObject
             // AudioCaptureUnavailableException catch above, which knows the cause.
             var errorMsg = ex is OperationCanceledException
                 ? "Recording cancelled"
-                : diskFull ? DiskFullPillMessage : "Recording failed";
+                : diskFull ? DiskFullPillMessage
+                : engineUnavailable is not null ? engineUnavailable.Message
+                : "Recording failed";
             // One string for both surfaces — a longer window-status variant would only restate
             // the pill in a second style (copy review 2026-07-25).
             StatusText = errorMsg;
@@ -4606,8 +4619,7 @@ public partial class MainViewModel : ObservableObject
             startupCts, startupToken, targetProcessId, () => promptOverrideAtClaim);
         _recordingPreflight = (preflight, startupCts);
         _ = preflight.ContinueWith(
-            t => Logger.Warning("Recording preflight faulted in background: {ExType}",
-                t.Exception?.InnerException?.GetType().Name ?? "Unknown"),
+            t => Helpers.PreflightFaultLog.Write(Logger, t.Exception?.InnerException, "Recording preflight faulted in background"),
             CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
 
         // Everything from the flip to the ownership hand-off can throw (disk, UIA); until the
@@ -4909,8 +4921,7 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            Logger.Warning("Recording preflight failed ({ExType}) — stop-side defaults apply",
-                ex.GetType().Name);
+            Helpers.PreflightFaultLog.Write(Logger, ex, "Recording preflight failed — stop-side defaults apply");
         }
 
         if (_recordingLanguageOverride == null)
@@ -5404,7 +5415,10 @@ public partial class MainViewModel : ObservableObject
             // spend the device-fault safety net — the transcribe call has not happened yet.
             if (noSpeechDeferredToEngine && transcriber is not Services.Transcription.INoSpeechAwareTranscriber)
             {
-                Logger.Warning("No-speech deferral refused: the resolved transcriber does not judge silence itself — blocking as before (AUD-36)");
+                // Self-declared unreachable (the policy and the registry disagree): a defect, so it
+                // reaches Sentry once per run (2026-10-17).
+                Logger.Write(Helpers.SessionErrorBudget.LevelFor("aud36-disagreement"),
+                    "No-speech deferral refused: the resolved transcriber does not judge silence itself — blocking as before (AUD-36)");
                 HandleBlockedNoSpeech(prepared.DigitallySilent);
                 return;
             }
@@ -6323,8 +6337,11 @@ public partial class MainViewModel : ObservableObject
             // NET-5c adds ModelLocalIOException: the stop-side prepare's model download hit a full
             // disk (the default instant-recording path downloads behind the live recording) -
             // environmental, fully surfaced by DescribeTranscriptionFailure, no defect of ours.
+            // 2026-10-17 adds LocalEngineUnavailableException: its cause-bearing event was sent once
+            // per session by ParakeetUnavailableReporter; an Error here would add one per dictation.
             if (ex is HttpRequestException or TimeoutException or Helpers.InvalidApiKeyFormatException
-                or Helpers.GpuSelfTestRefusedException or Services.Transcription.ModelLocalIOException)
+                or Helpers.GpuSelfTestRefusedException or Services.Transcription.ModelLocalIOException
+                or Services.Transcription.LocalEngineUnavailableException)
                 Logger.Warning("Failed to transcribe: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
             else
                 Logger.Error(ex, "Failed to transcribe");
@@ -6423,6 +6440,10 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>What a dictation says when its model's download was cancelled on the Downloads card.</summary>
+    internal const string DownloadCancelledMessage =
+        "That model's download was cancelled. Download it on Home or the Models page.";
+
     /// <summary>
     /// Ensure the selected LOCAL model is downloaded and loaded — Whisper or Parakeet; the runtime
     /// seam decides which engine, this method never does. Supports cancellation
@@ -6464,7 +6485,8 @@ public partial class MainViewModel : ObservableObject
         language = effective.Language;
 
         SetPreflightStatus("Loading model...");
-        var outcome = await _localModels.PrepareAsync(selectedName, language, ct);
+        var prepared = await _localModels.PrepareWithReportAsync(selectedName, language, ct);
+        var outcome = prepared.Outcome;
 
         if (outcome == Services.Transcription.PrepareOutcome.Loaded)
         {
@@ -6490,9 +6512,14 @@ public partial class MainViewModel : ObservableObject
             // "not Loaded" as "fetch it", so without this an engine that is compiled out or
             // unsupported on this CPU would offer to download a multi-gigabyte model it could never
             // run — the download would succeed and the next recording would fail identically.
-            Logger.Error("Selected local model's runtime is unavailable on this build or machine");
-            throw new InvalidOperationException(
-                "That transcription model can't run on this version of VoiceWink. Pick one on the Models page.");
+            //
+            // 2026-10-17: the message names the CAUSE ("this version" was true only of the build
+            // lever; the field case was an engine dying on one PC), and the Sentry event is the
+            // runtime's reporter's, which carries the cause — this line is the local trail only.
+            // No fallback to another model: owner decisions 2026-08-02 and TRN-10d.
+            Logger.Warning("Selected local model's runtime is unavailable ({Cause})",
+                prepared.Report?.Cause.ToString() ?? "unknown");
+            throw new Services.Transcription.LocalEngineUnavailableException(prepared.Report);
         }
 
         // NotDownloaded — a known catalog model whose file isn't on disk. Download THE SELECTED
@@ -6517,9 +6544,34 @@ public partial class MainViewModel : ObservableObject
                 DownloadProgressUpdated?.Invoke(p, displayName);
             });
 
+            // The download is registered with the other callers downloading this model (Express
+            // setup, the Models page), and the pill shows the shared progress: when one of them is
+            // already downloading, this call waits on the manager's per-model lock reporting nothing,
+            // and its own registration never resets theirs.
+            var downloads = Services.Transcription.BackgroundDownloads.Instance;
+            // A Cancel on the Downloads card stops this download too, and is not undone by a
+            // dictation: neither this call nor the stop-side retry starts a model the user cancelled
+            // until a Download button asks for it again (Codex diff r1). A plain failure, not a
+            // cancellation, so the recording reports it and keeps the audio for Retry.
+            if (downloads.WasCancelledByUser(modelInfo.Name))
+                throw new InvalidOperationException(DownloadCancelledMessage);
+            using var cardCancel = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var relay = downloads.Begin(modelInfo.Name, displayName, modelInfo.FileSizeBytes, cancel: () =>
+            {
+                try { cardCancel.Cancel(); }
+                catch (ObjectDisposedException) { }   // the download ended as Cancel was pressed
+            });
+            using var running = downloads.Listen(modelInfo.Name, progress.Report);
             try
             {
-                await _modelDownloader.DownloadModelAsync(modelInfo, progress, ct);
+                try
+                {
+                    await _modelDownloader.DownloadModelAsync(modelInfo, new SynchronousProgress<double>(relay.Report), cardCancel.Token);
+                }
+                catch (OperationCanceledException) when (cardCancel.IsCancellationRequested && !ct.IsCancellationRequested)
+                {
+                    throw new InvalidOperationException(DownloadCancelledMessage);
+                }
                 // Only persist model name if this is a user-initiated download, not an App Mode override
                 if (modelNameOverride == null)
                 {
@@ -6536,7 +6588,8 @@ public partial class MainViewModel : ObservableObject
 
         // Freshly downloaded — prepare again, now that the files exist. Same seam, same language.
         SetPreflightStatus("Loading model...");
-        var afterDownload = await _localModels.PrepareAsync(selectedName, language, ct);
+        var preparedAfterDownload = await _localModels.PrepareWithReportAsync(selectedName, language, ct);
+        var afterDownload = preparedAfterDownload.Outcome;
 
         // Unavailable is split out because the stock advice is actively HARMFUL here: "try
         // downloading it again" cannot repair an engine, and it invites the user to delete a bundle
@@ -6552,10 +6605,10 @@ public partial class MainViewModel : ObservableObject
         // the app version would have sent users hunting for an update that changes nothing (Codex).
         if (afterDownload == Services.Transcription.PrepareOutcome.Unavailable)
         {
-            Logger.Error("Model downloaded but its engine failed to start on this machine");
-            throw new InvalidOperationException(
-                "That model downloaded, but its engine couldn't start on this computer. " +
-                "Pick a different model on the Models page — the download is kept.");
+            // The runtime's reporter sent the event with the cause; this is the local trail.
+            Logger.Warning("Model downloaded but its engine is unavailable ({Cause})",
+                preparedAfterDownload.Report?.Cause.ToString() ?? "unknown");
+            throw new Services.Transcription.LocalEngineUnavailableException(preparedAfterDownload.Report);
         }
 
         if (afterDownload != Services.Transcription.PrepareOutcome.Loaded)
@@ -7015,6 +7068,19 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>An image counts as a day of use only — never as a transcription (2026-10-15).</summary>
+    private async Task RecordImageMetricsAsync(DateTime timestampUtc)
+    {
+        try
+        {
+            await _lifetimeMetrics.RecordImageAsync(timestampUtc, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(ex, "Failed to record image use");
+        }
+    }
+
     /// <summary>
     /// Truncate an exception message to fit the MiniRecorder pill. The 55-char
     /// default derives from the 500-DIP pill's redo layout — see the budget math
@@ -7361,6 +7427,9 @@ public partial class MainViewModel : ObservableObject
         // instant-recording path, where the download runs behind the live recording (typed by
         // the download manager, so the pill can name it - the generic arm at the bottom could not).
         Services.Transcription.ModelLocalIOException => DiskFullPillMessage,
+        // 2026-10-17: the local engine cannot run here — the message names the cause (an engine
+        // that would not start, a processor it cannot use, a restart owed). App-authored.
+        Services.Transcription.LocalEngineUnavailableException unavailable => unavailable.Message,
         // REL-22: a 401 the PROVIDER labelled as credit exhaustion in a structured field is not a
         // credential failure. ElevenLabs answers an empty balance with 401, so the arm below sent a
         // user with a perfectly good key off to regenerate it. Must precede that arm; app-authored

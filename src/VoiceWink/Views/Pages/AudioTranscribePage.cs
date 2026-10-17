@@ -221,7 +221,7 @@ public sealed class AudioTranscribePage : Page
         // ── Supported formats text ──────────────────────────────────
         var formatsText = new TextBlock
         {
-            Text = "Supported formats: WAV, MP3, M4A, FLAC, OGG",
+            Text = "Supported formats: " + AudioFileProcessor.SupportedFormatsText,
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.DimText),
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -619,8 +619,9 @@ public sealed class AudioTranscribePage : Page
                 _statusText.Text = "Loading model...";
                 // Same model constraint the recording path applies: an English-only model cannot
                 // honour another language, and preparing it with one costs a rebuild for nothing.
-                var outcome = await _localModels.PrepareAsync(
+                var prepared = await _localModels.PrepareWithReportAsync(
                     selectedModel, effectiveLanguage == "auto" ? null : effectiveLanguage, ct);
+                var outcome = prepared.Outcome;
                 if (outcome == PrepareOutcome.NotDownloaded)
                 {
                     _statusText.Text = $"Model '{ModelDisplayName.Resolve(selectedModel)}' is not downloaded. Please download it from the Models page.";
@@ -640,8 +641,9 @@ public sealed class AudioTranscribePage : Page
                     // Parakeet 3/3: the runtime owns this model but cannot run it here — compiled
                     // out, or unsupported on this CPU. Handled explicitly because everything past
                     // these guards falls through to transcription, which would then fail inside the
-                    // engine rather than saying so here.
-                    _statusText.Text = "That transcription model can't run on this version of VoiceWink. Pick one on the Models page.";
+                    // engine rather than saying so here. Worded per cause since 2026-10-17 — the
+                    // same sentence the recording pill shows (EngineUnavailableMessage).
+                    _statusText.Text = EngineUnavailableMessage.For(prepared.Report?.Cause);
                     return;
                 }
             }
@@ -869,6 +871,11 @@ public sealed class AudioTranscribePage : Page
                 // is reached only if that check is bypassed. A user's file choice, never our defect.
                 Logger.Warning("Audio file transcription refused: unsupported file type {Extension}",
                     unsupported.Extension);
+                break;
+            case Services.Transcription.LocalEngineUnavailableException unavailable:
+                // Its cause-bearing event was sent once per session by ParakeetUnavailableReporter.
+                Logger.Warning("Audio file transcription failed, speech engine unavailable: {Cause}",
+                    unavailable.Cause?.ToString() ?? "unknown");
                 break;
             case global::System.Net.Http.HttpRequestException or TimeoutException:
                 Logger.Warning("Audio file transcription failed: {ErrorType}: {ErrorMessage}",

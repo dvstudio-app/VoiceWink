@@ -39,6 +39,7 @@ no content changes were needed).
 | Whisper.net | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
 | Whisper.net.Runtime | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
 | Whisper.net.Runtime.Vulkan | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
+| Whisper.net.Runtime.NoAvx | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
 | org.k2fsa.sherpa.onnx | 1.13.4 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx |
 | org.k2fsa.sherpa.onnx.runtime.win-x64 | 1.13.4 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx |
 | WinUIEx | 2.5.0 | MIT | https://github.com/dotnet/WinUIEx |
@@ -605,9 +606,9 @@ revision named in the download path — falling back to the upstream repository 
 mirror is unavailable or serves a file that fails verification; each download is verified
 against the SHA-256 pins in `PredefinedModels` at install time.
 
-## Whisper.cpp runtime (bundled via Whisper.net.Runtime + Whisper.net.Runtime.Vulkan)
+## Whisper.cpp runtime (bundled via Whisper.net.Runtime + Whisper.net.Runtime.Vulkan + Whisper.net.Runtime.NoAvx)
 
-VoiceWink ships pre-built `whisper.dll` native binaries via the `Whisper.net.Runtime` NuGet package, and the GPU (Vulkan) build of the same runtime — including `ggml-vulkan-whisper.dll` — via `Whisper.net.Runtime.Vulkan`. The underlying `whisper.cpp` project (Copyright © Georgi Gerganov and contributors) is distributed under the **MIT licence**: https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE
+VoiceWink ships pre-built `whisper.dll` native binaries via the `Whisper.net.Runtime` NuGet package, the GPU (Vulkan) build of the same runtime — including `ggml-vulkan-whisper.dll` — via `Whisper.net.Runtime.Vulkan`, and a build for processors without AVX via `Whisper.net.Runtime.NoAvx`. The underlying `whisper.cpp` project (Copyright © Georgi Gerganov and contributors) is distributed under the **MIT licence**: https://github.com/ggerganov/whisper.cpp/blob/master/LICENSE
 
 ---
 

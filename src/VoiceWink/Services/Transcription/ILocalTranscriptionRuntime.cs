@@ -84,10 +84,27 @@ public interface ILocalTranscriptionRuntime
     /// </summary>
     bool IsAvailable { get; }
 
+    /// <summary>TRN-79: the one line a model row shows while <see cref="IsAvailable"/> is false —
+    /// "Needs a processor with AVX2." Empty while available, and empty from an implementation that
+    /// cannot name its reason (the caller then words a generic one).</summary>
+    string UnavailableReason => "";
+
     /// <summary>
     /// Make <paramref name="modelName"/> ready to transcribe with <paramref name="language"/>.
     /// Must be cheap when the model is already loaded — this sits in the recording-start hot path,
     /// whose hotkey→pill latency is probe-pinned (PR #86).
     /// </summary>
     Task<PrepareOutcome> PrepareAsync(string modelName, string? language, CancellationToken ct);
+
+    /// <summary><see cref="PrepareAsync"/> plus, for <see cref="PrepareOutcome.Unavailable"/>, why —
+    /// what the recording path words its pill from (2026-10-17). The default carries no report:
+    /// Whisper never answers Unavailable.</summary>
+    async Task<RuntimePrepareResult> PrepareWithReportAsync(string modelName, string? language, CancellationToken ct)
+        => new(await PrepareAsync(modelName, language, ct).ConfigureAwait(false));
+}
+
+/// <summary>A preparation's outcome plus the cause of an Unavailable answer, owned by the call.</summary>
+public readonly record struct RuntimePrepareResult(PrepareOutcome Outcome, ParakeetUnavailableReport? Report = null)
+{
+    public static implicit operator RuntimePrepareResult(PrepareOutcome outcome) => new(outcome);
 }

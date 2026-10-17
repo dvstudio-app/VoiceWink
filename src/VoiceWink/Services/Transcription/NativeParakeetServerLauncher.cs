@@ -244,6 +244,7 @@ public sealed class NativeParakeetServerLauncher : IParakeetServerLauncher
 
         public uint Pid => handle.Pid;
         public bool HasExited => handle.HasExited;
+        public uint? ExitCode => handle.ExitCode;
         public int? TryReadListeningPort() => handle.TryReadListeningPort();
         public void Kill() => handle.Kill();
         public bool WaitForExit(TimeSpan timeout) => handle.WaitForExit(timeout);

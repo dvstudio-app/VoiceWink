@@ -331,7 +331,7 @@ internal static class LocalModelsSection
             if (download.IsCancelling)
             {
                 // A tap inside the double-click interval is the second half of the Download click,
-                // not a cancel (ActionToggleCore's remarks; the Onboarding download does the same).
+                // not a cancel (ActionToggleCore's remarks; the Downloads card does the same).
                 if (watched is { } running && ActionToggleCore.CancelTapIsArmed(
                         TimeSpan.FromMilliseconds(Environment.TickCount64 - running.StartedTicks),
                         ActionToggleCore.ArmingWindow(NativeInterop.GetDoubleClickTime())))

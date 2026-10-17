@@ -1,3 +1,5 @@
+using VoiceWink.Services.Audio;
+
 namespace VoiceWink.Helpers;
 
 /// <summary>Why a standing-capture claim was refused (or wasn't).</summary>
@@ -144,4 +146,32 @@ public static class StandingCapturePolicy
     /// <summary>See <see cref="ParkAfterConsecutiveFailures"/>.</summary>
     public static bool ShouldParkAfterFailures(int consecutiveFailures)
         => consecutiveFailures >= ParkAfterConsecutiveFailures;
+
+    /// <summary><c>AUDCLNT_E_SERVICE_NOT_RUNNING</c> — the Windows audio service is stopped.</summary>
+    public const int AudioServiceNotRunning = unchecked((int)0x88890010);
+
+    /// <summary>
+    /// Whether a capture failure means the microphone or the audio service is simply not there —
+    /// unplugged, removed, invalidated, or the service stopped. Positive evidence only, the AUD-37
+    /// rule: those park quietly, because a laptop with no microphone is not a defect; any other
+    /// cause that parks instant recording is reported to Sentry once (2026-10-17), because it is
+    /// the evidence for a PC on which the feature does not work.
+    /// </summary>
+    public static bool IsDeviceGoneFailure(Exception? ex) =>
+        ex is not null
+        && (RenderEndpointGone.IsGoneHResult(ex.HResult) || ex.HResult == AudioServiceNotRunning);
+
+    /// <summary><c>AUDCLNT_E_DEVICE_IN_USE</c> — another app holds the microphone in exclusive mode.</summary>
+    public const int DeviceInUseExclusively = unchecked((int)0x8889000A);
+
+    /// <summary><c>E_ACCESSDENIED</c> — Windows' microphone privacy setting refuses this app.</summary>
+    public const int AccessDenied = unchecked((int)0x80070005);
+
+    /// <summary>
+    /// A parked capture's cause that is the PC's state, not a defect: the device is gone (above),
+    /// another app holds it exclusively, or the user's privacy setting denies microphone access.
+    /// These park at Information; anything else reaches Sentry once (Codex diff r1).
+    /// </summary>
+    public static bool IsExpectedUnavailableFailure(Exception? ex) =>
+        IsDeviceGoneFailure(ex) || ex?.HResult is DeviceInUseExclusively or AccessDenied;
 }

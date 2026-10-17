@@ -528,10 +528,82 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
         }, CancellationToken.None);
     }
 
-    public Task<PcppPrepareOutcome> PrepareAsync(CancellationToken ct)
+    public async Task<PcppPrepareOutcome> PrepareAsync(CancellationToken ct)
+        => (await PrepareCoreAsync(ct, awaitPendingVerification: true).ConfigureAwait(false)).Outcome;
+
+    public Task<PcppPrepareResult> PrepareWithReportAsync(CancellationToken ct)
         => PrepareCoreAsync(ct, awaitPendingVerification: true);
 
-    private async Task<PcppPrepareOutcome> PrepareCoreAsync(CancellationToken ct, bool awaitPendingVerification)
+    /// <summary>Why the pcpp backend cannot serve when the transition decision is "none" — the
+    /// <c>default:</c> arm of both <see cref="PrepareCoreAsync"/> and the transcription acquire.
+    /// Ordered by what the user can do: a missing executable (reinstall) before a latched backend
+    /// (restart) before a hash still in flight (wait).</summary>
+    private ParakeetUnavailableReport ReportForNoServe(Snapshot snapshot)
+        => ReportForNoServe(File.Exists(_serverExePath), snapshot.State.PcppRunnable, _server.IsStormTripped,
+            snapshot.State.Gguf);
+
+    /// <summary>The pure decision behind <see cref="ReportForNoServe(Snapshot)"/> — case-tabled.</summary>
+    internal static ParakeetUnavailableReport ReportForNoServe(
+        bool exeExists, bool pcppRunnable, bool stormTripped, GgufTier tier)
+    {
+        if (!exeExists)
+            return new(ParakeetUnavailableCause.EngineFileMissing);
+        if (!pcppRunnable)
+            return new(ParakeetUnavailableCause.EngineStoppedForSession,
+                Detail: stormTripped ? "storm-fuse" : "consecutive-call-failures");
+        // Runnable, yet no serve: a hash still in flight (Installed). PcppEligible + runnable always
+        // serves pcpp, so the second arm is defensive and names what it saw.
+        return tier == GgufTier.Installed
+            ? new(ParakeetUnavailableCause.VerificationPending)
+            : new(ParakeetUnavailableCause.EngineFailedToStart, Detail: "no-serve gguf-" + tier);
+    }
+
+    /// <summary>
+    /// The parakeet.cpp engine failed but the legacy sherpa bundle serves this call, so the user
+    /// sees nothing — and before 2026-10-17 neither did Sentry, once the spawn refusal stopped
+    /// logging Error: exactly TRN-34's shape (every dictation silently on sherpa, found only
+    /// because the refusal reached Sentry). Reported through the same once-per-failure reporter,
+    /// marked so the event says the call was served (self-review, correctness lens).
+    /// </summary>
+    private static void ReportLegacyFallback(ParakeetUnavailableReport report)
+    {
+        try
+        {
+            ParakeetUnavailableReporter.Report(report with
+            {
+                Detail = "legacy-engine-serves " + (report.RenderDetail() ?? ""),
+            });
+        }
+        catch (Exception ex) { Logger.Debug("Parakeet fallback report failed: {ExceptionType}", ex.GetType().Name); }
+    }
+
+    /// <summary>
+    /// The transition decision chose the legacy engine directly, so no acquire ran. When that is
+    /// because parakeet.cpp CANNOT run — its executable missing, the storm fuse tripped, or the
+    /// consecutive-failure latch — the user is silently on sherpa, the blind spot
+    /// <see cref="ReportLegacyFallback"/> closes for a failed acquire (Codex + Kimi diff r1). A
+    /// migration in progress (runnable, the GGUF not yet eligible) is the design working and
+    /// reports nothing.
+    /// </summary>
+    private void ReportIfEngineCannotRun(Snapshot snapshot)
+    {
+        if (!snapshot.State.PcppRunnable)
+            ReportLegacyFallback(ReportForNoServe(snapshot));
+    }
+
+    /// <summary>Why an acquire that reached the spawn path returned no lease. A predecessor still
+    /// exiting is transient even when a launch already died this call: the deferred CPU retry runs at
+    /// the next preparation, so "still starting" is the true sentence. A refused executable is a
+    /// damaged install — a reinstall is the repair, never another model (self-review, copy lens).</summary>
+    internal static ParakeetUnavailableReport ReportForAcquire(ParakeetAcquireFailure? failure) => failure?.Kind switch
+    {
+        ParakeetAcquireFailureKind.PredecessorExiting => new(ParakeetUnavailableCause.StartingUp, failure),
+        ParakeetAcquireFailureKind.StormTripped => new(ParakeetUnavailableCause.EngineStoppedForSession, failure),
+        ParakeetAcquireFailureKind.SpawnRefused => new(ParakeetUnavailableCause.EngineFileDamaged, failure),
+        _ => new(ParakeetUnavailableCause.EngineFailedToStart, failure),
+    };
+
+    private async Task<PcppPrepareResult> PrepareCoreAsync(CancellationToken ct, bool awaitPendingVerification)
     {
         var snapshot = await DeriveAsync(ct).ConfigureAwait(false);
 
@@ -559,30 +631,38 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                 // Warm the server NOW so the decode at recording stop finds it resident — the
                 // sherpa analogue is LoadModelAsync's 3.1 s build riding this same path.
                 ParakeetServerProcess.ServerLease? lease = null;
+                ParakeetUnavailableReport report;
                 if (quiesce == ParakeetQuiesceOutcome.Unconfirmed)
                 {
                     Logger.Warning("parakeet: the GPU warm-up child's exit is unconfirmed - not spawning the resident server for this preparation; the next preparation re-checks");
+                    report = new(ParakeetUnavailableCause.StartingUp, Detail: "warm-up child exit unconfirmed");
                 }
                 else
                 {
-                    lease = await _server.TryAcquireAsync(
+                    var acquired = await _server.TryAcquireDetailedAsync(
                         _serverExePath, _serverExeSha256, GgufFilePath, snapshot.InstallIdentity!, ct)
                         .ConfigureAwait(false);
+                    lease = acquired.Lease;
+                    report = ReportForAcquire(acquired.Failure);
                 }
                 if (lease is not null)
                 {
                     _lastLeaseIdentity = snapshot.InstallIdentity;
-                    return PcppPrepareOutcome.ServePcpp;
+                    return new(PcppPrepareOutcome.ServePcpp);
                 }
                 // Row 10 at runtime: acquire failed AFTER the decision said pcpp. With a legacy
                 // bundle the call proceeds on sherpa; without one, bytes exist but nothing can
                 // serve — Unavailable, never NotDownloaded (a download is not the repair).
-                return snapshot.State.SherpaInstalled
-                    ? PcppPrepareOutcome.ServeSherpa
-                    : PcppPrepareOutcome.Unavailable;
+                if (snapshot.State.SherpaInstalled)
+                {
+                    ReportLegacyFallback(report);
+                    return new(PcppPrepareOutcome.ServeSherpa);
+                }
+                return new(PcppPrepareOutcome.Unavailable, report);
 
             case ParakeetBackend.Sherpa:
-                return PcppPrepareOutcome.ServeSherpa;
+                ReportIfEngineCannotRun(snapshot);
+                return new(PcppPrepareOutcome.ServeSherpa);
 
             default:
                 // A GGUF-only install at Installed (hash PENDING) is transitional by design —
@@ -617,8 +697,8 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                 }
 
                 return snapshot.State.Gguf is GgufTier.Installed or GgufTier.PcppEligible
-                    ? PcppPrepareOutcome.Unavailable
-                    : PcppPrepareOutcome.NotDownloaded;
+                    ? new(PcppPrepareOutcome.Unavailable, ReportForNoServe(snapshot))
+                    : new(PcppPrepareOutcome.NotDownloaded);
         }
     }
 
@@ -643,31 +723,47 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                 if (quiesce == ParakeetQuiesceOutcome.Unconfirmed)
                 {
                     Logger.Warning("parakeet: the GPU warm-up child's exit is unconfirmed - not spawning the resident server for this transcription");
-                    return snapshot.State.SherpaInstalled
-                        ? new PcppAcquire(PcppServe.Sherpa, null, 0)
-                        : new PcppAcquire(PcppServe.FailCall, null, 0);
+                    var unconfirmed = new ParakeetUnavailableReport(
+                        ParakeetUnavailableCause.StartingUp, Detail: "warm-up child exit unconfirmed");
+                    if (snapshot.State.SherpaInstalled)
+                    {
+                        ReportLegacyFallback(unconfirmed);
+                        return new PcppAcquire(PcppServe.Sherpa, null, 0);
+                    }
+                    return new PcppAcquire(PcppServe.FailCall, null, 0, unconfirmed);
                 }
 
-                var lease = await _server.TryAcquireAsync(
+                var acquired = await _server.TryAcquireDetailedAsync(
                     _serverExePath, _serverExeSha256, GgufFilePath, snapshot.InstallIdentity!, ct)
                     .ConfigureAwait(false);
-                if (lease is { } l)
+                if (acquired.Lease is { } l)
                 {
                     _lastLeaseIdentity = snapshot.InstallIdentity;
                     return new PcppAcquire(PcppServe.Pcpp, l.BaseUri, l.Generation);
                 }
-                return snapshot.State.SherpaInstalled
-                    ? new PcppAcquire(PcppServe.Sherpa, null, 0)
-                    : new PcppAcquire(PcppServe.FailCall, null, 0);
+                var acquireReport = ReportForAcquire(acquired.Failure);
+                if (snapshot.State.SherpaInstalled)
+                {
+                    ReportLegacyFallback(acquireReport);
+                    return new PcppAcquire(PcppServe.Sherpa, null, 0);
+                }
+                return new PcppAcquire(PcppServe.FailCall, null, 0, acquireReport);
 
             case ParakeetBackend.Sherpa:
+                ReportIfEngineCannotRun(snapshot);
                 return new PcppAcquire(PcppServe.Sherpa, null, 0);
 
             default:
                 // Serve == None with sherpa installed is unreachable (the decision serves sherpa
                 // whenever it exists); without sherpa the call fails as a normal transcription
-                // failure — challenge 2's specified outcome.
-                return new PcppAcquire(PcppServe.FailCall, null, 0);
+                // failure — challenge 2's specified outcome. Unlike preparation, this arm also
+                // sees a GGUF that is absent, staging or failed verification (preparation answers
+                // NotDownloaded for those), and the report says so.
+                return new PcppAcquire(PcppServe.FailCall, null, 0,
+                    snapshot.State.Gguf is GgufTier.Installed or GgufTier.PcppEligible
+                        ? ReportForNoServe(snapshot)
+                        : new ParakeetUnavailableReport(ParakeetUnavailableCause.ModelMissing,
+                            Detail: "gguf-" + snapshot.State.Gguf));
         }
     }
 

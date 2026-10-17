@@ -96,31 +96,26 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
     // illegal instruction is a process kill no managed catch contains. The gate runs
     // for EVERY recording — including cloud-only configurations that never load
     // whisper native code otherwise — so an unsupported host must fall back to the RMS
-    // gate without loading the runtime. Checks the runtime's full documented
-    // instruction set: AVX/AVX2/FMA via intrinsics flags, F16C via CPUID (leaf 1,
-    // ECX bit 29 — .NET exposes no intrinsic flag for it). ARM64 x64-emulation reports
-    // these false where unsupported, which correctly routes to the fallback.
+    // gate without loading the runtime. (Until TRN-79 this checked the AVX2-class build's
+    // documented set — AVX/AVX2/FMA, F16C via CPUID — and fell back below it; see the end of this
+    // comment for what it checks now.) ARM64 x64-emulation reports unsupported extensions false,
+    // which routes correctly.
     // Deliberately NO OS-version gate (recorded decision, diff round 3): the identical
     // whisper.dll already loads on Windows 10 for every local-model user with no OS
     // probe, and OS-level incompatibilities surface as CATCHABLE load exceptions that
     // fail open to the RMS fallback — only unsupported instructions kill the process.
-    // Local-model transcription has no probe at all today; that pre-existing exposure
-    // for users who explicitly select a local model is unchanged — this probe only
-    // stops the gate from WIDENING it to everyone. The reviewer's counter-proposal — an OS
+    // (Local-model transcription had no probe when this was written; since TRN-79 it pins a
+    // no-AVX runtime on such a processor.) The reviewer's counter-proposal — an OS
     // gate that routes Windows 10 hosts to the fallback — is moot since 2026-08-30: the
     // supported baseline is Windows 11 ONLY (owner decision). Injectable for tests.
-    internal Func<bool> HostSupportsNativeVad { get; set; } = static () =>
-    {
-        if (!global::System.Runtime.Intrinsics.X86.X86Base.IsSupported) return false;
-        if (!global::System.Runtime.Intrinsics.X86.Avx.IsSupported ||
-            !global::System.Runtime.Intrinsics.X86.Avx2.IsSupported ||
-            !global::System.Runtime.Intrinsics.X86.Fma.IsSupported)
-        {
-            return false;
-        }
-        var (_, _, ecx, _) = global::System.Runtime.Intrinsics.X86.X86Base.CpuId(1, 0);
-        return (ecx & (1 << 29)) != 0; // F16C
-    };
+    // TRN-79 (2026-10-17): the shared Whisper-runtime answer, the same one that decides Whisper's
+    // load order. On a processor without the AVX2 class the process pins the no-AVX runtime, and
+    // Silero runs on it: measured the same day over 270 recordings (the whispered, train-noise and
+    // ASR corpora plus a spread of real dictations; 44 no-speech verdicts raw, 23 conditioned), the no-AVX and AVX2 builds
+    // returned IDENTICAL segments on every file, raw and through the shipped VadInputConditioning copy alike, so the gate's verdict does not depend on the build.
+    // Only a processor neither build can run (no SSE4.2) keeps the RMS fallback.
+    internal Func<bool> HostSupportsNativeVad { get; set; } = static ()
+        => EngineCpuRequirements.WhisperRuntimeRunnable(CpuInstructionSets.Current);
 
     // REL-15 response lever (Batch A6). Carried as a field rather than read from
     // VadFeature.IsEnabled inline: a const read would make the rest of EvaluateAsync
@@ -266,6 +261,16 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
                     else
                     {
                         secondOpinion = $"{opinion.Outcome}({opinionTimer.ElapsedMilliseconds} ms)";
+                        // The segmenter reports its own failures as outcomes, not exceptions: a
+                        // missing or damaged bundled model or a native failure is a defect on this
+                        // PC, reported once per run (Kimi diff r1). Input it declines is not.
+                        if (opinion.Outcome is VadSegmentationOutcome.ModelMissing
+                            or VadSegmentationOutcome.ModelCorrupt
+                            or VadSegmentationOutcome.NativeFailure)
+                        {
+                            Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-second-opinion:" + opinion.Outcome),
+                                "Sherpa second opinion failed ({Outcome}) — ggml no-speech verdict stands", opinion.Outcome);
+                        }
                     }
                 }
                 catch (OperationCanceledException)
@@ -275,7 +280,8 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
                 catch (Exception ex)
                 {
                     secondOpinion = "error";
-                    Logger.Warning(ex, "Sherpa second opinion failed — ggml no-speech verdict stands");
+                    Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-second-opinion:" + ex.GetType().Name), ex,
+                        "Sherpa second opinion failed ({ExType}) — ggml no-speech verdict stands", ex.GetType().Name);
                 }
             }
 
@@ -294,7 +300,8 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
         }
         catch (Exception ex)
         {
-            Logger.Warning(ex, "VAD evaluation failed — RMS fallback for this recording");
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-eval:" + ex.GetType().Name), ex,
+                "VAD evaluation failed ({ExType}) — RMS fallback for this recording", ex.GetType().Name);
             return NoSpeechVerdict.Unavailable;
         }
         finally
@@ -316,8 +323,9 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
     /// ~31 windows/audio-second at one thread — the same order as the ggml detect that just ran —
     /// and it delays only the no-speech pill on an already-terminal path. CPU safety is INHERITED,
     /// not probed twice: this runs only after a successful ggml init, whose
-    /// <see cref="HostSupportsNativeVad"/> AVX/AVX2/FMA/F16C probe is strictly stronger than
-    /// sherpa-onnx's SSE2 floor (<see cref="ParakeetNativeProbe"/>).
+    /// <see cref="HostSupportsNativeVad"/> probe — the AVX2-class set, or SSE4.2 where the no-AVX
+    /// build is the one that loads — is strictly stronger than sherpa-onnx's SSE2 floor either way
+    /// (<see cref="ParakeetNativeProbe"/>).
     /// </summary>
     private SherpaSecondOpinion RunSherpaSecondOpinion(byte[] conditionedWav, CancellationToken ct)
     {
@@ -384,7 +392,8 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
         {
             processor?.Dispose();
             factory?.Dispose();
-            Logger.Warning(ex, "Silero VAD initialization failed — RMS fallback for this session");
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-unavailable:init-" + ex.GetType().Name), ex,
+                "Silero VAD initialization failed ({ExType}) — RMS fallback for this session", ex.GetType().Name);
             _unavailable = true;
             return false;
         }
@@ -394,14 +403,16 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
     {
         if (!File.Exists(_modelPath))
         {
-            Logger.Warning("Bundled VAD model missing at {Path} — RMS fallback for this session", _modelPath);
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-unavailable:asset-missing"),
+                "Bundled VAD model missing at {Path} — RMS fallback for this session", _modelPath);
             return false;
         }
 
         var length = new FileInfo(_modelPath).Length;
         if (length != ModelSizeBytes)
         {
-            Logger.Warning("Bundled VAD model size {Actual} ≠ pinned {Expected} — RMS fallback for this session",
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-unavailable:asset-size"),
+                "Bundled VAD model size {Actual} ≠ pinned {Expected} — RMS fallback for this session",
                 length, ModelSizeBytes);
             return false;
         }
@@ -410,7 +421,8 @@ public sealed class VoiceActivityDetectionService : IDisposable, IAsyncDisposabl
         var hash = Convert.ToHexString(global::System.Security.Cryptography.SHA256.HashData(fs));
         if (!hash.Equals(ModelSha256, StringComparison.OrdinalIgnoreCase))
         {
-            Logger.Warning("Bundled VAD model SHA-256 mismatch — RMS fallback for this session");
+            Logger.Write(Helpers.SessionErrorBudget.LevelFor("vad-unavailable:asset-sha"),
+                "Bundled VAD model SHA-256 mismatch — RMS fallback for this session");
             return false;
         }
 

@@ -410,7 +410,7 @@ public sealed class ModelDownloadManager
         // racing with an in-flight download). Per-model semaphore keeps
         // distinct models parallel.
         var modelLock = _perModelLocks.GetOrAdd(sanitizedName, _ => new SemaphoreSlim(1, 1));
-        await modelLock.WaitAsync(ct).ConfigureAwait(false);
+        await AcquireInstallLockAsync(modelLock, sanitizedName, ct).ConfigureAwait(false);
 
         var counted = false;
         try
@@ -557,7 +557,7 @@ public sealed class ModelDownloadManager
         var staging = Path.Combine(StagingRoot, sanitizedName);
 
         var modelLock = _perModelLocks.GetOrAdd(sanitizedName, _ => new SemaphoreSlim(1, 1));
-        await modelLock.WaitAsync(ct).ConfigureAwait(false);
+        await AcquireInstallLockAsync(modelLock, sanitizedName, ct).ConfigureAwait(false);
 
         var counted = false;
         var containmentVerified = false;
@@ -887,9 +887,24 @@ public sealed class ModelDownloadManager
                 // re-typed inner) + message, never the object; its stack reached the file log and
                 // the Log Viewer on every offline download after the retry warnings had already
                 // stopped attaching theirs (NET-4).
-                Logger.Warning(
-                    "TRN-33 fallback: model download from the mirror ({Primary}) failed; retrying from the pinned upstream source {Fallback}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
-                    sources[s], sources[s + 1], ex.GetType().Name, ex.InnerException?.GetType().Name, ex.Message);
+                var mirrorDefect = MirrorDefectKey(ex);
+                if (mirrorDefect is null)
+                {
+                    Logger.Warning(
+                        "TRN-33 fallback: model download from the mirror ({Primary}) failed; retrying from the pinned upstream source {Fallback}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
+                        sources[s], sources[s + 1], ex.GetType().Name, ex.InnerException?.GetType().Name, ex.Message);
+                }
+                else
+                {
+                    // Our mirror REFUSED the file (a 404, a 403, a body over the size pin) — a
+                    // defect in what we publish, which the fallback hides from the user, so Sentry
+                    // sees it once per run (2026-10-17). Type and status only on the event: an HTTP
+                    // reason phrase is server text (SEC-2), so the full exception rides
+                    // {LocalException}, which the Sentry path redacts and the local file keeps.
+                    Logger.Write(Helpers.SessionErrorBudget.LevelFor(mirrorDefect),
+                        "TRN-33 fallback: the mirror ({Primary}) refused the model download ({MirrorDefect}); retrying from the pinned upstream source {Fallback}. {LocalException}",
+                        sources[s], mirrorDefect, sources[s + 1], ex.ToString());
+                }
                 // Keep the partial across the switch when the failure was TRANSIENT, so a flaky
                 // link still converges: pre-fallback, the kept partial grew monotonically across
                 // user retries, and an unconditional delete here reset the mirror's progress on
@@ -911,6 +926,24 @@ public sealed class ModelDownloadManager
         // returned or let its exception propagate) — kept for totality over the source list.
         throw new InvalidOperationException($"No download source succeeded for model '{descriptor.DisplayName}'.");
     }
+
+    /// <summary>
+    /// The Sentry key for a mirror failure that is OUR defect, or null for one that is the
+    /// network's or the user's: an HTTP 4xx except proxy authentication (407), request timeout
+    /// (408) and throttling (429), an empty body, or a body larger than the catalog's size pin.
+    /// Transport failures, 5xx and the checksum class (already an Error at its own site) return
+    /// null. The sealed <see cref="InvalidDataException"/> is thrown at one site only, a remote
+    /// empty body (see <c>ModelDownloadFailures</c>).
+    /// </summary>
+    internal static string? MirrorDefectKey(Exception ex) => ex switch
+    {
+        ModelDownloadTooLargeException => "model-mirror:too-large",
+        InvalidDataException => "model-mirror:empty",
+        global::System.Net.Http.HttpRequestException { StatusCode: { } status }
+            when (int)status is >= 400 and < 500 and not 407 and not 408 and not 429
+            => $"model-mirror:status-{(int)status}",
+        _ => null,
+    };
 
     /// <summary>
     /// Hash-gate one downloaded temp file against its catalog pin. Extracted so the single-file
@@ -1085,6 +1118,21 @@ public sealed class ModelDownloadManager
     }
 
     /// <summary>
+    /// Takes the per-model install lock for a DOWNLOAD (LAI-16): today's wait, plus one Information
+    /// line when the lock is not free at once. A second install of the same model then waits for the
+    /// first, and nothing used to say so — the wait looked exactly like a download stuck at 0 %. The
+    /// fast path honours <paramref name="ct"/> (Codex plan round): an already-cancelled caller must
+    /// never get the lock and walk into the install.
+    /// </summary>
+    private static async Task AcquireInstallLockAsync(SemaphoreSlim modelLock, string modelName, CancellationToken ct)
+    {
+        if (modelLock.Wait(0, ct))
+            return;
+        Logger.Information("Model download for {ModelName} is waiting for another install of the same model", modelName);
+        await modelLock.WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// One download attempt from <paramref name="url"/> into <paramref name="tempPath"/>, resuming
     /// from any bytes already there via an HTTP Range request. The URL arrives as a parameter
     /// (TRN-33) because one descriptor can carry two sources — mirror and pinned-upstream
@@ -1119,10 +1167,37 @@ public sealed class ModelDownloadManager
         // wrap preserves transience (ModelSourceIOException IS an IOException) and lets a
         // user-cancel OperationCanceledException pass untouched; a stall/timeout OCE (ct not
         // requested) is remote unresponsiveness and wraps.
-        var response = await RemoteAsync(
-            () => httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct),
-            ct).ConfigureAwait(false);
+        //
+        // LAI-16: the wait for response headers is bounded by the same stall timeout as the body.
+        // It used to be bounded only by the `downloads` client's 10-minute Timeout, per attempt and
+        // per source, so a host that accepted the connection and never answered held a download at
+        // 0 % for up to 40 minutes per source with nothing on screen (seen twice in the Codex UAT run
+        // on v1.115.412). The timer covers SendAsync only and is disposed when the headers arrive:
+        // the body read keeps its own resettable stall timer and is never bound by this one.
+        HttpResponseMessage response;
+        var headerWait = global::System.Diagnostics.Stopwatch.StartNew();
+        using (var headerCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            headerCts.CancelAfter(_stallTimeout);
+            try
+            {
+                response = await RemoteAsync(
+                    () => httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, headerCts.Token),
+                    ct).ConfigureAwait(false);
+            }
+            catch (ModelSourceIOException ex) when (ex.InnerException is OperationCanceledException
+                                                    && headerCts.IsCancellationRequested
+                                                    && !ct.IsCancellationRequested)
+            {
+                // Same type (a source failure: retried, then the fallback where one exists), clearer
+                // words than "The operation was canceled." in the retry warning.
+                throw new ModelSourceIOException(
+                    $"No response from the download server within {_stallTimeout.TotalSeconds:0.#} s.", ex.InnerException);
+            }
+        }
         using var _ = response;
+        Logger.Information("Model download response from {Url}: HTTP {StatusCode} after {ElapsedMs} ms (resume from byte {ResumeFrom})",
+            url, (int)response.StatusCode, headerWait.ElapsedMilliseconds, existing);
 
         // 416: our partial is at/beyond the server's file size (stale or oversized partial) —
         // discard it so the next attempt restarts cleanly from zero. The delete is UNSWALLOWED
@@ -1201,7 +1276,7 @@ public sealed class ModelDownloadManager
 
             var buffer = new byte[81920];
             int bytesRead;
-            double lastReportedPercent = -1;
+            double lastReportedPermille = -1;
 
             // The read (remote) and the write (local) alternate in one loop, so the source-failure
             // wrap is per-call: only the READ half may classify as a source failure.
@@ -1220,11 +1295,13 @@ public sealed class ModelDownloadManager
 
                 if (progressTotal > 0)
                 {
-                    // Throttle: report only on integer-percent change (not thousands of callbacks).
-                    var currentPercent = Math.Floor((double)written / progressTotal * 100);
-                    if (currentPercent > lastReportedPercent)
+                    // Throttle: report on a tenth-of-a-percent change (LAI-16; it was a whole percent,
+                    // so a 6.7 GB model moved only every 67 MB and a slow link looked stuck). The first
+                    // chunk always reports, because the last value starts at -1.
+                    var currentPermille = Math.Floor((double)written / progressTotal * 1000);
+                    if (currentPermille > lastReportedPermille)
                     {
-                        lastReportedPercent = currentPercent;
+                        lastReportedPermille = currentPermille;
                         progress?.Report(Math.Min(1.0, (double)written / progressTotal));
                     }
                 }

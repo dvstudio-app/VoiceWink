@@ -253,8 +253,93 @@ public partial class ModelManagementViewModel : ObservableObject
                 FileSizeBytes = model.FileSizeBytes,
                 IsDownloaded = isDownloaded,
                 IsSelected = ModelDiskReconciliation.IsSameModel(model.Name, SelectedModelName),
-                DownloadUrl = model.DownloadUrl ?? ""
+                DownloadUrl = model.DownloadUrl ?? "",
+                UnavailableReason = RowUnavailableReason(model.Name),
             });
+        }
+    }
+
+    /// <summary>The generic line for a runtime that cannot name its reason, and for a row no runtime
+    /// claims (a composition defect of the build).</summary>
+    internal const string GenericUnavailableReason = "This model can't run on this version of VoiceWink.";
+
+    /// <summary>TRN-79: why this row's engine cannot run here, or empty. Static facts only — the
+    /// build lever and the processor — so it is read once per list build.</summary>
+    internal static string UnavailableReasonFor(ILocalTranscriptionRuntime? owner)
+    {
+        if (owner is null) return GenericUnavailableReason;
+        if (owner.IsAvailable) return "";
+        var reason = owner.UnavailableReason;
+        return string.IsNullOrEmpty(reason) ? GenericUnavailableReason : reason;
+    }
+
+    private string RowUnavailableReason(string name)
+    {
+        try
+        {
+            // An unclaimed row keeps no reason here: the download gate refuses it with the generic
+            // line, as before, and the list shows it as ordinary.
+            return _localModels.TryResolve(name)?.Runtime is { } owner ? UnavailableReasonFor(owner) : "";
+        }
+        catch (Exception ex)
+        {
+            // TryResolve throws when two runtimes claim one name; the download gate still fails
+            // closed on the same throw.
+            Logger.Warning("Could not determine which runtime owns {Name}: {ErrorType}", name, ex.GetType().Name);
+            return "";
+        }
+    }
+
+    /// <summary>The Downloads card's line under a cancelled download of the selected speech model.</summary>
+    internal const string StoppedDownloadNote = "Download cancelled. Dictation needs this model.";
+
+    /// <summary>
+    /// After a Cancel on the Downloads card or the Models page (<c>BackgroundDownloads.CancelledByUser</c>):
+    /// a speech model stays on the card with a Download button while it is still the selected model
+    /// and missing — dictation needs it — whichever caller was downloading it, a dictation included
+    /// (Codex diff r2). Listed once nothing downloads it any more. Not a speech model (a built-in
+    /// AI model): nothing.
+    /// </summary>
+    internal void KeepCancelledModelListed(string key)
+    {
+        if (FindRow(key) is not { } cancelled)
+            return;
+        // Looked up again by name at each use, never the instance found here: the rows are rebuilt
+        // by LoadModels, and a stale row would never change again.
+        var name = cancelled.Name;
+        Services.Transcription.BackgroundDownloads.Instance.MarkStopped(
+            name, cancelled.DisplayName,
+            PredefinedModels.Models.FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, name))?.FileSizeBytes,
+            StoppedDownloadNote,
+            restart: () =>
+            {
+                if (FindRow(name) is { } row)
+                    _ = DownloadModelAsync(row);
+            },
+            // Read from the selection and the disk, not the row's flags: a download through the
+            // recording path never updates the row's IsDownloaded (self-review, 2026-10-17).
+            stillWanted: () => ModelDiskReconciliation.IsSameModel(name, SelectedModelName)
+                               && FindRow(name) is not { IsDownloading: true }
+                               && !IsOnDisk(name));
+    }
+
+    private ModelItemViewModel? FindRow(string name)
+        => Models.FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, name));
+
+    /// <summary>Whether <paramref name="name"/> is installed, read the way <see cref="RefreshDownloadedState"/>
+    /// reads it. Fail-soft: an enumeration fault reads as not installed, which keeps a stopped row.</summary>
+    private bool IsOnDisk(string name)
+    {
+        try
+        {
+            var onDisk = new HashSet<string>(_downloadManager.GetDownloadedModels(), ModelDiskReconciliation.NameComparer);
+            AugmentWithPcppRowState(onDisk);
+            return onDisk.Contains(name);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Could not read the installed models for a stopped download: {ErrorType}", ex.GetType().Name);
+            return false;
         }
     }
 
@@ -289,7 +374,9 @@ public partial class ModelManagementViewModel : ObservableObject
                 Logger.Warning(
                     "Download refused for {Name}: {Reason}", modelInfo.Name,
                     owner is null ? "no local runtime claims it" : "its runtime cannot run on this build or machine");
-                model.ErrorMessage = "This model can't run on this version of VoiceWink.";
+                // TRN-79: the same line the row shows (one source). An unclaimed row is a
+                // composition defect of the build.
+                model.ErrorMessage = UnavailableReasonFor(owner);
                 return;
             }
         }
@@ -310,6 +397,14 @@ public partial class ModelManagementViewModel : ObservableObject
 
         var cts = new CancellationTokenSource();
         model.DownloadCts = cts;
+        // The Downloads card and a recording waiting for this model read it from here; the card's
+        // Cancel is this download's own token.
+        using var relay = Services.Transcription.BackgroundDownloads.Instance.Begin(
+            model.Name, model.DisplayName, modelInfo.FileSizeBytes, cancel: () =>
+            {
+                try { cts.Cancel(); }
+                catch (ObjectDisposedException) { }   // the download ended as Cancel was pressed
+            }, userStarted: true);
 
         try
         {
@@ -322,6 +417,7 @@ public partial class ModelManagementViewModel : ObservableObject
             {
                 DownloadProgress = p;
                 model.DownloadProgress = p;
+                relay.Report(p);
             });
 
             await _downloadManager.DownloadModelAsync(modelInfo, progress, cts.Token);
@@ -336,6 +432,8 @@ public partial class ModelManagementViewModel : ObservableObject
             model.DownloadProgress = 0;
             if (cts.Token.IsCancellationRequested)
             {
+                // The stopped row on the Downloads card comes from the Cancel itself
+                // (KeepCancelledModelListed), whichever caller was downloading.
                 Logger.Information("Download cancelled: {Name}", model.Name);
             }
             else
@@ -502,6 +600,15 @@ public partial class ModelManagementViewModel : ObservableObject
             Logger.Information(
                 "Select deferred for {Name}: the parakeet coordinator's state is busy, so the row is left unchanged",
                 model.Name);
+            return;
+        }
+
+        // TRN-79: the page offers no Select on such a row; this is the same refusal for any other
+        // caller. No selection is written.
+        if (model.UnavailableReason.Length > 0)
+        {
+            Logger.Information("Select refused for {Name}: its engine cannot run on this PC", model.Name);
+            model.ErrorMessage = model.UnavailableReason;
             return;
         }
 
@@ -966,6 +1073,10 @@ public partial class ModelItemViewModel : ObservableObject
     [ObservableProperty] private double _downloadProgress;
     [ObservableProperty] private string _downloadUrl = "";
     [ObservableProperty] private string _errorMessage = "";
+
+    /// <summary>TRN-79: why this PC cannot run the row's engine, or empty. The page offers no
+    /// Download or Select while it is set, and shows this line.</summary>
+    [ObservableProperty] private string _unavailableReason = "";
 
     /// <summary>Cancellation source for an in-progress download.</summary>
     public CancellationTokenSource? DownloadCts { get; set; }

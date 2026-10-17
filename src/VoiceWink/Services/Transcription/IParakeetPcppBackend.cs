@@ -26,6 +26,10 @@ public enum PcppPrepareOutcome
     Unavailable,
 }
 
+/// <summary>A preparation's outcome plus, for <see cref="PcppPrepareOutcome.Unavailable"/>, why —
+/// owned by the call that produced it (never a shared "last" field: Codex plan r1, 2026-10-17).</summary>
+public readonly record struct PcppPrepareResult(PcppPrepareOutcome Outcome, ParakeetUnavailableReport? Report = null);
+
 /// <summary>Which engine one transcription call runs on.</summary>
 public enum PcppServe
 {
@@ -43,8 +47,10 @@ public enum PcppServe
 }
 
 /// <summary>One transcription call's backend resolution. <see cref="BaseUri"/> and
-/// <see cref="Generation"/> are meaningful only for <see cref="PcppServe.Pcpp"/>.</summary>
-public readonly record struct PcppAcquire(PcppServe Decision, Uri? BaseUri, int Generation);
+/// <see cref="Generation"/> are meaningful only for <see cref="PcppServe.Pcpp"/>; <see cref="Report"/>
+/// says why a <see cref="PcppServe.FailCall"/> failed (null from a backend that does not know).</summary>
+public readonly record struct PcppAcquire(PcppServe Decision, Uri? BaseUri, int Generation,
+    ParakeetUnavailableReport? Report = null);
 
 /// <summary>A pcpp slice decode failed (transport / status / contract / oversize — the typed
 /// classes <see cref="ParakeetServerDecodeResult.FailureClass"/> carries). Thrown so the FIRST
@@ -75,6 +81,11 @@ public interface IParakeetPcppBackend
     /// the background migration download when it says so, and — when pcpp serves — spawn/warm
     /// the resident server so the decode at recording stop finds it ready.</summary>
     Task<PcppPrepareOutcome> PrepareAsync(CancellationToken ct);
+
+    /// <summary><see cref="PrepareAsync"/> with the cause of an Unavailable answer. The default
+    /// carries no report (a backend that cannot say why); the coordinator overrides it.</summary>
+    async Task<PcppPrepareResult> PrepareWithReportAsync(CancellationToken ct)
+        => new(await PrepareAsync(ct).ConfigureAwait(false));
 
     /// <summary>Per-transcription resolution under the service's lock. A resident healthy server
     /// is reused cheaply; the lease's generation is what a later escalation may kill.</summary>

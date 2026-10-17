@@ -1929,8 +1929,9 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             ApplyTargetAppLabel();
 
             StatusText.Visibility = Visibility.Visible;
-            var pct = (int)(progressFraction * 100);
-            StatusText.Text = $"Downloading model... {pct}%";
+            StatusText.Text = DownloadProgressText.IsVerifying(progressFraction)
+                ? "Verifying model..."
+                : $"Downloading model... {DownloadProgressText.Percent(progressFraction)}";
             // Accent-matched text + stop icon, same rule as the pipeline states.
             StatusText.Foreground = AppTheme.Brush(AppTheme.AccentBlue);
             SetStopAccent(AppTheme.AccentBlue);

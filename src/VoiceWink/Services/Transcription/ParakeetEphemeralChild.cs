@@ -136,7 +136,8 @@ internal static class ParakeetEphemeralChild
             var gate = ParakeetSpawnGate.Check(exePath, expectedExeSha256);
             if (!gate.Spawnable)
             {
-                Logger.Warning("{Label}: refusing to spawn - {Reason}", label, LogValueSanitizer.SingleLine(gate.RefusalReason));
+                // {LocalException}: the reason can embed a certificate subject (see ParakeetServerProcess).
+                Logger.Warning("{Label}: refusing to spawn - {LocalException}", label, LogValueSanitizer.SingleLine(gate.RefusalReason));
                 return (Outcome.GateRefused, false);
             }
 

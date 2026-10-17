@@ -160,6 +160,10 @@ internal static class SentryInitializer
                 {
                     scope.SetTag("os.version", Environment.OSVersion.VersionString);
                     scope.SetTag("app.arch", Environment.Is64BitProcess ? "x64" : "x86");
+                    foreach (var (key, value) in MachineTags(CpuInstructionSets.Current,
+                                 global::System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),
+                                 global::System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString()))
+                        scope.SetTag(key, value);
                     if (!string.IsNullOrEmpty(licenseStatus))
                         scope.SetTag("license.status", licenseStatus);
                     if (!string.IsNullOrEmpty(licenseKey))
@@ -196,6 +200,30 @@ internal static class SentryInitializer
         if (handle == null) return;
         try { handle.Dispose(); }
         catch (Exception ex) { Logger.Warning(ex, "Sentry shutdown failed"); }
+    }
+
+    /// <summary>
+    /// The machine-class facts that decide whether a local engine can run on a PC, as tags on
+    /// EVERY event (2026-10-17, owner: "proper debugging information … so VoiceWink runs on as many
+    /// PCs as possible"). VOICEWINK-J/K/M could not be diagnosed partly because nothing said which
+    /// instruction sets the processor had, or whether the x64 build ran emulated on an ARM64 PC —
+    /// <c>app.arch</c> reads "x64" there. Hardware and OS class only, never a person: the same
+    /// decision as the GPU names the device lines log (diagnostics.md). Values pass
+    /// <see cref="LogValueSanitizer.SingleLine"/>; the brand is bounded by <see cref="CpuInstructionSets"/>.
+    /// </summary>
+    internal static IReadOnlyList<(string Key, string Value)> MachineTags(
+        CpuInstructionSets cpu, string osArchitecture, string processArchitecture)
+    {
+        var os = LogValueSanitizer.SingleLine(osArchitecture);
+        var process = LogValueSanitizer.SingleLine(processArchitecture);
+        return
+        [
+            ("cpu.isa", cpu.RenderExtensions()),
+            ("cpu.brand", cpu.Brand.Length == 0 ? "unknown" : cpu.Brand),
+            ("os.arch", os),
+            ("process.arch", process),
+            ("emulated", string.Equals(os, process, StringComparison.OrdinalIgnoreCase) ? "no" : "yes"),
+        ];
     }
 
     /// <summary>
