@@ -44,26 +44,44 @@ internal static class OperationTiming
         }
     }
 
-    /// <summary>Times one AI text-enhancement provider call.</summary>
+    /// <summary>Times one AI text-enhancement provider call. LAI-15: a local provider's streamed
+    /// reply adds when its first text arrived, the longest silence after that and how many text chunks
+    /// came — what the stall windows are measured from, kept in every log after they ship.</summary>
     internal static async Task<string> TimeEnhancementAsync(
-        string provider, string? model, int inputChars, Func<Task<string>> run, CancellationToken ct)
+        string provider, string? model, int inputChars, Func<Task<string>> run, CancellationToken ct,
+        LocalReplyProgress? progress = null)
     {
         var sw = Stopwatch.StartNew();
         try
         {
             var reply = await run().ConfigureAwait(false);
             Logger.Information(
-                "AI enhancement timing: {Provider:l} {Model} - {ElapsedMs} ms, {InChars} chars in, {OutChars} chars out, {Outcome:l}",
-                provider, model, sw.ElapsedMilliseconds, inputChars, reply?.Length ?? 0, Describe(null, ct));
+                "AI enhancement timing: {Provider:l} {Model} - {ElapsedMs} ms, {InChars} chars in, {OutChars} chars out, {Outcome:l}{Stream:l}",
+                provider, model, sw.ElapsedMilliseconds, inputChars, reply?.Length ?? 0, Describe(null, ct), StreamText(progress));
             return reply!;
         }
         catch (Exception ex)
         {
             Logger.Information(
-                "AI enhancement timing: {Provider:l} {Model} - {ElapsedMs} ms, {InChars} chars in, {Outcome:l}",
-                provider, model, sw.ElapsedMilliseconds, inputChars, Describe(ex, ct));
+                "AI enhancement timing: {Provider:l} {Model} - {ElapsedMs} ms, {InChars} chars in, {Outcome:l}{Stream:l}",
+                provider, model, sw.ElapsedMilliseconds, inputChars, Describe(ex, ct), StreamText(progress));
             throw;
         }
+    }
+
+    /// <summary>", first text 840 ms, longest gap 95 ms, 212 text chunks" — or empty when the call was
+    /// not a streamed local reply.</summary>
+    internal static string StreamText(LocalReplyProgress? progress)
+    {
+        if (progress is null)
+            return "";
+        var first = progress.FirstTextMs is { } f ? $"{f} ms" : "none";
+        var gap = progress.LongestGapMs is { } g ? $"{g} ms" : "n/a";
+        var watch = progress.WouldHaveStalled is { } w
+            ? $", would have stalled ({(w.Phase == LocalReplyPhase.FirstText ? "no first text" : "between chunks")}) at {w.AtMs} ms"
+            : "";
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $", first text {first}, longest gap {gap}, {progress.TextChunks} text chunks{watch}");
     }
 
     /// <summary>Times one image-generation provider call (one version of a batch).</summary>
@@ -130,6 +148,8 @@ internal static class OperationTiming
     internal static string Describe(Exception? ex, CancellationToken ct) => ex switch
     {
         null => "ok",
+        LocalReplyStalledException { Phase: LocalReplyPhase.FirstText } => "stalled (no first text)",
+        LocalReplyStalledException => "stalled (between chunks)",
         OperationCanceledException when ct.IsCancellationRequested => "cancelled",
         OperationCanceledException or TimeoutException => "timed out",
         _ => $"failed ({ex.GetType().Name})",

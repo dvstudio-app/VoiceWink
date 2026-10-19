@@ -378,15 +378,19 @@ internal sealed class LlamaServerProcess
                 }
 
                 var exitedOnItsOwn = child.HasExited;
+                // TRN-79b: read before Retire, which disposes the handle the code is read through.
+                var exit = NtStatusName.Describe(exitedOnItsOwn ? child.ExitCode : null);
                 Retire(child);
                 if (exitedOnItsOwn && mode == LlamaLaunchMode.Auto && !cpuRetried && !cpuFallback)
                 {
-                    Logger.Warning("llama-server: Auto (GPU) child exited before health during a graphics-card re-try - no CPU fallback (not charged)");
+                    Logger.Warning("llama-server: Auto (GPU) child exited before health (exit {ExitCode}) during a graphics-card re-try - no CPU fallback (not charged)",
+                        exit);
                     return default;
                 }
                 if (exitedOnItsOwn && mode == LlamaLaunchMode.Auto && !cpuRetried)
                 {
-                    Logger.Warning("llama-server: Auto (GPU) child exited before health - retrying once on CPU (not charged to the storm fuse)");
+                    Logger.Warning("llama-server: Auto (GPU) child exited before health (exit {ExitCode}) - retrying once on CPU (not charged to the storm fuse)",
+                        exit);
                     if (_retiring is not null)
                     {
                         Logger.Warning("llama-server: predecessor exit unconfirmed - CPU retry deferred to the next call");
@@ -400,8 +404,8 @@ internal sealed class LlamaServerProcess
                 {
                     RecordInvoluntaryExit();
                 }
-                Logger.Warning("llama-server: not healthy within {Budget} (childExited={Exited}, launch mode {Mode})",
-                    _healthBudget, exitedOnItsOwn, mode);
+                Logger.Warning("llama-server: not healthy within {Budget} (childExited={Exited}, exit {ExitCode}, launch mode {Mode})",
+                    _healthBudget, exitedOnItsOwn, exit, mode);
                 return default;
             }
         }
@@ -601,20 +605,25 @@ internal sealed class LlamaServerProcess
     {
         if (resident.Child.HasExited)
         {
+            // TRN-79b: read before Retire, which disposes the handle the code is read through.
+            var exit = NtStatusName.Describe(resident.Child.ExitCode);
             if (resident.Mode == LlamaLaunchMode.Auto && !resident.Served && _launchMode == LlamaLaunchMode.Auto)
             {
                 if (resident.CpuFallback)
                 {
                     _launchMode = LlamaLaunchMode.Cpu;
-                    Logger.Warning("llama-server: the Auto (GPU) child died before serving a request - latching CPU for this session (not charged to the storm fuse)");
+                    Logger.Warning("llama-server: the Auto (GPU) child died before serving a request (exit {ExitCode}) - latching CPU for this session (not charged to the storm fuse)",
+                        exit);
                 }
                 else
                 {
-                    Logger.Warning("llama-server: the graphics-card re-try child died before serving a request - no CPU latch (not charged)");
+                    Logger.Warning("llama-server: the graphics-card re-try child died before serving a request (exit {ExitCode}) - no CPU latch (not charged)",
+                        exit);
                 }
             }
             else
             {
+                Logger.Warning("llama-server: resident child exited on its own (exit {ExitCode})", exit);
                 RecordInvoluntaryExit();
             }
         }

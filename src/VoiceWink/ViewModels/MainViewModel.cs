@@ -3165,7 +3165,8 @@ public partial class MainViewModel : ObservableObject
                 RecordingState = RecordingState.Idle;
 
                 // PILL-3: one attention surface, not two. The error-styled redo pill IS the
-                // prominent error (Error-toned via ArmRedo → PERSISTS with a corner ×, ERR-PERSIST)
+                // prominent error (Error-toned via ArmRedo → PERSISTS with a corner ×, ERR-PERSIST;
+                // a reply the app refused is amber and timed instead — LAI-17, EnhancementFallbackTone)
                 // AND the retry affordance — no separate ShowMiniRecorderError that would stack two
                 // surfaces. ArmRedo sets the coordinator context, so the redo hotkey works immediately.
                 // ENH-1: prefer the provider's structured error text over the status-only message — but
@@ -3180,7 +3181,7 @@ public partial class MainViewModel : ObservableObject
                     PreviousProvider = providerOverride,
                     PreviousModel = modelId,
                 };
-                ArmRedo(rearmCtx, MiniRecorderTone.Error);
+                ArmRedo(rearmCtx, EnhancementFallbackTone(ex));
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -4528,12 +4529,15 @@ public partial class MainViewModel : ObservableObject
             // pill CAN name — the typed exception carries it, and its Sentry event (with the
             // cause) was already sent once by the runtime's reporter, so this line is Warning.
             var engineUnavailable = ex as Services.Transcription.LocalEngineUnavailableException;
+            var logLevel = StartFailureLogLevel(ex, startupCts?.IsCancellationRequested == true);
             if (diskFull)
                 Logger.Warning("Failed to start recording, disk full: {ErrorType}: {ErrorMessage}",
                     ex.GetType().Name, ex.Message);
             else if (engineUnavailable is not null)
                 Logger.Warning("Failed to start recording, speech engine unavailable: {Cause}",
                     engineUnavailable.Cause?.ToString() ?? "unknown");
+            else if (logLevel == Serilog.Events.LogEventLevel.Information)
+                Logger.Information("Recording start cancelled ({ErrorType})", ex.GetType().Name);
             else
                 Logger.Error(ex, "Failed to start recording");
             HandleStartRecordingFailureCleanup(startupRecordingPath);
@@ -5883,6 +5887,7 @@ public partial class MainViewModel : ObservableObject
             // and a default-initialized struct would carry MaxCodeUnits = 0 into the composer, so the
             // no-failure state is null, never `default`.
             ProviderPillText? enhancementFailure = null;
+            var enhancementFailureTone = MiniRecorderTone.Error;
 
             // An image-generation intent must never be run as a text enhancement — the pure gate
             // reproduces MainViewModel's shouldEnhance and suppresses it for image intents (covers
@@ -5970,6 +5975,7 @@ public partial class MainViewModel : ObservableObject
                     // UNTRUNCATED on purpose: ComposeFallbackFailureStatus trims then budgets it,
                     // and the budget rides the same value (110 only for structured provider prose).
                     enhancementFailure = ProviderPillReasonForEnhancementFallback(ex);
+                    enhancementFailureTone = EnhancementFallbackTone(ex);
                 }
                 finally
                 {
@@ -6116,14 +6122,15 @@ public partial class MainViewModel : ObservableObject
                 // ENH-1: a silent raw-text fallback looked identical to a successful
                 // enhancement (the user only noticed by READING the pasted text). The
                 // redo pill owns the message — the affordance renders StatusText (captured into
-                // RedoStatusText) in error styling — deliberately NOT a separate message pill, which
+                // RedoStatusText) in error styling, amber for a reply the app refused (LAI-17,
+                // EnhancementFallbackTone) — deliberately NOT a separate message pill, which
                 // would supersede the just-armed redo. Already truncated inside the composer (reason-first).
                 // Unwrap the ONE captured value — text and budget together, so a structured provider
                 // reason composes at 110 (two lines) while app copy and internal text stay at 55.
-                StatusText = ComposeFallbackFailureStatus(
-                    wasImageAttempt: false, pasteLanded,
-                    enhancementFailure?.Text,
-                    enhancementFailure?.MaxCodeUnits ?? DefaultPillMaxCodeUnits);
+                var (fallbackStatus, fallbackTone) = EnhancementFallbackPresentation(
+                    pasteResult.Outcome == Helpers.PasteAttemptOutcome.ClipboardSetFailed,
+                    pasteLanded, enhancementFailure, enhancementFailureTone);
+                StatusText = fallbackStatus;
                 ArmRedo(new RedoContext(
                     RawText: preEnhancementText,
                     EnhancedText: null,
@@ -6139,7 +6146,7 @@ public partial class MainViewModel : ObservableObject
                     // Effective model (override, else the effective provider's model) so a "Default"
                     // model doesn't fall through to the global selection in the redo dialog (F17).
                     PreviousModel: _enhancement.ResolveModelForPrompt(prompt)
-                ), MiniRecorderTone.Error);
+                ), fallbackTone);
                 IsMiniRecorderVisible = true;
             }
             else if (enhancedText != null)
@@ -7392,6 +7399,32 @@ public partial class MainViewModel : ObservableObject
     internal static ProviderPillText ProviderPillReasonForEnhancementFallback(Exception ex)
         => ProviderPillSafeText(ex, "Invalid API key", OutOfCreditsMessageShort);
 
+    /// <summary>
+    /// LAI-17 (owner, 2026-10-18): the tone of an enhancement-fallback redo pill. A reply the app
+    /// itself refused — the output guard's verdict or a cleanup cut off at the token ceiling — is
+    /// the app working as designed, so it is amber (Warning, timed); every other failure stays red
+    /// (Error, persists). Keyed on the two app-authored reasons, which no provider text can carry:
+    /// both are thrown as a bare <see cref="InvalidOperationException"/> by our own code.
+    /// </summary>
+    internal static MiniRecorderTone EnhancementFallbackTone(Exception ex)
+        => ex is InvalidOperationException
+            { Message: Helpers.LocalOutputGuard.RefusedReason or Services.AIEnhancement.Clients.OpenAICompatibleClient.TruncatedReason }
+            ? MiniRecorderTone.Warning
+            : MiniRecorderTone.Error;
+
+    /// <summary>
+    /// The dictation path's enhancement-fallback pill: its text and tone. A clipboard write that
+    /// FAILED wins over the enhancement reason (Codex diff r1, LAI-17): the transcription is neither
+    /// pasted nor on the clipboard, so the pill states that, red and persistent — the amber a
+    /// refused reply earns must never hide it.
+    /// </summary>
+    internal static (string Status, MiniRecorderTone Tone) EnhancementFallbackPresentation(
+        bool clipboardSetFailed, bool pasteLanded, ProviderPillText? failure, MiniRecorderTone failureTone)
+        => clipboardSetFailed
+            ? (Helpers.PasteResultPresentation.ClipboardFailedMessage, MiniRecorderTone.Error)
+            : (ComposeFallbackFailureStatus(wasImageAttempt: false, pasteLanded,
+                failure?.Text, failure?.MaxCodeUnits ?? DefaultPillMaxCodeUnits), failureTone);
+
     /// <summary>NET-5c: the pill for a model download that hit a full disk, on the cold
     /// recording-start path (the catch in <c>StartRecordingAsync</c>, reached when the standing
     /// capture refuses the claim) and on the stop-side prepare (<see cref="DescribeTranscriptionFailure"/>
@@ -7400,6 +7433,23 @@ public partial class MainViewModel : ObservableObject
     /// alike - one string, so the two cannot drift. Cause + remedy, app-authored; the MB arithmetic
     /// stays in the log line.</summary>
     internal const string DiskFullPillMessage = "Not enough disk space — free some space and try again";
+
+    /// <summary>REL-42: the level a failed recording start logs at — Error is what the Sentry sink
+    /// forwards. A full disk is environmental (NET-5c, Warning). A cancel of THIS start — the
+    /// push-to-talk release, Esc or the pill's × while still Starting — is the user's own action
+    /// and already shows as "Recording cancelled", so it logs at Information. An
+    /// <see cref="OperationCanceledException"/> whose start was NOT cancelled stays Error: nothing
+    /// the user did explains it. Caveat: a failed WARM start also cancels this source
+    /// (<c>DiscardRecordingPreflight</c>), so an OperationCanceledException from a future warm-body
+    /// call's own timeout would read as a cancel here — every one in the warm body today observes
+    /// the start's token.</summary>
+    internal static Serilog.Events.LogEventLevel StartFailureLogLevel(Exception ex, bool startCancelled) => ex switch
+    {
+        Services.Transcription.ModelLocalIOException => Serilog.Events.LogEventLevel.Warning,
+        Services.Transcription.LocalEngineUnavailableException => Serilog.Events.LogEventLevel.Warning,
+        OperationCanceledException when startCancelled => Serilog.Events.LogEventLevel.Information,
+        _ => Serilog.Events.LogEventLevel.Error,
+    };
 
     /// <summary>
     /// User-facing copy for a transcription-pipeline failure. Pure + internal so the routing

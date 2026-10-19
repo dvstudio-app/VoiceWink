@@ -169,7 +169,9 @@ internal static class ParakeetEphemeralChild
                         health.Token.ThrowIfCancellationRequested();
                         if (child.HasExited)
                         {
-                            Logger.Information("{Label}: child exited before health - skipped", label);
+                            // TRN-79b: read here, before the finally tears the child down.
+                            Logger.Information("{Label}: child exited before health (exit {ExitCode}) - skipped",
+                                label, NtStatusName.Describe(child.ExitCode));
                             return (Outcome.ExitedBeforeHealth, false);
                         }
                         // TRN-68: the child's OWN rows decide, before health (the same rule the resident

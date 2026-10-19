@@ -424,15 +424,22 @@ public sealed class OnThisPcEngine : IDisposable
                 BaseUrl = new Uri(l.BaseUri, "v1").ToString().TrimEnd('/'),
                 MaxTokens = cap,
                 Temperature = config.Temperature,
+                ReplyWindows = config.ReplyWindows?.ForRoute(l.OnGpu),
+                ReplyProgress = config.ReplyProgress,
             };
+            if (config.ReplyProgress is { } progress)
+                progress.ChildPid = _process.ObservedLoadFor(l.Generation)?.Pid;
             string reply;
             try
             {
-                reply = await new OpenAICompatibleClient(_http, derived).EnhanceAsync(systemPrompt, userText, linked.Token).ConfigureAwait(false);
+                // LAI-15: streamed, so a stuck child fails within its stall window, not the deadline.
+                reply = await OpenAICompatibleClient.StreamLocalChatAsync(_http, derived, systemPrompt, userText,
+                    MalformedReply, StreamReportedError, linked.Token).ConfigureAwait(false);
             }
             catch (HttpRequestException ex) when (ex.StatusCode is null && !linked.Token.IsCancellationRequested)
             {
-                // The child died between the lease and the request; the next dictation respawns
+                // The child died between the lease and the request, or mid-reply (the stream reader
+                // reports that as a status-less HttpRequestException too); the next dictation respawns
                 // (the storm fuse bounds that). The socket error stays on InnerException.
                 throw new HttpRequestException(StoppedMessage, ex);
             }
@@ -453,6 +460,22 @@ public sealed class OnThisPcEngine : IDisposable
                 _inFlight--;
             }
         }
+    }
+
+    /// <summary>LAI-15: a streamed reply from our own pinned llama-server that is not the shape it
+    /// sends is contract drift — Error, so it reaches Sentry, as the one-object reply's would.</summary>
+    private static InvalidOperationException MalformedReply(string why, string body)
+    {
+        Logger.Error("{Provider} response shape unexpected: {Reason}; Body={Body}", "On this PC stream", why, body.TruncateForLog());
+        return new InvalidOperationException(LocalReplyStream.StreamErrorReason);
+    }
+
+    /// <summary>The child reported an error inside the stream (it runs out of context, say): an
+    /// outcome, not drift. Its text goes to the local log only, under the redacted <c>{Body}</c> name.</summary>
+    private static InvalidOperationException StreamReportedError(string body)
+    {
+        Logger.Warning("On this PC: the engine reported an error during the reply; Body={Body}", body.TruncateForLog());
+        return new InvalidOperationException(LocalReplyStream.StreamErrorReason);
     }
 
     /// <summary>The lock-free ready lease - skipped while an unload is retiring the resident,

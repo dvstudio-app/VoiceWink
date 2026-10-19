@@ -75,6 +75,20 @@ internal static class NativeInterop
     [DllImport("pdh.dll")]
     internal static extern uint PdhCloseQuery(IntPtr hQuery);
 
+    // LAI-15: one RATE counter (\Memory\Pages/sec) for the stalled-reply memory line. A rate needs two
+    // collections a moment apart, then one formatted value as a double.
+    internal const uint PDH_FMT_DOUBLE = 0x00000200;
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct PDH_FMT_COUNTERVALUE_DOUBLE
+    {
+        [FieldOffset(0)] public uint CStatus;
+        [FieldOffset(8)] public double DoubleValue;
+    }
+
+    [DllImport("pdh.dll")]
+    internal static extern uint PdhGetFormattedCounterValue(IntPtr hCounter, uint dwFormat, IntPtr lpdwType, out PDH_FMT_COUNTERVALUE_DOUBLE pValue);
+
     // --- Final-path resolution (ENH-6 reference-image trust boundary) ---
     // GetFinalPathNameByHandle resolves every reparse point (junction/symlink) in the
     // OPENED handle's path, so containment can be verified against what the kernel

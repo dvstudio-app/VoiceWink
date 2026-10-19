@@ -48,6 +48,13 @@ public sealed class AIEnhancementService
     private readonly Func<bool> _networkAvailable;
     private readonly TimeSpan _enhancementTimeout;
     private readonly TimeSpan _localServerEnhancementTimeout;
+    // LAI-15: the stall clocks for the two local providers, and the memory-state reader the stalled-reply
+    // line uses. Both are test seams; production is LocalReplyWindows.For and the system reader.
+    private readonly Func<AIProvider, LocalReplyWindows> _localReplyWindows;
+    private readonly IMemoryStateReader _memoryState;
+
+    /// <summary>LAI-15: the most recent memory-state line's background write, so tests can await it.</summary>
+    internal Task? LastMemoryStateLog { get; private set; }
 
     // LAI-8 preload: one in flight at a time, and the last answer about where a model runs —
     // kept WITH the model it describes, so a switch to another model reads Unknown.
@@ -87,6 +94,23 @@ public sealed class AIEnhancementService
         Func<bool>? networkAvailable = null,
         TimeSpan? enhancementTimeout = null,
         TimeSpan? localServerEnhancementTimeout = null)
+        : this(httpFactory, apiKeys, settings, providers, networkAvailable, enhancementTimeout,
+            localServerEnhancementTimeout, localReplyWindows: null, memoryStateReader: null)
+    {
+    }
+
+    /// <summary>LAI-15 test seams: the local stall clocks and the memory-state reader. Internal, so the
+    /// container keeps building the public constructor.</summary>
+    internal AIEnhancementService(
+        IHttpClientFactory httpFactory,
+        ApiKeyManager apiKeys,
+        SettingsService settings,
+        AIProviderRegistry providers,
+        Func<bool>? networkAvailable,
+        TimeSpan? enhancementTimeout,
+        TimeSpan? localServerEnhancementTimeout,
+        Func<AIProvider, LocalReplyWindows>? localReplyWindows,
+        IMemoryStateReader? memoryStateReader)
     {
         _httpFactory = httpFactory;
         _apiKeys = apiKeys;
@@ -97,6 +121,8 @@ public sealed class AIEnhancementService
         _networkAvailable = networkAvailable ?? NetworkInterface.GetIsNetworkAvailable;
         _enhancementTimeout = enhancementTimeout ?? DefaultEnhancementTimeout;
         _localServerEnhancementTimeout = localServerEnhancementTimeout ?? LocalServerEnhancementTimeout;
+        _localReplyWindows = localReplyWindows ?? LocalReplyWindows.For;
+        _memoryState = memoryStateReader ?? SystemMemoryStateReader.Instance;
         // IMG-10b: a key change makes every cached list for that provider suspect. The
         // manager is the ONE key-write funnel, so this covers all save/clear/rollback
         // sites at once. Both are DI singletons with identical lifetimes — the
@@ -1282,14 +1308,33 @@ public sealed class AIEnhancementService
     {
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadlineCts.CancelAfter(config.Provider == AIProvider.LocalServer ? _localServerEnhancementTimeout : _enhancementTimeout);
+        // LAI-15: a local provider streams its reply under these clocks, inside the deadline above.
+        var local = config.Provider is AIProvider.LocalServer or AIProvider.OnThisPc;
+        if (local)
+        {
+            config.ReplyWindows = _localReplyWindows(config.Provider);
+            var progress = new LocalReplyProgress();
+            // Watch-only (owner 2026-10-18): the memory state at the moment a clock would have fired.
+            progress.OnWouldHaveStalled = (phase, atMs) =>
+                LogLocalMemoryState(config, MemoryStateSnapshot.DescribeStall(phase, watchOnly: true), atMs);
+            config.ReplyProgress = progress;
+        }
+        var elapsed = global::System.Diagnostics.Stopwatch.StartNew();
         try
         {
             return await Helpers.OperationTiming.TimeEnhancementAsync(
                 config.Provider.ToString(), config.ModelName, userText.Length,
-                () => CallProviderAsync(config, systemPrompt, userText, deadlineCts.Token), ct).ConfigureAwait(false);
+                () => CallProviderAsync(config, systemPrompt, userText, deadlineCts.Token), ct, config.ReplyProgress).ConfigureAwait(false);
+        }
+        catch (LocalReplyStalledException ex)
+        {
+            LogLocalMemoryState(config, MemoryStateSnapshot.DescribeStall(ex.Phase), ex.AtMs);
+            throw;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
+            if (local)
+                LogLocalMemoryState(config, "ran out of time", elapsed.ElapsedMilliseconds);
             throw new TimeoutException("Enhancement timed out");
         }
         catch (HttpRequestException ex) when (IsLocalServerRefused(config.Provider, ex))
@@ -1297,6 +1342,31 @@ public sealed class AIEnhancementService
             // LAI-8: short app copy for the pill; the socket error stays on InnerException.
             throw new HttpRequestException(LocalServerNotRunningMessage, ex);
         }
+    }
+
+    /// <summary>
+    /// LAI-15: one counts-only line when a local reply stalled or ran out of time — the PC's memory and
+    /// how far the reply got (owner 2026-10-16: the evidence for a restart rule or a "Low memory" pill).
+    /// Written in the background: the pages/sec sample takes a second, and the raw transcript must not
+    /// wait for it. Warning for both providers (owner 2026-10-18), so no Sentry event.
+    /// </summary>
+    private void LogLocalMemoryState(AIProviderConfig config, string what, long elapsedMs)
+    {
+        var provider = config.Provider.ToString();
+        var chunks = config.ReplyProgress?.TextChunks ?? 0;
+        var pid = config.ReplyProgress?.ChildPid;
+        var reader = _memoryState;
+        LastMemoryStateLog = Task.Run(() =>
+        {
+            try
+            {
+                Logger.Warning("{MemoryState:l}", MemoryStateSnapshot.Render(provider, what, elapsedMs, chunks, reader.Read(pid)));
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug("Local AI memory state not read: {ErrorType}", ex.GetType().Name);
+            }
+        });
     }
 
     /// <summary>
@@ -2333,24 +2403,35 @@ public sealed class AIEnhancementService
     }
 
     /// <summary>
-    /// LAI-9 + LAI-4: refuse a LOCAL model's reply whose length says it did something other than the
-    /// prompt asked (<see cref="Helpers.LocalOutputGuard"/>). Thrown inside both enhance methods'
-    /// <c>try</c>, so it rides their Warning branch and MainViewModel's existing fallback: the raw
-    /// transcript pastes, History stores the <c>[Enhancement failed]</c> marker, and the pill names
-    /// the reason. Logs the class and word counts only — never the reply, which can echo the dictation.
+    /// LAI-9 + LAI-4 + LAI-17: refuse a reply whose length or wording says the model did something
+    /// other than the prompt asked (<see cref="Helpers.LocalOutputGuard"/>) — every provider since
+    /// LAI-17. Thrown inside both enhance methods' <c>try</c>, so it rides their Warning branch and
+    /// MainViewModel's existing fallback: the raw transcript pastes, History stores the
+    /// <c>[Enhancement failed]</c> marker, and the amber pill names the reason. Logs the class and
+    /// word counts only — never the reply, which can echo the dictation.
     /// </summary>
     private static void ThrowIfOutputRefused(AIProvider provider, CustomPrompt prompt, string input, string output)
     {
-        if (!Helpers.LocalOutputGuard.Applies(provider))
-            return;
         var promptClass = Helpers.LocalPromptClassifier.Classify(prompt);
         var verdict = Helpers.LocalOutputGuard.Check(promptClass, input, output);
         if (verdict == Helpers.LocalOutputVerdict.Pass)
             return;
-        Logger.Warning("AI enhancement failed: the {Provider} reply to a {PromptClass} prompt {Verdict} from {InputWords} to {OutputWords} words, "
-            + "so the model did something other than the prompt asked; the transcription was used unchanged",
-            provider, promptClass, verdict == Helpers.LocalOutputVerdict.Grew ? "grew" : "shrank",
-            Helpers.LocalOutputGuard.CountWords(input), Helpers.LocalOutputGuard.CountWords(output));
+        if (verdict == Helpers.LocalOutputVerdict.Replaced)
+        {
+            var (newWords, replyWords) = Helpers.LocalOutputGuard.CountNewWords(input, output);
+            Logger.Warning("AI enhancement not used: the {Provider} reply to a {PromptClass} prompt had {NewWords} of its {OutputWords} words "
+                + "not in the {InputWords}-word dictation, so the model did something other than the prompt asked; the transcription was used unchanged",
+                // Both counts from the new-word counter, so "N of its M words" and the dictation's
+                // size are measured the same way.
+                provider, promptClass, newWords, replyWords, Helpers.LocalOutputGuard.CountNewWords(null, input).ReplyWords);
+        }
+        else
+        {
+            Logger.Warning("AI enhancement not used: the {Provider} reply to a {PromptClass} prompt {Verdict} from {InputWords} to {OutputWords} words, "
+                + "so the model did something other than the prompt asked; the transcription was used unchanged",
+                provider, promptClass, verdict == Helpers.LocalOutputVerdict.Grew ? "grew" : "shrank",
+                Helpers.LocalOutputGuard.CountWords(input), Helpers.LocalOutputGuard.CountWords(output));
+        }
         throw new InvalidOperationException(Helpers.LocalOutputGuard.RefusedReason);
     }
 

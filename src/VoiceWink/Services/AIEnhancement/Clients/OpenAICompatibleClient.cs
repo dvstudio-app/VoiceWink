@@ -21,16 +21,16 @@ public sealed class OpenAICompatibleClient
     /// by all THREE wire shapes that can report it — chat <c>finish_reason=length</c>, the
     /// Responses API's <c>status=incomplete</c> / <c>max_output_tokens</c>, and Anthropic's
     /// <c>stop_reason=max_tokens</c> — so the pill cannot say three different things about one
-    /// cause. <b>20 code units, and the budget is why.</b>
+    /// cause. <b>22 code units, and the budget is why.</b>
     /// <c>MainViewModel.ComposeFallbackFailureStatus</c> renders <c>"{reason} — {outcome}"</c>
     /// inside 55 code units and truncates the REASON, never the suffix; the worst-case suffix
     /// (<c>" — transcription on clipboard"</c>) is 29 units, so the reason budget is <b>26</b>.
-    /// A longer sentence would lose "token limit" to the ellipsis — the only part that tells the
-    /// user what to change. Matches the sibling <c>"No answer: token limit"</c> (22 units) for the
-    /// same reason. State the BUDGET, not the suffix length: reading "appends 26" and computing
-    /// 55 − 26 makes a 29-unit reword look safe when it silently truncates.
+    /// State the BUDGET, not the suffix length: reading "appends 26" and computing 55 − 26 makes a
+    /// 29-unit reword look safe when it silently truncates. Worded like the guard's
+    /// <c>LocalOutputGuard.RefusedReason</c> (owner, 2026-10-18), and shown amber like it
+    /// (<c>MainViewModel.EnhancementFallbackTone</c>): the app worked as designed.
     /// </summary>
-    internal const string TruncatedReason = "Cut off: token limit";
+    internal const string TruncatedReason = "AI enhancement cut off";
 
     public OpenAICompatibleClient(HttpClient http, AIProviderConfig config)
     {
@@ -140,13 +140,7 @@ public sealed class OpenAICompatibleClient
         }
         else
         {
-            json = JsonSerializer.Serialize(new
-            {
-                model = _config.ModelName,
-                max_tokens = _config.MaxTokens,
-                temperature = _config.Temperature,
-                messages
-            });
+            json = BuildGenericChatBody(_config, systemPrompt, userText, stream: false);
         }
 
         // Gemini uses different endpoint
@@ -154,28 +148,13 @@ public sealed class OpenAICompatibleClient
             ? $"{baseUrl}/openai/chat/completions"
             : $"{baseUrl}/chat/completions";
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        // LAI-1: a local server sends a key only when one is stored; every cloud provider keeps the
-        // header it always sent, byte for byte.
-        if (_config.Provider == AIProvider.LocalServer)
-            LocalServerClient.AddAuthorization(request, _config);
-        else
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _config.ApiKey);
-        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = NewChatRequest(_config, endpoint, json);
 
         using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
-            string errorBody;
-            try
-            {
-                errorBody = await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
-            }
-            catch (InvalidOperationException)
-            {
-                errorBody = string.Empty;
-            }
+            var errorBody = await ReadErrorBodyAsync(response, ct).ConfigureAwait(false);
 
             // Detect models that require the Responses API (e.g. gpt-5-pro, o3-pro)
             // OpenAI only: that is the one provider EnhanceAsync retries on the Responses API. For
@@ -189,27 +168,157 @@ public sealed class OpenAICompatibleClient
                 return (null, true);
             }
 
-            // Warning, not Error: non-success provider statuses are environmental —
-            // mirrors HttpResponseExtensions.EnsureSuccessOrLogAndThrowAsync.
-            // SEC-2: {ReasonPhrase} is the redacted-by-name property — the phrase is server-supplied
-            // and no longer rides the exception Message. Without this line the phrase would be lost
-            // entirely on this path, since it is the SECOND ProviderApiException creation site and
-            // does not go through EnsureSuccessOrLogAndThrowAsync.
-            Logger.Warning("API returned {Status}; Body={Body}; ReasonPhrase={ReasonPhrase}",
-                (int)response.StatusCode, errorBody.TruncateForLog(), response.ReasonPhrase?.TruncateForLog());
-            // ENH-1: this inline branch is the text-enhancement path (Gemini et al.) —
-            // throw the same provider-message-carrying exception as
-            // EnsureSuccessOrLogAndThrowAsync so pill/status surfaces can show WHY.
-            throw ProviderApiException.From(_config.Provider.ToString(), response, errorBody);
+            throw ChatFailure(_config, response, errorBody);
         }
 
         var responseJson = await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
+        return (ParseChatCompletion(_config, responseJson), false);
+    }
+
+    /// <summary>
+    /// LAI-15: one STREAMED chat on a local server — Local server's OpenAI-compatible type and the
+    /// bundled llama-server. The request, status check and reply rules are the non-streamed path's
+    /// (<see cref="NewChatRequest"/>, <see cref="ChatFailure"/>, <see cref="ParseChatCompletion"/> /
+    /// <see cref="ResolveStreamedChat"/>); only the reading differs, under
+    /// <see cref="AIProviderConfig.ReplyWindows"/>. <paramref name="malformed"/> and
+    /// <paramref name="streamError"/> carry each provider's own log level: the user's server is
+    /// Warning, our pinned build's drift is Error.
+    /// </summary>
+    internal static async Task<string> StreamLocalChatAsync(
+        HttpClient http, AIProviderConfig config, string systemPrompt, string userText,
+        Func<string, string, Exception> malformed, Func<string, Exception> streamError, CancellationToken ct)
+    {
+        var endpoint = $"{config.GetBaseUrl().TrimEnd('/')}/chat/completions";
+        using var request = NewChatRequest(config, endpoint, BuildGenericChatBody(config, systemPrompt, userText, stream: true));
+        var result = await LocalReplyStream.SendAsync(
+            http, request, LocalStreamFraming.Sse, config.ReplyWindows, systemPrompt.Length + userText.Length, config.ReplyProgress,
+            async (response, token) =>
+            {
+                if (!response.IsSuccessStatusCode)
+                    throw ChatFailure(config, response, await ReadErrorBodyAsync(response, token).ConfigureAwait(false));
+            },
+            malformed, streamError, ct).ConfigureAwait(false);
+        return result.WholeBody is { } whole
+            ? ParseChatCompletion(config, whole)
+            : ResolveStreamedChat(config, result.Streamed!);
+    }
+
+    /// <summary>A chat request with its authorization. LAI-1: a local server sends a key only when one
+    /// is stored; every other provider keeps the header it always sent, byte for byte.</summary>
+    private static HttpRequestMessage NewChatRequest(AIProviderConfig config, string endpoint, string json)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        if (config.Provider == AIProvider.LocalServer)
+            LocalServerClient.AddAuthorization(request, config);
+        else
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", config.ApiKey);
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    private static async Task<string> ReadErrorBodyAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            return await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>A non-success chat status as the provider-message-carrying exception.</summary>
+    private static ProviderApiException ChatFailure(AIProviderConfig config, HttpResponseMessage response, string errorBody)
+    {
+        // Warning, not Error: non-success provider statuses are environmental —
+        // mirrors HttpResponseExtensions.EnsureSuccessOrLogAndThrowAsync.
+        // SEC-2: {ReasonPhrase} is the redacted-by-name property — the phrase is server-supplied
+        // and no longer rides the exception Message. Without this line the phrase would be lost
+        // entirely on this path, since it is the SECOND ProviderApiException creation site and
+        // does not go through EnsureSuccessOrLogAndThrowAsync.
+        Logger.Warning("API returned {Status}; Body={Body}; ReasonPhrase={ReasonPhrase}",
+            (int)response.StatusCode, errorBody.TruncateForLog(), response.ReasonPhrase?.TruncateForLog());
+        // ENH-1: this inline branch is the text-enhancement path (Gemini et al.) —
+        // throw the same provider-message-carrying exception as
+        // EnsureSuccessOrLogAndThrowAsync so pill/status surfaces can show WHY.
+        return ProviderApiException.From(config.Provider.ToString(), response, errorBody);
+    }
+
+    /// <summary>
+    /// The generic chat body — every provider without a reasoning-bearing shape, and both local
+    /// providers. <paramref name="stream"/> adds <c>stream: true</c> (LAI-15, local providers only); a
+    /// non-streamed body is byte-identical to the one sent before LAI-15.
+    /// </summary>
+    internal static string BuildGenericChatBody(AIProviderConfig config, string systemPrompt, string userText, bool stream)
+    {
+        var messages = new object[]
+        {
+            new { role = "system", content = systemPrompt },
+            new { role = "user", content = userText }
+        };
+        return stream
+            ? JsonSerializer.Serialize(new
+            {
+                model = config.ModelName,
+                max_tokens = config.MaxTokens,
+                temperature = config.Temperature,
+                stream = true,
+                messages
+            })
+            : JsonSerializer.Serialize(new
+            {
+                model = config.ModelName,
+                max_tokens = config.MaxTokens,
+                temperature = config.Temperature,
+                messages
+            });
+    }
+
+    /// <summary>
+    /// LAI-15: a streamed chat reply, assembled, turned into today's outcomes — the same three rules as
+    /// <see cref="ParseChatCompletion"/>, independent of reasoning: <c>finish_reason=length</c> with any
+    /// content delta (an empty or null one included) is ENH-27's cut-off; <c>length</c> with no content
+    /// delta at all is ENH-22's "No answer"; otherwise the content.
+    /// </summary>
+    internal static string ResolveStreamedChat(AIProviderConfig config, LocalStreamedReply reply)
+    {
+        if (reply.FinishReason == "length")
+        {
+            if (reply.ContentSeen)
+            {
+                Logger.Warning("Enhancement output truncated at max_tokens (finish_reason=length, model={Model})", config.ModelName);
+                throw new InvalidOperationException(TruncatedReason);
+            }
+            Logger.Warning(
+                "Enhancement produced no content: finish_reason=length with no content in the stream (model={Model}, reasoningPresent={ReasoningPresent})",
+                config.ModelName, reply.ReasoningSeen);
+            throw new InvalidOperationException("No answer: token limit");
+        }
+        if (!reply.ContentSeen)
+        {
+            // No content field anywhere (or content as parts): contract drift, reported exactly as the
+            // one-object path's shape miss is — same template and reason (self-review, 2026-10-18).
+            Logger.Error("{Provider} response shape unexpected: {Reason}; Body={Body}",
+                "Chat", "API response missing 'choices[0].message.content'", "(streamed)");
+            throw new InvalidOperationException("API response missing 'choices[0].message.content'");
+        }
+        return reply.Content;
+    }
+
+    /// <summary>
+    /// One non-streamed <c>/chat/completions</c> reply body → the text, or the classified failure.
+    /// Extracted from the chat path unchanged (LAI-15) so a local server that ignores
+    /// <c>stream: true</c> is read by the same rules.
+    /// </summary>
+    internal static string ParseChatCompletion(AIProviderConfig config, string responseJson)
+    {
         JsonDocument doc;
         try
         {
             doc = JsonDocument.Parse(responseJson);
         }
-        catch (JsonException) when (_config.Provider == AIProvider.LocalServer)
+        catch (JsonException) when (config.Provider == AIProvider.LocalServer)
         {
             // LAI-1 (Grok diff r1): a user-run server answering 200 with a web page is the user's
             // configuration, not contract drift. A raw JsonException is outside every enhancement
@@ -271,7 +380,7 @@ public sealed class OpenAICompatibleClient
             && truncationFinish.ValueKind == JsonValueKind.String
             && truncationFinish.GetString() == "length")
         {
-            Logger.Warning("Enhancement output truncated at max_tokens (finish_reason=length, model={Model})", _config.ModelName);
+            Logger.Warning("Enhancement output truncated at max_tokens (finish_reason=length, model={Model})", config.ModelName);
             throw new InvalidOperationException(TruncatedReason);
         }
 
@@ -290,7 +399,7 @@ public sealed class OpenAICompatibleClient
         // Empty-but-present content is a RESULT (""), not a miss — null means only that the
         // happy path did not match, never that the model returned nothing.
         if (extracted != null)
-            return (extracted, false);
+            return extracted;
 
         // A reasoning model that spends its whole max_tokens budget thinking answers 200 with
         // finish_reason=length and NO content property at all (Cerebras qwen-3.8-27b, observed
@@ -317,7 +426,7 @@ public sealed class OpenAICompatibleClient
             // the user's dictation, and no {Reasoning} property exists in the redaction allowlist.
             Logger.Warning(
                 "Enhancement produced no content: finish_reason=length with no message.content (model={Model}, reasoningPresent={ReasoningPresent}) — the completion hit max_tokens before emitting an answer; Body={Body}",
-                _config.ModelName,
+                config.ModelName,
                 outcomeMessage.TryGetProperty("reasoning", out _),
                 responseJson.TruncateForLog());
             // 22 units. ComposeFallbackFailureStatus's worst-case reason budget is 26

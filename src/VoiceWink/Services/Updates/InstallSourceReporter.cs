@@ -114,6 +114,28 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     public static Uri BuildUri(string channel) =>
         new($"https://updates.voicewink.app/{channel}/{ReportPath}", UriKind.Absolute);
 
+    /// <summary>A Privacy §4.6 report's address: <c>https://updates.voicewink.app/report/&lt;channel&gt;/&lt;report&gt;</c>. FROZEN once shipped.</summary>
+    internal static Uri ReportUri(string channel, string report) =>
+        new($"https://updates.voicewink.app/report/{channel}/{report}", UriKind.Absolute);
+
+    /// <summary>Privacy §4.6: called once when a NEW trial window starts; the next automatic tick that reached the server sends it.</summary>
+    public static void MarkTrialStartDue(SettingsService settings) =>
+        MarkTrialStartDue(settings, UpdateCheckFeature.IsEnabled && UpdateFeedConfig.IsConfigured && !UpdateFeedConfig.FeedIsGated);
+
+    /// <summary>A build that cannot send marks nothing, so a beta or dev trial never reports later from a stable build sharing the settings.</summary>
+    internal static void MarkTrialStartDue(SettingsService settings, bool buildCanSend)
+    {
+        if (!buildCanSend) return;
+        try
+        {
+            settings.SetManyAndFlushOrThrow(new Dictionary<string, string?> { [AppDefaults.TrialStartReport] = ReportPending });
+        }
+        catch (Exception ex)
+        {
+            Logger.Information("Trial-start report not marked due ({Error:l})", ex.GetType().Name);
+        }
+    }
+
     /// <summary>The installation identity a record is saved against: the install root's creation time,
     /// UTC, round-trip format. One formatter for the writer below and <see cref="IsStoreInstallation(SettingsService, DateTime?)"/>.</summary>
     internal static string StampFor(DateTime installRootCreated)
@@ -148,6 +170,10 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
         {
             // The tick checked the toggle before its update check; the user may have turned
             // automatic checks off while that check ran. Off means nothing is recorded either (§4.5).
+            if (!AutomaticChecksOn()) return;
+
+            await SendTrialStartIfDueAsync(networkProven, ct).ConfigureAwait(false);
+            // The toggle may have gone off during that step; off means nothing is recorded (§4.5).
             if (!AutomaticChecksOn()) return;
 
             var record = EnsureRecord();
@@ -216,6 +242,37 @@ public sealed class InstallSourceReporter : IInstallSourceReporter
     }
 
     private bool AutomaticChecksOn() => _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateCheckEnabled);
+
+    /// <summary>Privacy §4.6: one GET for a due trial start, marked sent BEFORE the request so it is never sent twice or retried.</summary>
+    private async Task SendTrialStartIfDueAsync(bool networkProven, CancellationToken ct)
+    {
+        if (!networkProven || ct.IsCancellationRequested) return;
+        if (!string.Equals(_settings.GetString(AppDefaults.TrialStartReport), ReportPending, StringComparison.Ordinal)) return;
+        try
+        {
+            _settings.SetManyAndFlushOrThrow(new Dictionary<string, string?> { [AppDefaults.TrialStartReport] = ReportSent });
+            if (_settings.IsPersistenceSuppressed
+                || !string.Equals(_settings.GetString(AppDefaults.TrialStartReport), ReportSent, StringComparison.Ordinal)) return;
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, ReportUri(_channel, "trial-start"));
+            request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+            using var client = _httpFactory.CreateClient(HttpClientName);
+            // The flush can block behind an opt-out's own write; re-check before the send, and keep it due when nothing went out.
+            if (ct.IsCancellationRequested || !AutomaticChecksOn() || _settings.IsPersistenceSuppressed)
+            {
+                MarkTrialStartDue(_settings, buildCanSend: true);
+                return;
+            }
+            using var response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
+            Logger.Information("Trial-start report sent (HTTP {Status})", (int)response.StatusCode);
+        }
+        catch (Exception ex)
+        {
+            Logger.Information("Trial-start report step failed ({Error:l})", ex.GetType().Name);
+        }
+    }
 
     internal readonly record struct Record(string Stamp, string Source, string Report, int Attempts);
 

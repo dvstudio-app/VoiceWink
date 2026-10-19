@@ -114,6 +114,16 @@ public class AIProviderConfig
     /// </summary>
     internal Helpers.LocalRequestHints? LocalRequest { get; set; }
 
+    /// <summary>
+    /// LAI-15: the stall clocks for a LOCAL provider's streamed reply, set by <c>AIEnhancementService</c>
+    /// on the enhancement paths of the two local providers; null (unarmed) everywhere else.
+    /// </summary>
+    internal Helpers.LocalReplyWindows? ReplyWindows { get; set; }
+
+    /// <summary>LAI-15: how far this call's streamed reply got — read by the timing and memory-state
+    /// lines. Set beside <see cref="ReplyWindows"/>.</summary>
+    internal Helpers.LocalReplyProgress? ReplyProgress { get; set; }
+
     public string GetBaseUrl()
     {
         // User-configured base URL takes priority (supports Azure OpenAI, proxies, self-hosted)

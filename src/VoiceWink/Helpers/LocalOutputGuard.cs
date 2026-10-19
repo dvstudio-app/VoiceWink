@@ -1,5 +1,3 @@
-using VoiceWink.Services.AIEnhancement;
-
 namespace VoiceWink.Helpers;
 
 /// <summary>What <see cref="LocalOutputGuard.Check"/> found.</summary>
@@ -10,12 +8,15 @@ public enum LocalOutputVerdict
     Grew,
     /// <summary>Column (b): the reply shrank past the class's line — content was dropped.</summary>
     Shrank,
+    /// <summary>LAI-17: the reply is mostly words the dictation does not contain — a refusal or an
+    /// answer about as long as the dictation, or a reply in another language.</summary>
+    Replaced,
 }
 
 /// <summary>
-/// LAI-9 + LAI-4: refuses a LOCAL model's reply whose length says it did something other than the
-/// prompt asked, so the raw transcript pastes instead of the model's words. Applies to both keyless
-/// providers (Local server and On this PC); cloud providers are never checked.
+/// LAI-9 + LAI-4 + LAI-17: refuses a model's reply whose length or wording says it did something
+/// other than the prompt asked, so the raw transcript pastes instead of the model's words. Applies
+/// to every provider since LAI-17 (owner decision 2026-10-18); the name predates that.
 /// </summary>
 /// <remarks>
 /// <para><b>Why it exists (LAI-9).</b> On 2026-09-27 <c>qwen3.5:4b</c> — the planned default for PCs
@@ -57,22 +58,36 @@ public enum LocalOutputVerdict
 /// line catches the obeyed-injection rows ("Banana."), and the e-mail/chat and translate growth lines
 /// are generous ceilings against an ANSWER that no row reached. Integer arithmetic throughout, so no
 /// rounding decides a boundary.</para>
+///
+/// <para><b>LAI-17 (2026-10-18): a third rule, new words.</b> A refusal about as long as its dictation
+/// passed every length line and pasted (owner report). A cleanup keeps the speaker's words; a refusal
+/// or an answer does not. A Cleanup reply is refused when at least <see cref="NewWordFloor"/> of its
+/// words, and at least half of them, are not in the dictation (<see cref="CountNewWords"/>). Only
+/// Cleanup: E-mail and Chat legitimately rewrite (a greeting and closing around a short dictation, a
+/// formal note made casual), Translate changes every word, and Custom and Assistant are never
+/// checked. Evidence: every committed bench reply replayed by <c>bench/guard_thresholds.py</c> — none
+/// of 4,463 passing cleanups is refused (the most a passing reply changed was 40 new words of 118, a
+/// long paraphrase), while failing cleanups the length lines let through are caught, most of them
+/// replies in another language (the script prints the count). 1,447 replies from six cloud providers
+/// trip neither rule, which is why the guard runs for every provider.</para>
 /// </remarks>
 internal static class LocalOutputGuard
 {
     /// <summary>
     /// The pill reason. Composed as "{reason} — {outcome}" by
     /// <c>MainViewModel.ComposeFallbackFailureStatus</c>, whose worst-case reason budget is 26.
-    /// Deliberately plain (owner, 2026-09-28): the user needs to know only that the text was not
-    /// enhanced; why lives in the log line <c>AIEnhancementService.ThrowIfOutputRefused</c> writes.
+    /// Plain (owner, 2026-09-28; worded 2026-10-18): the user needs to know only that the reply was
+    /// not used; why lives in the log line <c>AIEnhancementService.ThrowIfOutputRefused</c> writes.
+    /// The pill shows it amber, not red (<c>MainViewModel.EnhancementFallbackTone</c>).
     /// </summary>
-    internal const string RefusedReason = "AI enhancement failed";
+    internal const string RefusedReason = "AI enhancement unusable";
 
-    /// <summary>Only the keyless LOCAL providers are checked; the evidence is local.</summary>
-    internal static bool Applies(AIProvider provider)
-        => provider is AIProvider.LocalServer or AIProvider.OnThisPc;
+    /// <summary>The fewest new words that can refuse a reply: a short cleanup legitimately
+    /// changes a few (a fixed mishearing, digits for spoken numbers, a German "einmal" for "mal").</summary>
+    internal const int NewWordFloor = 6;
 
-    /// <summary>The class's two length checks over <paramref name="input"/> → <paramref name="output"/>.</summary>
+    /// <summary>The class's checks over <paramref name="input"/> → <paramref name="output"/>:
+    /// the two length lines first, then the new-word rule.</summary>
     internal static LocalOutputVerdict Check(LocalPromptClass promptClass, string input, string output)
     {
         // An answer has no length relation to its question (LAI-12): "366" answers a 16-word
@@ -93,8 +108,103 @@ internal static class LocalOutputGuard
         };
         if (grew)
             return LocalOutputVerdict.Grew;
-        return inWords >= 16 && 8 * outWords < inWords ? LocalOutputVerdict.Shrank : LocalOutputVerdict.Pass;
+        if (inWords >= 16 && 8 * outWords < inWords)
+            return LocalOutputVerdict.Shrank;
+        // Clean-up only: its rules keep the speaker's words. E-mail and Chat legitimately rewrite —
+        // a greeting and closing around a short dictation, or a formal note made casual, can be
+        // mostly new words (self-review: a 9-word "tell Anna the parcel arrived…" e-mail).
+        if (promptClass is LocalPromptClass.Cleanup)
+        {
+            var (newWords, replyWords) = CountNewWords(input, output);
+            if (newWords >= NewWordFloor && 2 * newWords >= replyWords)
+                return LocalOutputVerdict.Replaced;
+        }
+        return LocalOutputVerdict.Pass;
     }
+
+    /// <summary>
+    /// How many of the reply's words do not occur in the dictation, and how many words the reply
+    /// has. Words here are lower-cased whitespace tokens with punctuation trimmed from both ends
+    /// (so "Thursday." matches "thursday"), a bare list marker skipped and every character of a
+    /// script written without spaces a word of its own — the splitting <see cref="CountWords"/>
+    /// does, so a bulleted cleanup adds no new words, except that a token that is only punctuation
+    /// ("—", "&amp;") is not a word here, typographic apostrophes read as straight ones, and a reply
+    /// word holding a digit is skipped together with the word right after it (spoken numbers and
+    /// their units written in written form — "2 cm", "4 PM" — are the clean-up's job).
+    /// </summary>
+    internal static (int NewWords, int ReplyWords) CountNewWords(string? input, string? output)
+    {
+        var source = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var word in Words(input))
+            source.Add(word);
+        int newWords = 0, replyWords = 0;
+        var afterNumber = false;
+        foreach (var word in Words(output))
+        {
+            // A word holding a digit is neither new nor counted: the envelope tells the model to
+            // write spoken numbers as digits, so "zero four seven five" → "0475" is the job done.
+            // Nor is the word right after one — its unit or suffix ("2 cm", "4 PM", "3 kg"), which
+            // the written form abbreviates (Codex diff r1: a list of measurements read 6 of 6 new).
+            if (word.Any(char.IsDigit))
+            {
+                afterNumber = true;
+                continue;
+            }
+            if (afterNumber)
+            {
+                afterNumber = false;
+                continue;
+            }
+            replyWords++;
+            if (!source.Contains(word))
+                newWords++;
+        }
+        return (newWords, replyWords);
+    }
+
+    private static IEnumerable<string> Words(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            yield break;
+        var buffer = new global::System.Text.StringBuilder();
+        // Typographic apostrophes match straight ones: a model that sets "I’m" has not changed "I'm".
+        var normalized = text.ToLowerInvariant().Replace('’', '\'').Replace('‘', '\'');
+        foreach (var token in normalized.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (IsListMarker(token))
+                continue;
+            buffer.Clear();
+            foreach (var c in token)
+            {
+                if (IsUnspacedScript(c))
+                {
+                    if (TrimmedWord(buffer) is { } before)
+                        yield return before;
+                    buffer.Clear();
+                    yield return c.ToString();
+                }
+                else
+                {
+                    buffer.Append(c);
+                }
+            }
+            if (TrimmedWord(buffer) is { } word)
+                yield return word;
+        }
+    }
+
+    /// <summary>The buffer with non-word characters trimmed from both ends; null when nothing is left.</summary>
+    private static string? TrimmedWord(global::System.Text.StringBuilder buffer)
+    {
+        int start = 0, end = buffer.Length - 1;
+        while (start <= end && !IsWordChar(buffer[start]))
+            start++;
+        while (end >= start && !IsWordChar(buffer[end]))
+            end--;
+        return start > end ? null : buffer.ToString(start, end - start + 1);
+    }
+
+    private static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
     /// <summary>LAI-9's cleanup growth line on its own: past 1.5 × the input's words plus 8.</summary>
     internal static bool LooksLikeAnswer(string input, string output)

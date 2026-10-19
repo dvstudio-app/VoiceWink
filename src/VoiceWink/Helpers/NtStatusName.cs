@@ -38,4 +38,8 @@ internal static class NtStatusName
     /// <summary><c>0xC000001D illegal-instruction</c> — the form every log line uses.</summary>
     public static string Describe(uint code)
         => "0x" + code.ToString("X8", CultureInfo.InvariantCulture) + " " + Name(code);
+
+    /// <summary>As <see cref="Describe(uint)"/>, or <c>unknown</c> when Windows gave no code (the
+    /// child still running, or its handle already closed).</summary>
+    public static string Describe(uint? code) => code is { } c ? Describe(c) : "unknown";
 }

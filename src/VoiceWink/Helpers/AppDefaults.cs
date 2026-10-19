@@ -491,6 +491,9 @@ public static class AppDefaults
     public const string InstallSourceReport = "installSourceReport";
     public const string InstallSourceReportAttempts = "installSourceReportAttempts";
 
+    /// <summary>Privacy §4.6 trial-start report: <c>pending</c> | <c>sent</c>, written by <c>InstallSourceReporter</c>; app-managed, NOT in <see cref="Defaults"/>.</summary>
+    public const string TrialStartReport = "trialStartReport";
+
     /// <summary>
     /// LNC-14: how many distinct local days VoiceWink was used on (<see cref="UsageDayCount"/>, an int)
     /// and the last day counted (<see cref="UsageLastDay"/>, <c>yyyy-MM-dd</c>), written only by

@@ -52,4 +52,15 @@ internal static class HistoryViewportRestore
         }
         return 0; // anchor gone
     }
+
+    /// <summary>The offset at or below which the list counts as scrolled to the top. A pixel of
+    /// give, because a fractional offset is what a top reading can come back as on a scaled display.</summary>
+    internal const double AtTopTolerance = 1.0;
+
+    /// <summary>HIS-12: whether an external refresh restores the reading position at all. At the
+    /// top there is no position to keep — the user is looking at the newest rows, so a row that
+    /// arrives belongs in view. Compensating there scrolled the new top row up out of the viewport
+    /// by its own height: the count grew, the visible rows stayed the same, and the new row was
+    /// clipped above the list until the page was opened again.</summary>
+    internal static bool KeepsReadingPosition(double previousOffset) => previousOffset > AtTopTolerance;
 }

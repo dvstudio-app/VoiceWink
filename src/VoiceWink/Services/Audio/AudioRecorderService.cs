@@ -701,7 +701,13 @@ public sealed class AudioRecorderService : IDisposable
             }
             catch (Exception ex)
             {
-                Logger.Error(ex, "Failed to start recording");
+                // REL-42: a cancel of THIS start's token is the user's action (push-to-talk
+                // release, Esc, the pill's ×). Error is what the Sentry sink forwards, and this
+                // catch runs before the view-model's. Any other failure stays Error.
+                if (ex is OperationCanceledException && ct.IsCancellationRequested)
+                    Logger.Information("Recording start cancelled ({ErrorType})", ex.GetType().Name);
+                else
+                    Logger.Error(ex, "Failed to start recording");
                 // Resets state set ahead of StartRecording so callers don't see a bogus
                 // IsRecording=true. The live-session clear lives in the gated detach; the TCS
                 // null stays HERE and only here — a failed start's TCS will never be completed by
@@ -890,7 +896,11 @@ public sealed class AudioRecorderService : IDisposable
             }
             catch (Exception ex)
             {
-                Logger.Error(ex, "Failed to start warm recording");
+                // REL-42: the cold catch's rule — this line, not the view-model's, is the Sentry event.
+                if (ex is OperationCanceledException && ct.IsCancellationRequested)
+                    Logger.Information("Recording start cancelled ({ErrorType})", ex.GetType().Name);
+                else
+                    Logger.Error(ex, "Failed to start warm recording");
                 // Hand the claim to the funnel so latched standing teardown/rebuild still fires.
                 _warmClaim = claim;
                 claimAccepted = true;

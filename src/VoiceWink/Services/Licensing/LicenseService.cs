@@ -102,6 +102,11 @@ public sealed class LicenseService
     // targeted the OLD key, and erasing the new key's local state would sign the user
     // out of a license the server still considers active (Codex diff round 3).
     private int _stateEpoch;
+    // Non-zero while the stored key's blob is failing to decrypt and that failure has been
+    // reported (LIC-31): 1 = reported with the Sentry sink detached, 2 = reported with it attached.
+    // Interlocked: GetStoredLicenseKey runs concurrently from the hotkey gate, the page ticks and
+    // pool-thread validates, and exactly one of them must log the Error.
+    private int _storedKeyDecryptFaulted;
     private readonly string _baseUrl;
     // Product-binding policy (LIC-4): which LS store/product identities are OURS. Shipped
     // staged (empty, enforcing nothing) until Batch C armed it on 2026-09-10. Injectable so
@@ -1197,7 +1202,8 @@ public sealed class LicenseService
         // means a window exists, Active or Ended — an Ended one is never reset; a corrupt settings
         // stamp reads as never started everywhere, so a real start overwrites it (the same polarity
         // as every reader, self-review lens A 2026-09-03).
-        _trialWindow.Start(_clock());
+        if (_trialWindow.Start(_clock()))
+            Services.Updates.InstallSourceReporter.MarkTrialStartDue(_settings);
     }
 
     /// <summary>Returns a masked version of the stored key, e.g. <c>XXXX-****-****-ABCD</c>.</summary>
@@ -1960,11 +1966,26 @@ public sealed class LicenseService
         {
             var encrypted = Convert.FromBase64String(base64);
             var plain = ProtectedData.Unprotect(encrypted, LicenseKeyEntropy, DataProtectionScope.CurrentUser);
+            // A blob that decrypts ends a fault episode (a re-activation writes a fresh one), so
+            // a later failure is reported at Error again.
+            Interlocked.Exchange(ref _storedKeyDecryptFaulted, 0);
             return Encoding.UTF8.GetString(plain);
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to decrypt stored license key");
+            // Once per fault episode (LIC-31): every status read lands here, and since LNC-11 the
+            // Home page reads every 30 s — an Error per read was ~120 Sentry events an hour on a
+            // machine whose blob no longer decrypts (a settings folder copied to another account).
+            // Reported while the Sentry sink is detached, it is reported once more after it
+            // attaches, so a user who turns crash reporting on still sends it (the SentrySinkState
+            // rule the once-per-run budgets follow).
+            var report = SentrySinkState.Attached
+                ? Interlocked.Exchange(ref _storedKeyDecryptFaulted, 2) != 2
+                : Interlocked.CompareExchange(ref _storedKeyDecryptFaulted, 1, 0) == 0;
+            if (report)
+                Logger.Error(ex, "Failed to decrypt stored license key; repeats log at Debug until it decrypts again");
+            else
+                Logger.Debug("Stored license key still does not decrypt ({ExType})", ex.GetType().Name);
             return "";
         }
     }

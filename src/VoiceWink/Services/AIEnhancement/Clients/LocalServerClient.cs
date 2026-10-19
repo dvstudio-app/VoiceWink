@@ -55,7 +55,7 @@ internal sealed class LocalServerClient
             return await EnhanceOnceAsync(systemPrompt, userText, ct).ConfigureAwait(false);
         }
         // Caught UNCONDITIONALLY, cancellation checked inside: a stop-to-skip or supersede that lands
-        // with the 5xx must surface as the cancellation it is, never as "AI enhancement failed".
+        // with the 5xx must surface as the cancellation it is, never as an enhancement failure.
         catch (ProviderApiException ex) when ((int?)ex.StatusCode is >= 500 and <= 599)
         {
             ct.ThrowIfCancellationRequested();
@@ -65,20 +65,28 @@ internal sealed class LocalServerClient
         return await EnhanceOnceAsync(systemPrompt, userText, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// LAI-15: both protocols stream, so a stuck model fails within its stall window
+    /// (<see cref="LocalReplyStream"/>). The status arrives before any of the body, so the retry above
+    /// still means "nothing was received": a stall (<see cref="LocalReplyStalledException"/>) or a
+    /// connection lost mid-reply is never retried.
+    /// </summary>
     private Task<string> EnhanceOnceAsync(string systemPrompt, string userText, CancellationToken ct)
         => _config.LocalApi == LocalServerApi.Ollama
             ? OllamaChatAsync(systemPrompt, userText, ct)
             // The OpenAI-compatible body is the generic one OpenAICompatibleClient already builds
-            // for every non-OpenAI provider; only the HttpClient differs.
-            : new OpenAICompatibleClient(_http, _config).EnhanceAsync(systemPrompt, userText, ct);
+            // for every non-OpenAI provider, streamed; only the HttpClient differs.
+            : OpenAICompatibleClient.StreamLocalChatAsync(_http, _config, systemPrompt, userText,
+                (why, body) => MalformedStream(LocalServerApi.OpenAICompatible, why, body),
+                StreamReportedError, ct);
 
     /// <summary>
     /// The Ollama <c>/api/chat</c> request body. <c>think:false</c> turns reasoning off on a
     /// thinking model (Ollama only REQUIRES the thinking capability when think is true, so a
-    /// non-thinking model accepts it); <c>num_predict</c> is the output cap; <c>stream:false</c>
-    /// returns one JSON object.
+    /// non-thinking model accepts it); <c>num_predict</c> is the output cap. The dictation's chat
+    /// streams (LAI-15, one JSON object per line); <c>stream:false</c> returns one JSON object.
     /// </summary>
-    internal static string BuildOllamaChatBody(AIProviderConfig config, string systemPrompt, string userText)
+    internal static string BuildOllamaChatBody(AIProviderConfig config, string systemPrompt, string userText, bool stream = false)
         => JsonSerializer.Serialize(new
         {
             model = config.ModelName,
@@ -87,7 +95,7 @@ internal sealed class LocalServerClient
                 new { role = "system", content = systemPrompt },
                 new { role = "user", content = userText }
             },
-            stream = false,
+            stream,
             think = false,
             keep_alive = OllamaKeepAlive,
             options = new
@@ -103,12 +111,55 @@ internal sealed class LocalServerClient
         var endpoint = $"{_config.GetBaseUrl().TrimEnd('/')}/api/chat";
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
         AddAuthorization(request, _config);
-        request.Content = new StringContent(BuildOllamaChatBody(_config, systemPrompt, userText), Encoding.UTF8, "application/json");
+        request.Content = new StringContent(BuildOllamaChatBody(_config, systemPrompt, userText, stream: true), Encoding.UTF8, "application/json");
 
-        using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
-        await response.EnsureSuccessOrLogAndThrowAsync("Local server", Logger, ct).ConfigureAwait(false);
-        var json = await response.Content.ReadAsStringLimitedAsync(ct).ConfigureAwait(false);
-        return ParseOllamaChat(json, _config.ModelName);
+        var result = await LocalReplyStream.SendAsync(
+            _http, request, LocalStreamFraming.Ndjson, _config.ReplyWindows, systemPrompt.Length + userText.Length, _config.ReplyProgress,
+            (response, token) => response.EnsureSuccessOrLogAndThrowAsync("Local server", Logger, token),
+            (why, body) => MalformedStream(LocalServerApi.Ollama, why, body),
+            StreamReportedError, ct).ConfigureAwait(false);
+        return result.WholeBody is { } json
+            ? ParseOllamaChat(json, _config.ModelName)
+            : ResolveStreamedOllama(result.Streamed!, _config.ModelName);
+    }
+
+    /// <summary>
+    /// LAI-15: an assembled Ollama stream → today's outcomes. LAI-14's accounting comes from the final
+    /// <c>done:true</c> object (where Ollama puts its durations), with the thinking length summed over
+    /// every chunk, and is logged BEFORE the length refusal, as the one-object path does.
+    /// </summary>
+    internal static string ResolveStreamedOllama(LocalStreamedReply reply, string model)
+    {
+        var stats = reply.FinalObject is { } final
+            ? OllamaReplyStats.Read(final, reply.ThinkingRawChars > 0 ? reply.ThinkingRawChars : null)
+            : default;
+        LogReplyStats(model, stats);
+        if (reply.FinishReason == "length")
+        {
+            Logger.Warning("Enhancement output truncated at num_predict (done_reason=length, model={Model})", model);
+            throw new InvalidOperationException(OpenAICompatibleClient.TruncatedReason);
+        }
+        // A stream that ends without any message.content is not a chat reply — the one-object path's
+        // wrong-server outcome, never an empty reply that pastes the raw text silently (diff r1, both seats).
+        if (!reply.ContentSeen)
+            throw NotThisKindOfServer(LocalServerApi.Ollama, "message", "(streamed)");
+        return reply.Content;
+    }
+
+    /// <summary>A stream that is not the reply we expect: the user's configuration, so Warning, with
+    /// the same message as a malformed one-object reply.</summary>
+    private static InvalidOperationException MalformedStream(LocalServerApi api, string why, string body)
+    {
+        Logger.Warning("Local server stream {Why}; Body={Body}", why, body.TruncateForLog());
+        return new InvalidOperationException(NoServerMessage(api));
+    }
+
+    /// <summary>The server reported an error inside the stream. Its text goes to the local log only,
+    /// under the redacted <c>{Body}</c> name.</summary>
+    private static InvalidOperationException StreamReportedError(string body)
+    {
+        Logger.Warning("Local server reported an error during the reply; Body={Body}", body.TruncateForLog());
+        return new InvalidOperationException(LocalReplyStream.StreamErrorReason);
     }
 
     /// <summary>
@@ -140,10 +191,7 @@ internal sealed class LocalServerClient
             // LAI-14: where the time went - counts and durations only, never the reply's text.
             // Before the length refusal, so a reply that ran out of tokens (thinking that leaked
             // through think:false would) is accounted for too.
-            var stats = OllamaReplyStats.Read(root);
-            Logger.Information(
-                "Local server reply ({Model}): {EvalTokens} tokens in {EvalMs} ms, prompt {PromptTokens} tokens in {PromptMs} ms, load {LoadMs} ms, thinking {ThinkingChars} raw chars",
-                model, stats.EvalTokens, stats.EvalMs, stats.PromptTokens, stats.PromptMs, stats.LoadMs, stats.ThinkingChars);
+            LogReplyStats(model, OllamaReplyStats.Read(root));
         }
         if (root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("done_reason", out var doneReason)
@@ -174,18 +222,20 @@ internal sealed class LocalServerClient
     internal readonly record struct OllamaReplyStats(
         long? EvalTokens, long? EvalMs, long? PromptTokens, long? PromptMs, long? LoadMs, int? ThinkingChars)
     {
-        internal static OllamaReplyStats Read(JsonElement root)
+        /// <summary><paramref name="thinkingChars"/>: a streamed reply's thinking, summed over its
+        /// chunks (LAI-15) — the final object carries only its own.</summary>
+        internal static OllamaReplyStats Read(JsonElement root, int? thinkingChars = null)
         {
             if (root.ValueKind != JsonValueKind.Object)
                 return default;
-            int? thinking = root.TryGetProperty("message", out var message)
+            int? thinking = thinkingChars ?? (root.TryGetProperty("message", out var message)
                 && message.ValueKind == JsonValueKind.Object
                 && message.TryGetProperty("thinking", out var t)
                 && t.ValueKind == JsonValueKind.String
                 // The raw (escaped) length: GetString() throws on a lone surrogate escape, and a
                 // diagnostic must never fail a good reply. Includes the two quotes; close enough.
                 ? t.GetRawText().Length
-                : null;
+                : null);
             return new OllamaReplyStats(
                 Number(root, "eval_count"),
                 Millis(root, "eval_duration"),
@@ -201,6 +251,12 @@ internal sealed class LocalServerClient
         private static long? Millis(JsonElement root, string name)
             => Number(root, name) is { } ns ? ns / 1_000_000 : null;
     }
+
+    /// <summary>LAI-14's one line per reply: counts and durations only, never the reply's text.</summary>
+    private static void LogReplyStats(string model, OllamaReplyStats stats)
+        => Logger.Information(
+            "Local server reply ({Model}): {EvalTokens} tokens in {EvalMs} ms, prompt {PromptTokens} tokens in {PromptMs} ms, load {LoadMs} ms, thinking {ThinkingChars} raw chars",
+            model, stats.EvalTokens, stats.EvalMs, stats.PromptTokens, stats.PromptMs, stats.LoadMs, stats.ThinkingChars);
 
     /// <summary>
     /// LAI-8: an Ollama load-only request — <c>/api/generate</c> with no prompt loads the model and
@@ -367,10 +423,13 @@ internal sealed class LocalServerClient
     private static InvalidOperationException NotThisKindOfServer(LocalServerApi api, string arrayName, string json)
     {
         Logger.Warning("Local server reply has no '{Field}' of the expected shape; Body={Body}", arrayName, json.TruncateForLog());
-        return new InvalidOperationException(api == LocalServerApi.Ollama
-            ? "No Ollama server answered at this address"
-            : "No OpenAI-compatible server answered at this address");
+        return new InvalidOperationException(NoServerMessage(api));
     }
+
+    private static string NoServerMessage(LocalServerApi api)
+        => api == LocalServerApi.Ollama
+            ? "No Ollama server answered at this address"
+            : "No OpenAI-compatible server answered at this address";
 
     /// <summary>
     /// "embed" anywhere in the id, case-insensitive: nomic-embed-text, mxbai-embed-large,

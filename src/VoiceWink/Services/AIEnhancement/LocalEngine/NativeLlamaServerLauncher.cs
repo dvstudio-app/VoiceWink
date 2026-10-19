@@ -20,6 +20,10 @@ internal interface ILlamaServerChild : IDisposable
     uint Pid { get; }
     bool HasExited { get; }
 
+    /// <summary>TRN-79b: the exit code once the child has exited, null while it runs or after
+    /// Dispose — read it before the child is retired.</summary>
+    uint? ExitCode => null;
+
     /// <summary>The loopback port this child listens on, from the kernel's TCP table keyed by its
     /// PID; null until the socket opens.</summary>
     int? TryReadListeningPort();
@@ -187,6 +191,7 @@ internal sealed class NativeLlamaServerLauncher : ILlamaServerLauncher
     {
         public uint Pid => handle.Pid;
         public bool HasExited => handle.HasExited;
+        public uint? ExitCode => handle.ExitCode;
         public int? TryReadListeningPort() => handle.TryReadListeningPort();
         public void Kill() => handle.Kill();
         public bool WaitForExit(TimeSpan timeout) => handle.WaitForExit(timeout);

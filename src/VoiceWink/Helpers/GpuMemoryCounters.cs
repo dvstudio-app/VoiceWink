@@ -142,6 +142,14 @@ internal sealed class GpuMemoryCounters : IGpuMemoryProbe
     public long? ProcessDedicatedUsage(uint pid, long luid)
         => Bounded(() => SumInstances(@"\GPU Process Memory(*)\Dedicated Usage", InstancePrefix(pid, luid)));
 
+    /// <summary>LAI-15: one process's dedicated or shared graphics memory summed over every adapter
+    /// (an integrated GPU's model sits in shared memory), for the stalled-reply memory line.
+    /// <paramref name="shared"/> picks the counter. Null when unknown.</summary>
+    internal static long? ProcessUsageOnAllAdapters(uint pid, bool shared)
+        => Bounded(() => SumInstances(
+            shared ? @"\GPU Process Memory(*)\Shared Usage" : @"\GPU Process Memory(*)\Dedicated Usage",
+            string.Create(CultureInfo.InvariantCulture, $"pid_{pid}_")));
+
     /// <summary>The read on the pool, waited for at most <see cref="ReadBudget"/>: the callers hold
     /// the engine's slot or its process gate. A read that overruns keeps running and frees its own
     /// handles when it ends; its answer is dropped.</summary>

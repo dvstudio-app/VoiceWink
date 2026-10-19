@@ -924,7 +924,9 @@ public sealed class HistoryPage : Page
     private void RestoreViewport(double previousOffset, int? previousFirstId)
     {
         if (_listScroll == null || _listPanel == null) return;
-        if (previousOffset <= 0 && previousFirstId == null) return;
+        // HIS-12: at the top the rebuilt list already starts at offset 0 with any new row first,
+        // which is where it belongs.
+        if (!HistoryViewportRestore.KeepsReadingPosition(previousOffset)) return;
 
         var insertedAbove = HistoryViewportRestore.InsertedAbove(
             _viewModel.Transcriptions.Select(t => t.Id).ToList(), previousFirstId, _renderedCount);

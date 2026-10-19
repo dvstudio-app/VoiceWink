@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.117.415] - 2026-10-19
+
+- An AI reply that refuses, answers or switches language instead of cleaning up your dictation is no longer pasted, with any AI provider.
+- A discarded or cut-off AI reply now shows an amber notice instead of a red error.
+- Starting the free trial, or installing from voicewink.app, now tells DV Studio so once; the updated privacy policy explains it, and you'll be asked to accept it once.
+
 ## [1.116.414] - 2026-10-17
 
 - A model download that gets no answer from the server now retries within 30 seconds instead of sitting at 0 %, and its progress moves sooner.
