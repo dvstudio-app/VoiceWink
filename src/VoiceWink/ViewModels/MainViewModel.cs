@@ -3026,7 +3026,7 @@ public partial class MainViewModel : ObservableObject
                 // the destination: "Done" is reserved for a paste that actually LANDED (owner,
                 // 2026-08-10), and nothing was pasted here. Same rule as "Image on clipboard".
                 redoTextSuccessStatus = "Text copied";
-                if (!await _clipboard.SetClipboardAsync(enhanced))
+                if (!await _clipboard.SetClipboardForPasteAsync(enhanced))
                 {
                     // Copy-only failure: the text is NOT on the clipboard — a real error.
                     // Shares the paste path's constant so the same failure never reads two ways.
@@ -6019,7 +6019,7 @@ public partial class MainViewModel : ObservableObject
                 Logger.Information(
                     "No paste target ({Reason}) — copying the transcript to the clipboard",
                     _pasteSuppressedByPicker ? "picker open" : "none captured");
-                pasteResult = await _clipboard.SetClipboardAsync(textToPaste)
+                pasteResult = await _clipboard.SetClipboardForPasteAsync(textToPaste)
                     ? PasteResult.Fail(
                         _pasteSuppressedByPicker ? PasteAttemptOutcome.NoTargetPickerOpen : PasteAttemptOutcome.NoTarget,
                         _pasteSuppressedByPicker

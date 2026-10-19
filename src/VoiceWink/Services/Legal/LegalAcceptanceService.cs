@@ -13,9 +13,11 @@ public sealed record LegalAcceptanceState(
     string? AcceptedEulaHash,
     string? AcceptedPrivacyHash)
 {
-    public bool RequiresAcceptance =>
-        !string.Equals(AcceptedEulaHash, CurrentEulaHash, StringComparison.Ordinal) ||
-        !string.Equals(AcceptedPrivacyHash, CurrentPrivacyHash, StringComparison.Ordinal);
+    public bool EulaChanged => !string.Equals(AcceptedEulaHash, CurrentEulaHash, StringComparison.Ordinal);
+
+    public bool PrivacyChanged => !string.Equals(AcceptedPrivacyHash, CurrentPrivacyHash, StringComparison.Ordinal);
+
+    public bool RequiresAcceptance => EulaChanged || PrivacyChanged;
 
     public bool IsFirstAcceptance =>
         AcceptedEulaHash is null && AcceptedPrivacyHash is null;
@@ -48,7 +50,7 @@ public sealed class LegalAcceptanceService
     private static ILogger Logger => Log.ForContext<LegalAcceptanceService>();
 
     public const string EulaAssetPath = "Assets/Legal/eula-v5.md";
-    public const string PrivacyAssetPath = "Assets/Legal/privacy-v5.md";
+    public const string PrivacyAssetPath = "Assets/Legal/privacy-v6.md";
 
     private readonly SettingsService _settings;
 

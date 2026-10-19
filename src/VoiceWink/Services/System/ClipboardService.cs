@@ -155,18 +155,22 @@ public sealed class ClipboardService
     {
         private readonly List<(uint format, byte[] data)>? _formats;
 
-        private ClipboardSnapshot(List<(uint format, byte[] data)>? formats, bool isEmpty)
+        // A42 D4: the captured formats that are clipboard-history markers (an earlier VoiceWink paste).
+        private readonly IReadOnlyCollection<uint> _markers;
+
+        private ClipboardSnapshot(List<(uint format, byte[] data)>? formats, bool isEmpty, IReadOnlyCollection<uint>? markers = null)
         {
             _formats = formats;
             IsEmpty = isEmpty;
+            _markers = markers ?? Array.Empty<uint>();
         }
 
         public bool IsEmpty { get; }
 
         public static ClipboardSnapshot Empty { get; } = new(null, isEmpty: true);
 
-        public static ClipboardSnapshot FromFormats(List<(uint format, byte[] data)> formats)
-            => new(formats, isEmpty: false);
+        public static ClipboardSnapshot FromFormats(List<(uint format, byte[] data)> formats, IReadOnlyCollection<uint>? markers = null)
+            => new(formats, isEmpty: false, markers);
 
         public bool Restore()
         {
@@ -214,37 +218,50 @@ public sealed class ClipboardService
                 return false;
             }
 
-            var restoredCount = 0;
-            foreach (var (format, data) in _formats)
+            return RestoreFormats(_formats, _markers, SetFormatUnderOpenClipboard) > 0;
+        }
+
+        /// <summary>
+        /// Puts <paramref name="formats"/> back through <paramref name="set"/> and returns how many landed.
+        /// A42 D4 (Codex diff r1 B1): history markers go FIRST and a marker that fails stops the restore
+        /// (returns 0) before any other format is published, so an earlier VoiceWink paste never comes back
+        /// unmarked. Any other format that fails is skipped, as before. Pure, for tests.
+        /// </summary>
+        internal static int RestoreFormats(
+            IReadOnlyList<(uint format, byte[] data)> formats, IReadOnlyCollection<uint> markers, Func<uint, byte[], bool> set)
+        {
+            foreach (var (format, data) in formats)
+                if (markers.Contains(format) && !set(format, data)) return 0;
+
+            var restoredCount = formats.Count(f => markers.Contains(f.format));
+            foreach (var (format, data) in formats)
             {
-                var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)data.Length);
-                if (hGlobal == IntPtr.Zero) continue;
+                if (markers.Contains(format)) continue;
+                if (set(format, data)) restoredCount++;
+                else Log.ForContext<ClipboardService>().Debug("Clipboard restore: skipped format {Format}", format);
+            }
+            return restoredCount;
+        }
 
-                var ptr = NativeInterop.GlobalLock(hGlobal);
-                if (ptr == IntPtr.Zero)
-                {
-                    NativeInterop.GlobalFree(hGlobal);
-                    continue;
-                }
+        private static bool SetFormatUnderOpenClipboard(uint format, byte[] data)
+        {
+            var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)data.Length);
+            if (hGlobal == IntPtr.Zero) return false;
 
-                Marshal.Copy(data, 0, ptr, data.Length);
-                NativeInterop.GlobalUnlock(hGlobal);
-
-                // SetClipboardData takes ownership of hGlobal — do NOT free it
-                if (NativeInterop.SetClipboardData(format, hGlobal) == IntPtr.Zero)
-                {
-                    // Failed to set this format — free the memory and skip
-                    NativeInterop.GlobalFree(hGlobal);
-                    Log.ForContext<ClipboardService>().Debug(
-                        "Clipboard restore: skipped format {Format}", format);
-                }
-                else
-                {
-                    restoredCount++;
-                }
+            var ptr = NativeInterop.GlobalLock(hGlobal);
+            if (ptr == IntPtr.Zero)
+            {
+                NativeInterop.GlobalFree(hGlobal);
+                return false;
             }
 
-            return restoredCount > 0;
+            Marshal.Copy(data, 0, ptr, data.Length);
+            NativeInterop.GlobalUnlock(hGlobal);
+
+            // SetClipboardData takes ownership of hGlobal — do NOT free it on success
+            if (NativeInterop.SetClipboardData(format, hGlobal) != IntPtr.Zero) return true;
+            NativeInterop.GlobalFree(hGlobal);
+            return false;
         }
 
         public void Dispose()
@@ -262,7 +279,7 @@ public sealed class ClipboardService
         await _writeLease.WaitAsync().ConfigureAwait(false);
         try
         {
-            return SetClipboardCoreUnderLease(text);
+            return SetClipboardCoreUnderLease(text, excludeFromHistory: false);
         }
         finally
         {
@@ -271,13 +288,107 @@ public sealed class ClipboardService
     }
 
     /// <summary>
-    /// Set clipboard text. Lock-free core — call only while holding <see cref="_writeLease"/>
-    /// (public callers go through <see cref="SetClipboardAsync"/>).
+    /// Set clipboard text that stands in for a paste VoiceWink could not make (no target window, a
+    /// redo with no window), marked like a paste so Windows clipboard history and cloud clipboard do
+    /// not keep or sync it (A42 D4). A user's own "Copy" button uses <see cref="SetClipboardAsync"/>.
     /// </summary>
-    private bool SetClipboardCoreUnderLease(string text)
+    public async Task<bool> SetClipboardForPasteAsync(string text)
+    {
+        await _writeLease.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            return SetClipboardCoreUnderLease(text, excludeFromHistory: true);
+        }
+        finally
+        {
+            _writeLease.Release();
+        }
+    }
+
+    /// <summary>
+    /// The registered formats that keep VoiceWink's pastes out of Windows clipboard history and
+    /// cloud clipboard (A42 D4; privacy v6 §2), each set to a DWORD 0 beside the text — Microsoft's
+    /// "Cloud Clipboard and Clipboard History Formats". Deliberately NOT
+    /// <c>ExcludeClipboardContentFromMonitorProcessing</c>: that hides the content from EVERY
+    /// clipboard listener, Remote Desktop / Citrix / VM clipboard redirection included, so a paste
+    /// into a remote session window would stop working. These two say exactly what the policy says.
+    /// </summary>
+    internal static readonly string[] HistoryExclusionFormats = ["CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"];
+
+    /// <summary>
+    /// The registered ids of <see cref="HistoryExclusionFormats"/>, or null when any cannot be registered.
+    /// Called BEFORE the clipboard is opened, so the likely failure leaves the user's clipboard untouched
+    /// (self-review, VoiceWink lens). Native call passed in for tests.
+    /// </summary>
+    internal static uint[]? RegisterHistoryExclusionFormats(Func<string, uint> register)
+    {
+        var ids = new uint[HistoryExclusionFormats.Length];
+        for (var i = 0; i < ids.Length; i++)
+        {
+            ids[i] = register(HistoryExclusionFormats[i]);
+            if (ids[i] != 0) continue;
+            Logger.Write(global::VoiceWink.Helpers.SessionErrorBudget.LevelFor("clipboard-history-marker"),
+                "Could not register {Format} (win32 error {Win32Error}); the text was not put on the clipboard",
+                HistoryExclusionFormats[i], Marshal.GetLastWin32Error());
+            return null;
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// Sets every marker to a DWORD 0, in order, and says whether ALL were set. FAILS CLOSED (Codex
+    /// plan r1 B1): the caller publishes the text only on true, so dictated text never sits unmarked on
+    /// a clipboard that history or cloud sync may keep. The dictation is not lost — the caller reports
+    /// a clipboard failure and the transcript stays in the app (<c>LastTranscription</c>, History).
+    /// Each failure point logs its own error (<see cref="SetDwordZeroUnderOpenClipboard"/>).
+    /// </summary>
+    internal static bool TrySetHistoryExclusionMarkers(IReadOnlyList<uint> formats, Func<uint, bool> setDwordZero)
+    {
+        foreach (var format in formats)
+            if (!setDwordZero(format)) return false;
+        return true;
+    }
+
+    /// <summary>Whether a snapshot captured every history marker the clipboard carried (A42 D4, Codex diff r1 B1).</summary>
+    internal static bool SnapshotKeepsMarkers(IEnumerable<uint> presentMarkers, IEnumerable<uint> capturedFormats)
+    {
+        var captured = capturedFormats.ToHashSet();
+        return presentMarkers.All(captured.Contains);
+    }
+
+    /// <summary>One registered format set to a DWORD 0. Call only with the clipboard open.</summary>
+    private static bool SetDwordZeroUnderOpenClipboard(uint format)
+    {
+        var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)sizeof(int));
+        var ptr = hGlobal == IntPtr.Zero ? IntPtr.Zero : NativeInterop.GlobalLock(hGlobal);
+        if (ptr == IntPtr.Zero)
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (hGlobal != IntPtr.Zero) NativeInterop.GlobalFree(hGlobal);
+            Logger.Write(global::VoiceWink.Helpers.SessionErrorBudget.LevelFor("clipboard-history-marker"),
+                "Could not allocate the clipboard history marker (win32 error {Win32Error}); the text was not put on the clipboard", error);
+            return false;
+        }
+        Marshal.WriteInt32(ptr, 0);
+        NativeInterop.GlobalUnlock(hGlobal);
+        // SetClipboardHandle logs a SetClipboardData failure with its own error code.
+        return SetClipboardHandle(format, hGlobal, "history marker");
+    }
+
+    /// <summary>
+    /// Set clipboard text. Lock-free core — call only while holding <see cref="_writeLease"/>
+    /// (public callers go through <see cref="SetClipboardAsync"/> and <see cref="SetClipboardForPasteAsync"/>). <paramref name="excludeFromHistory"/>
+    /// marks text VoiceWink pastes, or leaves in place of a paste (A42 D4).
+    /// </summary>
+    private bool SetClipboardCoreUnderLease(string text, bool excludeFromHistory)
     {
         try
         {
+            uint[]? markers = null;
+            if (excludeFromHistory
+                && (markers = RegisterHistoryExclusionFormats(NativeInterop.RegisterClipboardFormat)) is null)
+                return false;
+
             if (!TryOpenClipboard())
             {
                 Logger.Warning("Failed to open clipboard after retries");
@@ -287,6 +398,12 @@ public sealed class ClipboardService
             try
             {
                 NativeInterop.EmptyClipboard();
+
+                // A42 D4: the markers go on FIRST and must all succeed, so the text is never published
+                // unmarked (fail closed). A snapshot restore puts captured markers back with the rest,
+                // because CaptureSnapshotCore keeps every HGLOBAL format.
+                if (markers is not null && !TrySetHistoryExclusionMarkers(markers, SetDwordZeroUnderOpenClipboard))
+                    return false;
 
                 var bytes = global::System.Text.Encoding.Unicode.GetBytes(text + "\0");
                 var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)bytes.Length);
@@ -727,7 +844,7 @@ public sealed class ClipboardService
         => new(
             PastedText: text,
             Before: baseline,
-            RewriteClipboardUnderLease: SetClipboardCoreUnderLease,
+            RewriteClipboardUnderLease: pasted => SetClipboardCoreUnderLease(pasted, excludeFromHistory: true),
             ProofRequired: proofRequired);
 
     /// <summary>
@@ -837,7 +954,7 @@ public sealed class ClipboardService
 
         // The clipboard is set BEFORE any target gate below, so every gated exit keeps the
         // "text left on clipboard for manual Ctrl+V" guarantee.
-        if (!SetClipboardCoreUnderLease(text))
+        if (!SetClipboardCoreUnderLease(text, excludeFromHistory: true))
         {
             // One event per run: the lines above name the cause, and a PC that refuses every
             // clipboard write would otherwise file one Sentry event per dictation.
@@ -2054,6 +2171,13 @@ public sealed class ClipboardService
 
             try
             {
+                // A42 D4 (Codex diff r1 B1): which history markers the clipboard carries now — an
+                // earlier VoiceWink paste. A snapshot that failed to capture one is refused below.
+                // Formats that cannot be registered cannot be checked: no snapshot (fail closed).
+                var markers = RegisterHistoryExclusionFormats(NativeInterop.RegisterClipboardFormat);
+                if (markers is null) return null;
+                var presentMarkers = markers.Where(NativeInterop.IsClipboardFormatAvailable).ToArray();
+
                 // Standard formats that return GDI/OS handles instead of HGLOBAL.
                 // Calling GlobalLock on these causes a native access violation.
                 // Windows re-synthesizes them from primary formats when needed.
@@ -2101,8 +2225,14 @@ public sealed class ClipboardService
                     return ClipboardSnapshot.Empty;
                 }
 
+                if (!SnapshotKeepsMarkers(presentMarkers, formats.Select(f => f.format)))
+                {
+                    Logger.Warning("Clipboard snapshot: a clipboard history marker could not be captured; no snapshot");
+                    return null;
+                }
+
                 Logger.Debug("Clipboard snapshot captured: {Count} format(s)", formats.Count);
-                return ClipboardSnapshot.FromFormats(formats);
+                return ClipboardSnapshot.FromFormats(formats, presentMarkers);
             }
             finally
             {

@@ -30,7 +30,7 @@ public readonly record struct GpuAdapterDecision(
 ///
 /// <para><b>Why it exists.</b> Both local engines take the FIRST GPU-or-iGPU device in ggml's
 /// registry, which is the Vulkan loader's enumeration order (whisper.cpp
-/// <c>whisper_backend_init_gpu</c> at the shipped pin; parakeet.cpp v0.5.0 <c>Backend::Backend</c>;
+/// <c>whisper_backend_init_gpu</c> at the shipped pin; parakeet.cpp v0.6.1 <c>Backend::Backend</c>;
 /// ggml-vulkan's default device set has included integrated GPUs, in enumeration order, since
 /// llama.cpp #15947). On a two-GPU laptop that order follows the machine's state at enumeration
 /// time — the first field bundle from one (2026-09-05, a ThinkPad X1 Extreme) shows the SAME

@@ -9,21 +9,26 @@ using VoiceWink.Services.Http;
 namespace VoiceWink.Services.Updates;
 
 /// <summary>
-/// The installer's report (Privacy Policy §4.5, addendum A39; §4.6 for the website): ONE attempt, from
-/// Velopack's install hook, by every build on a public channel — the Store channel's build at
-/// <c>https://updates.voicewink.app/&lt;channel&gt;/install-source/msstore/installer</c>, any other public
-/// build (the website's) at <c>https://updates.voicewink.app/report/&lt;channel&gt;/installer</c>.
+/// The installer's report (Privacy Policy §4.5, addendum A39): ONE attempt, from Velopack's install hook,
+/// by the Store channel's build, at
+/// <c>https://updates.voicewink.app/&lt;channel&gt;/install-source/msstore/installer</c>.
+///
+/// <para><b>The website's build no longer reports here</b> (A42 D1, owner 2026-10-19): its report
+/// (<c>https://updates.voicewink.app/report/&lt;channel&gt;/installer</c>, §4.6) is sent by the app, once,
+/// right after the user accepts the privacy policy in first-run setup — <see cref="WebsiteInstallReport"/>.
+/// The hook skips it (<see cref="SkipReason"/>) and writes its one line saying so. This type keeps the
+/// request itself (<see cref="SendAsync"/>) so both reports send exactly the same request.</para>
 ///
 /// <para><b>Where it runs.</b> Inside <c>OnAfterInstallFastCallback</c> — after Velopack has placed the
 /// files and before the installation has finished, so it does not confirm that the installation
 /// succeeded; it runs before VoiceWink first starts, and therefore before first-run setup offers the
 /// automatic-check choice. Pure managed code: no WinUI, no DI container, no Serilog (none exists in the
-/// hook). It runs on EVERY execution of a public channel's Setup — a Store install, a website download, a
-/// Microsoft certification run, a reinstall — and never on an update
-/// (<c>OnAfterUpdateFastCallback</c> does not call it).</para>
+/// hook). It runs on EVERY execution of a public channel's Setup — a Store install, a Microsoft
+/// certification run, a reinstall; a website download only writes its skip line — and never on an
+/// update (<c>OnAfterUpdateFastCallback</c> does not call it).</para>
 ///
 /// <para><b>Gates, all before any network</b> (<see cref="SkipReason"/>): update checks built in
-/// (<see cref="UpdateCheckFeature.IsEnabled"/>); a configured, public feed; and settings left by an earlier installation — read through
+/// (<see cref="UpdateCheckFeature.IsEnabled"/>); a configured, public feed; the Store channel's build; and settings left by an earlier installation — read through
 /// the one pre-boot reader — that do not say automatic checks are off and are not unreadable. A first
 /// install has no settings file and sends; a file without the key sends (the shipped default is on).</para>
 ///
@@ -53,23 +58,29 @@ internal static class InstallerReport
     /// <summary>The outcome when the attempt had not ended by the deadline, or ended BY it.</summary>
     internal const string TimedOut = "failed (TimeoutException)";
 
-    /// <summary>The report's address: the Store channel's frozen path, or the §4.6 website path for any other public channel.</summary>
+    /// <summary>The report's address: the Store channel's frozen path (the hook), or the §4.6 website path
+    /// for any other public channel (<see cref="WebsiteInstallReport"/>, sent by the app since A42 D1).</summary>
     public static Uri BuildUri(string channel, bool isStoreChannel) => isStoreChannel
         ? new($"https://updates.voicewink.app/{channel}/{ReportPath}", UriKind.Absolute)
         : InstallSourceReporter.ReportUri(channel, "installer");
 
+    /// <summary>The hook's skip reason for a website build, whose report the app sends after acceptance (A42 D1).</summary>
+    internal const string SentAfterAcceptance = "sent by the app after the privacy policy is accepted";
+
     /// <summary>
     /// Why the report is not sent, or null when it is. The cheap structural gates first; the settings
     /// file is read only once they all pass (<paramref name="readAutomaticChecks"/> is not called
-    /// otherwise), so a dev or tester build never opens it.
+    /// otherwise), so a dev, tester or website build never opens it.
     /// </summary>
     internal static string? SkipReason(
         bool updateCheckBuilt,
         bool publicFeedConfigured,
+        bool isStoreChannel,
         Func<PreBootSetting> readAutomaticChecks)
     {
         if (!updateCheckBuilt) return "update checks not built in";
         if (!publicFeedConfigured) return "no public update feed";
+        if (!isStoreChannel) return SentAfterAcceptance;
         return readAutomaticChecks() switch
         {
             PreBootSetting.False => "automatic update checks are off",
@@ -126,11 +137,28 @@ internal static class InstallerReport
             var skip = SkipReason(
                 inputs.UpdateCheckBuilt,
                 inputs.PublicFeedConfigured,
+                inputs.IsStoreChannel,
                 () => PreBootSettingReader.Read(inputs.SettingsFilePath, AppDefaults.AutomaticUpdateCheckEnabled));
             if (skip is not null) return "skipped (" + skip + ")";
+        }
+        catch (Exception ex)
+        {
+            return "failed (" + ex.GetType().Name + ")";
+        }
+        return await SendAsync(BuildUri(inputs.Channel, inputs.IsStoreChannel), handlerFactory, deadline).ConfigureAwait(false);
+    }
 
+    /// <summary>
+    /// The one request both reports make: <c>GET</c>, <c>User-Agent: VoiceWink</c>, headers only, any
+    /// status ends it, never retried. Returns the outcome (<c>HTTP &lt;n&gt;</c>, <see cref="TimedOut"/> or
+    /// <c>failed (&lt;ExceptionType&gt;)</c>), never an address. Never throws.
+    /// </summary>
+    internal static async Task<string> SendAsync(Uri uri, Func<HttpMessageHandler> handlerFactory, CancellationToken deadline)
+    {
+        try
+        {
             using var client = new HttpClient(handlerFactory(), disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
-            using var request = new HttpRequestMessage(HttpMethod.Get, BuildUri(inputs.Channel, inputs.IsStoreChannel));
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             request.Headers.TryAddWithoutValidation("User-Agent", InstallSourceReporter.UserAgent);
             using var response = await client
                 .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline)

@@ -476,7 +476,7 @@ public static class AppDefaults
     public const string LastSeenChangelogVersion = "lastSeenChangelogVersion";
 
     /// <summary>
-    /// The one-time install-source record (dvstudio-metrics #85; Privacy §4.5), written only by
+    /// The one-time install-source record (dvstudio-metrics #85; Privacy v5 §4.5, v6 §4), written only by
     /// <c>InstallSourceReporter</c>. <see cref="InstallSourceInstallStamp"/> is the Velopack install
     /// root's creation time ("O") the record belongs to — a different stamp means a new installation;
     /// <see cref="InstallSource"/> is <c>msstore</c> (since store funnel Part 2 written only by a Store
@@ -491,7 +491,7 @@ public static class AppDefaults
     public const string InstallSourceReport = "installSourceReport";
     public const string InstallSourceReportAttempts = "installSourceReportAttempts";
 
-    /// <summary>Privacy §4.6 trial-start report: <c>pending</c> | <c>sent</c>, written by <c>InstallSourceReporter</c>; app-managed, NOT in <see cref="Defaults"/>.</summary>
+    /// <summary>Privacy v5 §4.6 (v6 §4) trial-start report: <c>pending</c> | <c>sent</c>, written by <c>InstallSourceReporter</c>; app-managed, NOT in <see cref="Defaults"/>.</summary>
     public const string TrialStartReport = "trialStartReport";
 
     /// <summary>
@@ -589,7 +589,7 @@ public static class AppDefaults
         [IsHistoryEnabled] = true,
         // OFF since 2026-09-13 (owner decision, launch defaults audit): ON with a 7-day window
         // silently deleted every history entry a week old — and recycled the generated images
-        // with them — while privacy-v5 §7 promises local history "remains on your device until
+        // with them — while the privacy policy (v5 §7 then, v6 §9 now) promises local history "remains on your device until
         // you delete it". The toggle and its 1 h … 30 d window are unchanged for anyone who wants
         // a short retention; the REL-17 diagnostics sweep runs regardless of this switch.
         [IsTranscriptionCleanupEnabled] = false,

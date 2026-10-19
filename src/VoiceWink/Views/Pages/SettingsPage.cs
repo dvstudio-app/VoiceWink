@@ -1526,7 +1526,7 @@ public sealed class SettingsPage : Page
             //     (MainViewModel's preflight; the name is free text the user typed into the App
             //     Modes dialog's Name box, so it can be anything).
             //   - the DICTIONARY AND TRIGGER WORDS, which ride the traced query string of the
-            //     Deepgram / ElevenLabs / OpenAI transcription entries. privacy-v5.md §7 names both
+            //     Deepgram / ElevenLabs / OpenAI transcription entries. the privacy policy (v5 §7 at the time) named both
             //     and the report dialog's own advisory names the Dictionary half, so omitting them
             //     here made this surface NARROWER than the shipped policy — the fail-open direction
             //     for a consent line.
@@ -1577,12 +1577,8 @@ public sealed class SettingsPage : Page
         ToggleSwitch crashReportingSwitch = null!;
         var crashReporting = AppTheme.CreateToggleSetting(
             "Send crash reports",
-            // REL-30: kept in step with privacy-v5 §2's closed list and the onboarding consent
-            // step — this toggle is where consent is withdrawn or granted after onboarding.
-            // Match the policy's WORDING, not merely its categories: the adapter/driver plural
-            // is load-bearing (every display adapter is sent, not one), and it was singular here
-            // until the REL-30 diff round caught it. See the fuller note in OnboardingPage.
-            "Sends anonymous crash reports: stack traces, app version, OS version, your graphics adapter models and display driver versions, redacted log breadcrumbs. No transcriptions, no API keys.",
+            // The consent surface after onboarding: the same text as the onboarding step (A42 D6).
+            Helpers.CrashReportingConsent.ConsentText,
             settings.GetBool(AppDefaults.CrashReportingOptIn, false),
             v =>
             {

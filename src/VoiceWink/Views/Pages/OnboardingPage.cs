@@ -18,7 +18,7 @@ namespace VoiceWink.Views.Pages;
 /// <summary>
 /// Onboarding wizard — two paths since LNC-15 (2026-10-13), chosen on Welcome
 /// (<see cref="OnboardingStepFlow.Steps"/>): Express shows welcome, legal, language, hotkeys,
-/// license, help improve and done, and fills in the speech model and AI clean-up itself;
+/// license, help improve, updates and done, and fills in the speech model and AI clean-up itself;
 /// Advanced also shows transcription choice, transcription config and AI enhancement. All UI
 /// built in code to bypass PRI/XAML resource loading issues.
 ///
@@ -476,7 +476,19 @@ public sealed class OnboardingPage : Page
         {
             try
             {
+                // A42 D1: the website build's installation report goes out once, right after the FIRST
+                // acceptance is saved — read before Accept() records it, and fail closed (no report) if
+                // the state cannot be read. A failed save throws past the send, so it sends nothing.
+                bool firstAcceptance;
+                try { firstAcceptance = legal.GetState().IsFirstAcceptance; }
+                catch (Exception stateEx)
+                {
+                    Logger.Warning(stateEx, "Reading the legal acceptance state failed; no installation report");
+                    firstAcceptance = false;
+                }
                 legal.Accept();
+                if (firstAcceptance)
+                    Services.Updates.WebsiteInstallReport.SendAfterFirstAcceptance();
                 ShowStep(3);
             }
             catch (Exception ex)
@@ -2880,22 +2892,9 @@ public sealed class OnboardingPage : Page
 
         details.Children.Add(new TextBlock
         {
-            // REL-30: this list is CLOSED and it is the CONSENT surface — the Article 6(1)(a)
-            // consent the privacy policy relies on is given here, so a category added to
-            // privacy-v5 §2 must be added here in the same change, or the user consents to a
-            // list that is false by omission (self-review, privacy lens, Blocker).
-            //
-            // MATCH THE POLICY'S WORDING, not merely its categories — the plural is
-            // load-bearing and this line got it wrong once (Grok + Kimi diff r1, same Blocker
-            // independently). DisplayDriverSignature enumerates EVERY display adapter (cap 16),
-            // so a SINGULAR adapter/driver phrase describes less than what is sent on any
-            // iGPU+dGPU laptop, and consent obtained is then narrower than the processing it
-            // legitimises. Diff this string against privacy-v5 §2 verbatim.
-            //
-            // CrashReportConsentCopyTests pins all of this, incl. refusing the singular form by
-            // name across this whole file — which is why the rejected wording is described here
-            // rather than quoted.
-            Text = "What's sent: stack traces, app version, OS version, your graphics adapter models and display driver versions, redacted log breadcrumbs (last 50 entries). No transcriptions, no API keys, no license keys, no machine hostname.",
+            // The CONSENT surface (Art. 6(1)(a)), shared with Settings → "Send crash reports": one
+            // constant, written by category (A42 D6). CrashReportConsentCopyTests pins it.
+            Text = CrashReportingConsent.ConsentText,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
@@ -2906,7 +2905,7 @@ public sealed class OnboardingPage : Page
         details.Children.Add(new TextBlock
         {
             // What the prompt-log switch above keeps: the RAW prompt trace, which never leaves the
-            // PC by itself. Named here because this step is a consent surface for it — privacy-v5
+            // PC by itself. Named here because this step is a consent surface for it — privacy-v5 (now v6 §2)
             // §2 calls it "the optional prompt-trace logging (off by default)". The redacted
             // summary sentence is a statement of fact, not a consent: that file is always kept.
             // PromptTraceAlwaysKeptTests pins the file name and the retention.
@@ -2920,7 +2919,7 @@ public sealed class OnboardingPage : Page
 
         // The buttons answer the crash-report question; either one also saves the prompt-log
         // switch as set, so the local log can be kept without sending crash reports. The next
-        // step is Updates on Advanced; ShowStep moves past it to Done on Express.
+        // step is Updates, on both paths since A42 (owner, 2026-10-19).
         var yesBtn = AppTheme.CreateAccentButton("Yes, send crash reports");
         yesBtn.Tapped += (_, _) =>
         {
@@ -2990,12 +2989,12 @@ public sealed class OnboardingPage : Page
     }
 
     // ────────────────────────────────────────────────────────────────
-    // Step 12: Updates (UPD-4b; Advanced only since LNC-15)
+    // Step 12: Updates (UPD-4b; Advanced only from LNC-15, both paths since A42)
     // ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The two update choices. Advanced only (owner, 2026-10-13): Express keeps both shipped
-    /// defaults ON and the Done card shows them.
+    /// The two update choices, on both paths: Advanced only from 2026-10-13, and on Express too since
+    /// A42 (owner, 2026-10-19), so every setup offers the automatic-update-check choice.
     ///
     /// <para>Both seeds use <c>GetBoolDefaulted</c>, never a literal — the ONB-3 rule, so the
     /// wizard and the Settings → Updates page cannot disagree about what the shipped default is,
@@ -3186,8 +3185,7 @@ public sealed class OnboardingPage : Page
         // now starts with Windows; the other dropped screens' settings live only in Settings.
         var launchLogin = _settings.GetBool(AppDefaults.LaunchAtLogin, true);
         summaryPanel.Children.Add(CreateSummaryRow("", "Launch at login", launchLogin ? "ON" : "OFF"));
-        // Updates: on both paths — Express never shows the step, so this row is where it says the
-        // app updates itself (owner, 2026-10-13).
+        // Updates: the row repeats what the Updates step set (shown on both paths since A42).
         summaryPanel.Children.Add(CreateSummaryRow("\uE895", "Updates", UpdatesSummary(
             _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateCheckEnabled),
             _settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateInstallEnabled))));

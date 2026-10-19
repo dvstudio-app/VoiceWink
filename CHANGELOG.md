@@ -17,6 +17,15 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.118.416] - 2026-10-19
+
+- The privacy policy is rewritten to be shorter and clearer; you will be asked to accept it, and the updated license agreement, once.
+- Text VoiceWink pastes is no longer kept in Windows clipboard history or synced to your other devices.
+- Express setup now asks whether to check for updates automatically.
+- A copy installed from voicewink.app tells DV Studio about the installation only after you accept the privacy policy in setup, not while it installs.
+- The crash-report choice describes what reports contain in plainer words.
+- Parakeet transcribes about 9 % faster.
+
 ## [1.117.415] - 2026-10-19
 
 - An AI reply that refuses, answers or switches language instead of cleaning up your dictation is no longer pasted, with any AI provider.

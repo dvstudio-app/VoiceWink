@@ -1256,8 +1256,8 @@ public partial class App : Application, Services.IAppLifetime
             // Interlocked flag inside StartGatedRuntimeServices.
             //
             // UPD-4b: the completion also reconciles the update scheduler with the stored
-            // check-updates setting, for the wizard's Updates step (Advanced setup only since
-            // LNC-15) on a Settings → "Relaunch setup wizard" run, where the scheduler is ALREADY
+            // check-updates setting, for the wizard's Updates step (both setup paths since A42)
+            // on a Settings → "Relaunch setup wizard" run, where the scheduler is ALREADY
             // RUNNING.
             _mainWindow.OnboardingCompleted += () =>
             {

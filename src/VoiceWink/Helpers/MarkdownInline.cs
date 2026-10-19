@@ -8,7 +8,7 @@ namespace VoiceWink.Helpers;
 /// <summary>
 /// Optional inline constructs. Every one is OFF by default so the legal documents
 /// (<see cref="LegalMarkdownRenderer"/>) render exactly as they did before this engine was shared:
-/// <c>privacy-v5.md</c> contains four backticks and one <c>Recordings\Debug</c> path today, both of
+/// <c>privacy-v5.md</c> contained four backticks and one <c>Recordings\Debug</c> path (v6 has neither), both of
 /// which render literally, and changing that is a change to a T2 asset's appearance.
 /// </summary>
 [Flags]

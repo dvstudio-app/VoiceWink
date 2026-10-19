@@ -13,7 +13,7 @@ namespace VoiceWink.Helpers;
 /// <para>Inline handling (<c>**bold**</c>, <c>[label](url)</c>, the safe-URI gate) lives in
 /// <see cref="MarkdownInline"/> since UI-22, where the notices renderer shares it. It moved
 /// unchanged and is called with no optional features, so these documents render exactly as
-/// before — including the backticks and the one Windows path in <c>privacy-v5.md</c>, which
+/// before — including the backticks and the one Windows path <c>privacy-v5.md</c> carried, which
 /// stay literal.</para>
 /// </summary>
 public static class LegalMarkdownRenderer

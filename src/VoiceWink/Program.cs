@@ -41,9 +41,11 @@ public static class Program
         // VoiceWink.dll load time.
         //
         // Inside the OnAfterInstall fast callback (AfterInstallHook.Run):
-        //   0. InstallerReport.Start() — every public build's one-attempt
-        //      installer's report (Privacy §4.5/§4.6), started FIRST and run in
-        //      parallel; it returns at once and never throws.
+        //   0. InstallerReport.Start() — the Store channel build's one-attempt
+        //      installer's report (Privacy §4.5), started FIRST and run in
+        //      parallel; it returns at once and never throws. A website build
+        //      only logs a skip: the app sends its report after the privacy
+        //      policy is accepted (A42 D1, WebsiteInstallReport).
         //   1. UpdateExeSelfHeal.EnsureDeployed() — workaround for the
         //      Velopack 0.0.1298 signed-install bug where Update.exe sometimes
         //      fails to extract at the install root.

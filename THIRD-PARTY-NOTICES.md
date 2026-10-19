@@ -99,7 +99,7 @@ Per-file integrity pins, enforced at install time by `ModelDownloadManager`:
 
 ## parakeet-server (bundled)
 
-VoiceWink ships **`parakeet-server.exe`** (59,147,776 bytes, v0.5.0 win-vulkan-x64, in
+VoiceWink ships **`parakeet-server.exe`** (59,278,848 bytes, v0.6.1 win-vulkan-x64, in
 `runtimes\win-x64\`) — the resident helper process the parakeet.cpp transcription backend
 spawns. It is a statically linked build of:
 
@@ -107,9 +107,14 @@ spawns. It is a statically linked build of:
 |---|---|---|
 | parakeet.cpp | **MIT** | https://github.com/mudler/parakeet.cpp |
 | ggml (embedded by parakeet.cpp) | **MIT** | https://github.com/ggml-org/ggml |
+| ced.cpp (embedded by parakeet.cpp) | **MIT** | https://github.com/localai-org/ced.cpp |
+| voice-detect.cpp (embedded by parakeet.cpp) | **MIT** | https://github.com/localai-org/voice-detect.cpp |
+| cpp-httplib 0.18.3 (embedded by parakeet.cpp's server) | **MIT** | https://github.com/yhirose/cpp-httplib |
 
 parakeet.cpp is © Ettore Di Giacinto (mudler) and contributors; ggml is © Georgi Gerganov
-and contributors. Both are distributed under the MIT License — full text below. The binary's
+and contributors; ced.cpp is © 2026 the ced.cpp authors; voice-detect.cpp is © 2026 the
+voice-detect.cpp authors; cpp-httplib is © 2024 Yuji Hirose. All are distributed under the MIT
+License — full text below. The binary's
 non-OS imports are the Microsoft Visual C++ runtime DLLs already shipped app-local (the
 vcredist section of `VoiceWink.csproj`) and the Vulkan loader shipped beside it (next section).
 
@@ -158,10 +163,27 @@ Visual C++ runtime DLLs. The licences below cover both directories.
 |---|---|---|
 | llama.cpp (incl. ggml) | **MIT** | https://github.com/ggml-org/llama.cpp |
 | LLVM OpenMP runtime (`libomp.dll`) | **Apache-2.0 WITH LLVM-exception** | https://github.com/llvm/llvm-project |
+| BoringSSL 0.20260903.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **Apache-2.0** | https://boringssl.googlesource.com/boringssl |
+| cpp-httplib 0.57.1 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
+| nlohmann/json 3.12.0 (in `llama-common.dll`) | **MIT** | https://github.com/nlohmann/json |
+| rotate-bits (in `llama-common.dll`, `mtmd.dll`) | **MIT** | https://github.com/jb55/rotate-bits.h |
+| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b11147/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
+| nerdamer-prime (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/together-science/nerdamer-prime |
+| decimal.js (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/MikeMcl/decimal.js |
 
 llama.cpp is Copyright (c) 2023-2026 The ggml authors, distributed under the MIT License — full
-text below. `libomp.dll` is part of the LLVM Project; its licence file, as shipped in the
-upstream llama.cpp release archive, is reproduced verbatim in the next section.
+text below. llama.cpp's release build also includes the components listed after it. BoringSSL is
+© The BoringSSL Authors, The OpenSSL Project Authors and the other holders named in its source
+files, under the Apache License 2.0 — full text below. cpp-httplib is © 2017-2026 Yuji Hirose,
+nlohmann/json is © 2013-2025 Niels Lohmann (with parts © 2008-2009 Björn Hoehrmann and 2009
+Florian Loitsch, likewise MIT; Hedley © 2016-2021 Evan Nemerson, public domain under CC0-1.0; and
+parts of Google Abseil © 2018 The Abseil Authors under Apache-2.0 — full text below), rotate-bits
+is © 2021 William Casarin, llamafile SGEMM is © 2024 Mozilla Foundation, nerdamer-prime is © 2023 together-science
+and decimal.js is © 2025 Michael Mclaughlin, each under the MIT License — full text below. The
+build also includes public-domain code (stb_image, a SHA-256 implementation, sheredom's
+subprocess.h, big-integer), which carries no attribution duty. `libomp.dll` is part
+of the LLVM Project; its licence file, as shipped in the upstream llama.cpp release archive, is
+reproduced verbatim in the next section.
 
 ## LLVM OpenMP runtime licence (libomp.dll)
 
@@ -529,6 +551,280 @@ PARTICULAR PURPOSE.
 ==============================================================================
 ```
 
+## llama-server web UI (bundled npm packages)
+
+`llama-server-impl.dll` (both directories) carries llama.cpp's web UI, compiled from its
+`tools/ui` at build b11147 into one JavaScript bundle and one stylesheet. VoiceWink starts
+llama-server with the UI switched off (`--no-webui`), but the UI still ships inside the binary.
+The first table lists the npm packages the UI's own code reaches at run time according to that
+build's `package-lock.json`: the packages it imports and their dependencies, without build tools
+beyond the small runtime they inject and without the server-side dependencies of the MCP SDK that
+its browser client never imports. The second table lists packages that two of them carry already
+compiled into their published JavaScript, which the lockfile does not show. The bundle may contain
+fewer, since unused code is dropped when it is built. Licence texts are below (MIT, Apache-2.0,
+ISC, BSD-2-Clause, BSD-3-Clause); a row naming two licences applies each to the holders marked
+with it. `robust-predicates` is public domain (Unlicense). Of the Apache-2.0 packages only Dexie.js
+ships a `NOTICE` file; its content is the copyright line in its row. The vendored nerdamer-prime,
+decimal.js and big-integer are listed under llama-server above.
+
+| Package | Version | Licence | Copyright |
+|---|---|---|---|
+| `@antfu/install-pkg` | 1.1.0 | MIT | © 2021 Anthony Fu |
+| `@braintree/sanitize-url` | 7.1.2 | MIT | © 2017 Braintree |
+| `@chevrotain/types` | 11.1.2 | Apache-2.0 | © Shahar Soel |
+| `@floating-ui/core` | 1.7.5 | MIT | © 2021-present Floating UI contributors |
+| `@floating-ui/dom` | 1.7.6 | MIT | © 2021-present Floating UI contributors |
+| `@floating-ui/utils` | 0.2.11 | MIT | © 2021-present Floating UI contributors |
+| `@iconify/types` | 2.0.0 | MIT | © 2021 - 2022 Vjacheslav Trushkin / Iconify OÜ |
+| `@iconify/utils` | 3.1.3 | MIT | © 2021-PRESENT Vjacheslav Trushkin |
+| `@jridgewell/gen-mapping` | 0.3.13 | MIT | © 2024 Justin Ridgewell |
+| `@jridgewell/remapping` | 2.3.5 | MIT | © 2024 Justin Ridgewell |
+| `@jridgewell/resolve-uri` | 3.1.2 | MIT | © 2019 Justin Ridgewell |
+| `@jridgewell/sourcemap-codec` | 1.5.5 | MIT | © 2024 Justin Ridgewell |
+| `@jridgewell/trace-mapping` | 0.3.31 | MIT | © 2024 Justin Ridgewell |
+| `@lucide/svelte` | 1.25.0 | ISC AND MIT | © 2026 Lucide Icons and Contributors (ISC); © 2013-present Cole Bemis, Feather icons (MIT) |
+| `@mermaid-js/parser` | 1.1.1 | MIT | © 2023 Yokozuna59 |
+| `@modelcontextprotocol/sdk` | 1.30.0 | MIT | © 2024 Anthropic, PBC |
+| `@polka/url` | 1.0.0-next.29 | MIT | © Luke Edwards |
+| `@standard-schema/spec` | 1.1.0 | MIT | © 2024 Colin McDonnell |
+| `@sveltejs/acorn-typescript` | 1.0.10 | MIT | © 2022 Tyreal Hu; © 2025 The Svelte Team |
+| `@sveltejs/kit` | 2.70.2 | MIT | © 2020 [these people](https://github.com/sveltejs/kit/graphs/contributors) |
+| `@tailwindcss/forms` | 0.5.10 | MIT | © Tailwind Labs, Inc |
+| `@tailwindcss/typography` | 0.5.16 | MIT | © Tailwind Labs, Inc |
+| `@ungap/structured-clone` | 1.3.1 | ISC | © 2021, Andrea Giammarchi, @WebReflection |
+| `@upsetjs/venn.js` | 2.0.0 | MIT | © 2013 Ben Frederickson; © 2021 Samuel Gratzl |
+| `acorn` | 8.16.0 | MIT | © 2012-2022 by various contributors (see AUTHORS) |
+| `ajv` | 8.20.0 | MIT | © 2015-2021 Evgeny Poberezkin |
+| `ajv-formats` | 3.0.1 | MIT | © 2020 Evgeny Poberezkin |
+| `aria-query` | 5.3.1 | Apache-2.0 | © 2020 A11yance |
+| `axobject-query` | 4.1.0 | Apache-2.0 | © 2020 A11yance |
+| `bail` | 2.0.2 | MIT | © 2015 Titus Wormer |
+| `bits-ui` | 2.18.1 | MIT | © 2023 Hunter Johnston |
+| `ccount` | 2.0.1 | MIT | © 2015 Titus Wormer |
+| `character-entities` | 2.0.2 | MIT | © 2015 Titus Wormer |
+| `character-entities-html4` | 2.1.0 | MIT | © 2015 Titus Wormer |
+| `character-entities-legacy` | 3.0.0 | MIT | © 2015 Titus Wormer |
+| `clsx` | 2.1.1 | MIT | © Luke Edwards (lukeed.com) |
+| `comma-separated-tokens` | 2.0.3 | MIT | © 2016 Titus Wormer |
+| `commander` | 7.2.0, 8.3.0 | MIT | © 2011 TJ Holowaychuk |
+| `content-type` | 1.0.5 | MIT | © 2015 Douglas Christopher Wilson |
+| `cookie` | 1.1.1 | MIT | © 2012-2014 Roman Shtylman; © 2015 Douglas Christopher Wilson |
+| `cose-base` | 1.0.3, 2.2.0 | MIT | © 2019 - present, iVis@Bilkent |
+| `cytoscape` | 3.34.0 | MIT | © 2016-2026, The Cytoscape Consortium |
+| `cytoscape-cose-bilkent` | 4.1.0 | MIT | © 2016-2018, The Cytoscape Consortium |
+| `cytoscape-fcose` | 2.2.0 | MIT | © 2018 - present, iVis-at-Bilkent |
+| `d3` | 7.9.0 | ISC | © 2010-2023 Mike Bostock |
+| `d3-array` | 2.12.1, 3.2.4 | BSD-3-Clause / ISC | © 2010-2020 Mike Bostock; © 2010-2023 Mike Bostock |
+| `d3-axis` | 3.0.0 | ISC | © 2010-2021 Mike Bostock |
+| `d3-brush` | 3.0.0 | ISC | © 2010-2021 Mike Bostock |
+| `d3-chord` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-color` | 3.1.0 | ISC | © 2010-2022 Mike Bostock |
+| `d3-contour` | 4.0.2 | ISC | © 2012-2023 Mike Bostock |
+| `d3-delaunay` | 6.0.4 | ISC | © 2018-2021 Observable, Inc; © 2021 Mapbox |
+| `d3-dispatch` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-drag` | 3.0.0 | ISC | © 2010-2021 Mike Bostock |
+| `d3-dsv` | 3.0.1 | ISC | © 2013-2021 Mike Bostock |
+| `d3-ease` | 3.0.1 | BSD-3-Clause | © 2010-2021 Mike Bostock; © 2001 Robert Penner |
+| `d3-fetch` | 3.0.1 | ISC | © 2016-2021 Mike Bostock |
+| `d3-force` | 3.0.0 | ISC | © 2010-2021 Mike Bostock |
+| `d3-format` | 3.1.2 | ISC | © 2010-2026 Mike Bostock |
+| `d3-geo` | 3.1.1 | ISC AND MIT | © 2010-2024 Mike Bostock (ISC); © 2008-2012 Charles Karney, GeographicLib (MIT) |
+| `d3-hierarchy` | 3.1.2 | ISC | © 2010-2021 Mike Bostock |
+| `d3-interpolate` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-path` | 1.0.9, 3.1.0 | BSD-3-Clause / ISC | © 2015-2016 Mike Bostock; © 2015-2022 Mike Bostock |
+| `d3-polygon` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-quadtree` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-random` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-sankey` | 0.12.3 | BSD-3-Clause | © 2015, Mike Bostock |
+| `d3-scale` | 4.0.2 | ISC | © 2010-2021 Mike Bostock |
+| `d3-scale-chromatic` | 3.1.0 | ISC AND Apache-2.0 | © 2010-2024 Mike Bostock (ISC); © 2002 Cynthia Brewer, Mark Harrower, and The Pennsylvania State University, ColorBrewer (Apache-2.0) |
+| `d3-selection` | 3.0.0 | ISC | © 2010-2021 Mike Bostock |
+| `d3-shape` | 1.3.7, 3.2.0 | BSD-3-Clause / ISC | © 2010-2015 Mike Bostock; © 2010-2022 Mike Bostock |
+| `d3-time` | 3.1.0 | ISC | © 2010-2022 Mike Bostock |
+| `d3-time-format` | 4.1.0 | ISC | © 2010-2021 Mike Bostock |
+| `d3-timer` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-transition` | 3.0.1 | ISC | © 2010-2021 Mike Bostock |
+| `d3-zoom` | 3.0.0 | ISC | © 2010-2021 Mike Bostock |
+| `dagre-d3-es` | 7.0.14 | MIT | © 2022-2024 Thibaut Lassalle, David Newell, Alois Klink, Sidharth Vinod and dagre-es contributors |
+| `dayjs` | 1.11.21 | MIT | © 2018-present, iamkun |
+| `debug` | 4.4.3 | MIT | © 2014-2017 TJ Holowaychuk; © 2018-2021 Josh Junon |
+| `decode-named-character-reference` | 1.3.0 | MIT | © Titus Wormer |
+| `delaunator` | 5.1.0 | ISC | © 2026, Mapbox |
+| `dequal` | 2.0.3 | MIT | © Luke Edwards (lukeed.com) |
+| `devalue` | 5.8.1 | MIT | © 2018-19 [these people](https://github.com/rich-harris/devalue/graphs/contributors) |
+| `devlop` | 1.1.0 | MIT | © 2023 Titus Wormer |
+| `dexie` | 4.4.3 | Apache-2.0 | © 2014-2017 David Fahlander (Dexie.js NOTICE) |
+| `dompurify` | 3.4.13 | Apache-2.0 (elected; MPL-2.0 OR Apache-2.0) | © Dr.-Ing. Mario Heiderich, Cure53 |
+| `entities` | 6.0.1 | BSD-2-Clause | © Felix Böhm |
+| `es-toolkit` | 1.47.0 | MIT | © 2024 Viva Republica, Inc; © OpenJS Foundation and other contributors |
+| `escape-string-regexp` | 5.0.0 | MIT | © Sindre Sorhus |
+| `esm-env` | 1.2.2 | MIT | © 2022 Benjamin McCann |
+| `esrap` | 2.2.11 | MIT | © 2023-2025 [these people](https://github.com/sveltejs/esrap/graphs/contributors) |
+| `eventsource` | 3.0.7 | MIT | © EventSource GitHub organisation |
+| `eventsource-parser` | 3.1.0 | MIT | © 2026 Espen Hovlandsdal |
+| `extend` | 3.0.2 | MIT | © 2014 Stefan Thomas |
+| `fast-deep-equal` | 3.1.3 | MIT | © 2017 Evgeny Poberezkin |
+| `fast-uri` | 3.1.5 | BSD-3-Clause | © 2011-2021 Gary Court; © 2021-present The Fastify team |
+| `fflate` | 0.8.3 | MIT | © 2026 Arjun Barrett |
+| `hachure-fill` | 0.5.2 | MIT | © 2023 Preet Shihn |
+| `hast-util-from-dom` | 5.0.1 | ISC | © Keith McKnight |
+| `hast-util-from-html` | 2.0.3 | MIT | © 2022 Titus Wormer |
+| `hast-util-from-html-isomorphic` | 2.0.0 | MIT | © 2023 Remco Haszing |
+| `hast-util-from-parse5` | 8.0.3 | MIT | © Titus Wormer |
+| `hast-util-is-element` | 3.0.0 | MIT | © 2016 Titus Wormer |
+| `hast-util-parse-selector` | 4.0.0 | MIT | © 2016 Titus Wormer |
+| `hast-util-to-html` | 9.0.5 | MIT | © Titus Wormer |
+| `hast-util-to-text` | 4.0.2 | MIT | © 2019 Titus Wormer |
+| `hast-util-whitespace` | 3.0.0 | MIT | © 2016 Titus Wormer |
+| `hastscript` | 9.0.1 | MIT | © Titus Wormer |
+| `highlight.js` | 11.11.1 | BSD-3-Clause | © 2006, Ivan Sagalaev |
+| `html-void-elements` | 3.0.0 | MIT | © 2016 Titus Wormer |
+| `iconv-lite` | 0.6.3 | MIT | © 2011 Alexander Shtuchkin |
+| `import-meta-resolve` | 4.2.0 | MIT | © Titus Wormer; © Node.js contributors; © Joyent, Inc. and other Node contributors |
+| `inline-style-parser` | 0.2.7 | MIT | © 2012 TJ Holowaychuk |
+| `internmap` | 1.0.1, 2.0.3 | ISC | © 2021 Mike Bostock |
+| `is-plain-obj` | 4.1.0 | MIT | © Sindre Sorhus |
+| `is-reference` | 3.0.3 | MIT | © Rich Harris |
+| `json-schema-traverse` | 1.0.0 | MIT | © 2017 Evgeny Poberezkin |
+| `katex` | 0.16.47 | MIT | © 2013-2020 Khan Academy and other contributors |
+| `khroma` | 2.1.0 | MIT | © 2019-present Fabio Spampinato, Andrew Maney |
+| `kleur` | 4.1.5 | MIT | © Luke Edwards (lukeed.com) |
+| `layout-base` | 1.0.2, 2.0.1 | MIT | © 2019 iVis@Bilkent |
+| `locate-character` | 3.0.0 | MIT | © Rich Harris |
+| `lodash-es` | 4.18.1 | MIT | © OpenJS Foundation and other contributors; based on Underscore.js, © Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors |
+| `longest-streak` | 3.1.0 | MIT | © 2015 Titus Wormer |
+| `lowlight` | 3.3.0 | MIT | © Titus Wormer |
+| `lz-string` | 1.5.0 | MIT | © 2013 pieroxy |
+| `magic-string` | 0.30.21 | MIT | © 2018 Rich Harris |
+| `markdown-table` | 3.0.4 | MIT | © Titus Wormer |
+| `marked` | 16.4.2 | MIT AND BSD-3-Clause | © 2018+ MarkedJS (MIT); © 2011-2018 Christopher Jeffrey (MIT); © 2004 John Gruber, Markdown (BSD-3-Clause) |
+| `mdast-util-find-and-replace` | 3.0.2 | MIT | © Titus Wormer |
+| `mdast-util-from-markdown` | 2.0.3 | MIT | © Titus Wormer |
+| `mdast-util-gfm` | 3.1.0 | MIT | © Titus Wormer |
+| `mdast-util-gfm-autolink-literal` | 2.0.1 | MIT | © 2020 Titus Wormer |
+| `mdast-util-gfm-footnote` | 2.1.0 | MIT | © Titus Wormer |
+| `mdast-util-gfm-strikethrough` | 2.0.0 | MIT | © 2020 Titus Wormer |
+| `mdast-util-gfm-table` | 2.0.0 | MIT | © 2020 Titus Wormer |
+| `mdast-util-gfm-task-list-item` | 2.0.0 | MIT | © 2020 Titus Wormer |
+| `mdast-util-math` | 3.0.0 | MIT | © 2020 Titus Wormer |
+| `mdast-util-newline-to-break` | 2.0.0 | MIT | © 2017 Titus Wormer |
+| `mdast-util-phrasing` | 4.1.0 | MIT | © 2017 Titus Wormer; © 2017 Victor Felder |
+| `mdast-util-to-hast` | 13.2.1 | MIT | © 2016 Titus Wormer |
+| `mdast-util-to-markdown` | 2.1.2 | MIT | © Titus Wormer |
+| `mdast-util-to-string` | 4.0.0 | MIT | © 2015 Titus Wormer |
+| `mermaid` | 11.15.0 | MIT | © 2014 - 2022 Knut Sveidqvist |
+| `micromark` | 4.0.2 | MIT | © Titus Wormer |
+| `micromark-core-commonmark` | 2.0.3 | MIT | © Titus Wormer |
+| `micromark-extension-gfm` | 3.0.0 | MIT | © 2020 Titus Wormer |
+| `micromark-extension-gfm-autolink-literal` | 2.1.0 | MIT | © 2020 Titus Wormer |
+| `micromark-extension-gfm-footnote` | 2.1.0 | MIT | © 2021 Titus Wormer |
+| `micromark-extension-gfm-strikethrough` | 2.1.0 | MIT | © 2020 Titus Wormer |
+| `micromark-extension-gfm-table` | 2.1.1 | MIT | © Titus Wormer |
+| `micromark-extension-gfm-tagfilter` | 2.0.0 | MIT | © 2020 Titus Wormer |
+| `micromark-extension-gfm-task-list-item` | 2.1.0 | MIT | © 2020 Titus Wormer |
+| `micromark-extension-math` | 3.1.0 | MIT | © 2020 Titus Wormer |
+| `micromark-factory-destination` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-factory-label` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-factory-space` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-factory-title` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-factory-whitespace` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-character` | 2.1.1 | MIT | © Titus Wormer |
+| `micromark-util-chunked` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-classify-character` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-combine-extensions` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-decode-numeric-character-reference` | 2.0.2 | MIT | © Titus Wormer |
+| `micromark-util-decode-string` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-encode` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-html-tag-name` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-normalize-identifier` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-resolve-all` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-sanitize-uri` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-subtokenize` | 2.1.0 | MIT | © Titus Wormer |
+| `micromark-util-symbol` | 2.0.1 | MIT | © Titus Wormer |
+| `micromark-util-types` | 2.0.2 | MIT | © Titus Wormer |
+| `mode-watcher` | 1.1.0 | MIT | © 2024 Hunter Johnston; © 2024 Svecosystem |
+| `mrmime` | 2.0.1 | MIT | © Luke Edwards |
+| `ms` | 2.1.3 | MIT | © 2020 Vercel, Inc |
+| `package-manager-detector` | 1.6.0 | MIT | © 2020-PRESENT Anthony Fu |
+| `parse5` | 7.3.0 | MIT | © 2013-2019 Ivan Nikulin |
+| `path-data-parser` | 0.1.0 | MIT | © 2020 Preet Shihn |
+| `pdfjs-dist` | 5.4.54 | Apache-2.0 | © 2024 Mozilla Foundation |
+| `pkce-challenge` | 5.0.1 | MIT | © 2019 crouchcd |
+| `points-on-curve` | 0.2.0 | MIT | © 2020 Preet Shihn |
+| `points-on-path` | 0.2.1 | MIT | © 2020 Preet |
+| `property-information` | 7.2.0 | MIT | © Titus Wormer |
+| `rehype-highlight` | 7.0.2 | MIT | © Titus Wormer |
+| `rehype-katex` | 7.0.1 | MIT | © Junyoung Choi |
+| `rehype-stringify` | 10.0.1 | MIT | © Titus Wormer |
+| `remark` | 15.0.1 | MIT | © 2014 Titus Wormer |
+| `remark-breaks` | 4.0.0 | MIT | © 2017 Titus Wormer |
+| `remark-gfm` | 4.0.1 | MIT | © Titus Wormer |
+| `remark-math` | 6.0.0 | MIT | © Junyoung Choi |
+| `remark-parse` | 11.0.0 | MIT | © 2014 Titus Wormer |
+| `remark-rehype` | 11.1.2 | MIT | © Titus Wormer |
+| `remark-stringify` | 11.0.0 | MIT | © 2014 Titus Wormer |
+| `require-from-string` | 2.0.2 | MIT | © Vsevolod Strukchinsky (github.com/floatdrop) |
+| `robust-predicates` | 3.0.3 | Unlicense | © Vladimir Agafonkin |
+| `roughjs` | 4.6.6 | MIT | © 2019 Preet Shihn |
+| `runed` | 0.23.4, 0.25.0, 0.28.0, 0.35.1 | MIT | © 2024 Hunter Johnston; © 2024 Thomas G. Lopes |
+| `rw` | 1.3.3 | BSD-3-Clause | © 2014-2016, Michael Bostock |
+| `safer-buffer` | 2.1.2 | MIT | © 2018 Nikita Skovoroda |
+| `set-cookie-parser` | 3.1.0 | MIT | © 2015 Nathan Friedly |
+| `sirv` | 3.0.2 | MIT | © Luke Edwards |
+| `space-separated-tokens` | 2.0.2 | MIT | © 2016 Titus Wormer |
+| `stringify-entities` | 4.0.4 | MIT | © 2015 Titus Wormer |
+| `style-to-object` | 1.0.14 | MIT | © 2017 Menglin "Mark" Xu |
+| `stylis` | 4.4.0 | MIT | © 2016-present Sultan Tarimo |
+| `svelte` | 5.56.1 | MIT | © 2016-2025 Svelte Contributors |
+| `svelte-sonner` | 1.1.1 | MIT | © 2024 Robert Soriano |
+| `svelte-toolbelt` | 0.10.6, 0.7.1 | MIT | © 2024 Hunter Johnston; © 2024 Thomas G. Lopes |
+| `tabbable` | 6.4.0 | MIT | © 2015 David Clark |
+| `tailwind-merge` | 3.6.0 | MIT | © 2021 Dany Castillo |
+| `tailwind-variants` | 3.2.2 | MIT | © 2020 Tailwid Variants |
+| `tailwindcss` | 4.3.0 | MIT | © Tailwind Labs, Inc |
+| `tinyexec` | 1.2.4 | MIT | © 2024 Tinylibs |
+| `totalist` | 3.0.1 | MIT | © Luke Edwards (lukeed.com) |
+| `trim-lines` | 3.0.1 | MIT | © 2015 Titus Wormer |
+| `trough` | 2.2.0 | MIT | © 2016 Titus Wormer |
+| `ts-dedent` | 2.2.0 | MIT | © 2018 Tamino Martinius |
+| `tw-animate-css` | 1.4.0 | MIT | © 2025 Wombosvideo |
+| `unified` | 11.0.5 | MIT | © 2015 Titus Wormer |
+| `unist-util-find-after` | 5.0.0 | MIT | © 2015 Titus Wormer |
+| `unist-util-is` | 6.0.1 | MIT | © 2015 Titus Wormer |
+| `unist-util-position` | 5.0.0 | MIT | © 2015 Titus Wormer |
+| `unist-util-remove-position` | 5.0.0 | MIT | © 2016 Titus Wormer |
+| `unist-util-stringify-position` | 4.0.0 | MIT | © 2016 Titus Wormer |
+| `unist-util-visit` | 5.1.0 | MIT | © 2015 Titus Wormer |
+| `unist-util-visit-parents` | 6.0.2 | MIT | © 2016 Titus Wormer |
+| `uuid` | 13.0.2 | MIT | © 2010-2020 Robert Kieffer and other contributors |
+| `vfile` | 6.0.3 | MIT | © 2015 Titus Wormer |
+| `vfile-location` | 5.0.3 | MIT | © 2016 Titus Wormer |
+| `vfile-message` | 4.0.3 | MIT | © Titus Wormer |
+| `vite` | 7.3.6 | MIT | © 2019-present, VoidZero Inc. and Vite contributors; © 2024 Justin Ridgewell; © 2019 Justin Ridgewell; © 2024-present VoidZero Inc. & Contributors; © 2019 RollupJS Plugin Contributors; © 2019 Elan Shanker, Paul Miller |
+| `web-namespaces` | 2.0.1 | MIT | © 2016 Titus Wormer |
+| `zimmerframe` | 1.1.4 | MIT | © 2023 [these people](https://github.com/Rich-Harris/zimmerframe/graphs/contributors) |
+| `zod` | 4.4.3 | MIT | © 2025 Colin McDonnell |
+| `zod-to-json-schema` | 3.25.2 | ISC | © 2020, Stefan Terdell |
+| `zwitch` | 2.0.4 | MIT | © 2016 Titus Wormer |
+
+Packages carried pre-built inside other packages' published JavaScript:
+
+| Package | Version | Licence | Copyright | Inside |
+|---|---|---|---|---|
+| `@chevrotain/gast` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `@chevrotain/regexp-to-ast` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `@chevrotain/utils` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `chevrotain` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `chevrotain-allstar` | 0.3.1 | MIT | © 2022 TypeFox GmbH | @mermaid-js/parser |
+| `langium` | 4.2.0 | MIT | © 2021 TypeFox GmbH | @mermaid-js/parser |
+| `lodash-es` | 4.17.23 | MIT | © OpenJS Foundation and other contributors; based on Underscore.js, © Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors | @mermaid-js/parser |
+| `vscode-jsonrpc` | 8.2.0 | MIT | © Microsoft Corporation | @mermaid-js/parser, mermaid |
+| `vscode-languageserver-protocol` | 3.17.5 | MIT | © Microsoft Corporation | @mermaid-js/parser, mermaid |
+| `vscode-languageserver-textdocument` | 1.0.12 | MIT | © Microsoft Corporation | @mermaid-js/parser |
+| `vscode-languageserver-types` | 3.17.5 | MIT | © Microsoft Corporation | @mermaid-js/parser, mermaid |
+| `vscode-uri` | 3.1.0 | MIT | © Microsoft | @mermaid-js/parser |
+| `js-yaml` | 4.1.1 | MIT | © 2011-2015 Vitaly Puzrin | mermaid |
+
 ## sherpa-onnx runtime (bundled via org.k2fsa.sherpa.onnx.runtime.win-x64)
 
 VoiceWink ships two pre-built native binaries from that NuGet package — `onnxruntime.dll`
@@ -694,7 +990,7 @@ Apache 2.0 §4(a) requires that any other recipient of the work receive **a copy
      eyeballing it if the block is ever edited: a licence reproduced from memory is not a licence
      reproduced. -->
 
-Apache 2.0 §4(d) additionally requires that a `NOTICE` file, **where the work has one**, be reproduced in the redistribution. **sherpa-onnx publishes no `NOTICE` file**, so §4(d) has nothing to reproduce for it; the ONNX Runtime dependency notices that *are* required ship in full — see the section above.
+Apache 2.0 §4(d) additionally requires that a `NOTICE` file, **where the work has one**, be reproduced in the redistribution. **sherpa-onnx publishes no `NOTICE` file**, so §4(d) has nothing to reproduce for it, nor for BoringSSL or the llama-server web UI's Apache-2.0 packages other than Dexie.js, whose `NOTICE` content is reproduced in its row; the ONNX Runtime dependency notices that *are* required ship in full — see the section above.
 <!-- Maintainers: if a future Apache-licensed dependency publishes a NOTICE, it must be added
      here; do not assume packaging carries it. -->
 
@@ -914,3 +1210,91 @@ Apache 2.0 §4(d) additionally requires that a `NOTICE` file, **where the work h
      Update this file whenever a new top-level dependency is added or an existing one bumps a
      major version. Transitive-only version bumps generally do not require an update unless the
      licence changes. -->
+
+## BSD-2-Clause (applies to all packages marked "BSD-2-Clause" above)
+
+```
+Copyright (c) <year> <owner>
+
+Redistribution and use in source and binary forms, with or without modification, are permitted
+provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of
+   conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of
+   conditions and the following disclaimer in the documentation and/or other materials provided
+   with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+## BSD-3-Clause (applies to all packages marked "BSD-3-Clause" above)
+
+Each package's own licence words condition 3 for its own name; read the text below with that
+package's condition 3:
+
+- `d3-array` 2.12.1, `d3-ease`, `d3-path` 1.0.9, `d3-sankey`, `d3-shape` 1.3.7: "Neither the name
+  of the author nor the names of contributors may be used to endorse or promote products derived
+  from this software without specific prior written permission."
+- `fast-uri`: "The names of any contributors may not be used to endorse or promote products
+  derived from this software without specific prior written permission."
+- `highlight.js`: "Neither the name of the copyright holder nor the names of its contributors may
+  be used to endorse or promote products derived from this software without specific prior
+  written permission."
+- `rw`: "The name Michael Bostock may not be used to endorse or promote products derived from this
+  software without specific prior written permission."
+- `marked` (its Markdown component): "Neither the name “Markdown” nor the names of its
+  contributors may be used to endorse or promote products derived from this software without
+  specific prior written permission."
+
+```
+Copyright (c) <year> <owner>
+
+Redistribution and use in source and binary forms, with or without modification, are permitted
+provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of
+   conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice, this list of
+   conditions and the following disclaimer in the documentation and/or other materials provided
+   with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+## ISC (applies to all packages marked "ISC" above)
+
+```
+Copyright (c) <year> <owner>
+
+Permission to use, copy, modify, and/or distribute this software for any purpose with or without
+fee is hereby granted, provided that the above copyright notice and this permission notice appear
+in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS
+SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
+OF THIS SOFTWARE.
+```

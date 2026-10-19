@@ -1,7 +1,10 @@
 ---
 version: 5
-last-updated: 2026-08-23
+last-updated: 2026-10-19
 title: VoiceWink End User License Agreement
+changes: Section 12.3 now points to Section 3 of the updated Privacy Policy, which describes the update check.
+changes-for: 2c4575af6dc0
+changes-since: 53b402c74768
 ---
 
 # VoiceWink End User License Agreement
@@ -117,7 +120,7 @@ Your use of VoiceWink is also governed by the Privacy Policy, which is shipped a
 
 12.2 **Maintenance and support.** DV Studio may, but is not obligated to, provide updates, bug fixes, or technical support for the Software. Where you are a consumer, this does not affect DV Studio's obligation to provide the updates — including security updates — that are necessary to keep the paid product in conformity during the period referred to in section 15. Any update to VoiceWink that DV Studio does release is included with your activation key at no additional charge; updates are never sold separately or placed behind a renewal or maintenance plan.
 
-12.3 VoiceWink also performs an automatic check for new Software versions against updates.voicewink.app and, when the automatic-installation setting is on, can install updates automatically; the data sent during that check is described in Section 4 of the Privacy Policy. You can turn off automatic update checking and automatic update installation in the app at any time.
+12.3 VoiceWink also performs an automatic check for new Software versions against updates.voicewink.app and, when the automatic-installation setting is on, can install updates automatically; the data sent during that check is described in Section 3 of the Privacy Policy. You can turn off automatic update checking and automatic update installation in the app at any time.
 
 12.4 **Continuity of activation.** If DV Studio ever permanently discontinues the paid activation service, DV Studio will make available a Software update that removes the activation requirement, so that copies already installed continue to function. (Your GPL v3 rights in the Software are unaffected by the activation service in any case.)
 

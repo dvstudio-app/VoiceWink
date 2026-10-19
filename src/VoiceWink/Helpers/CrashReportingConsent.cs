@@ -32,6 +32,19 @@ namespace VoiceWink.Helpers;
 internal static class CrashReportingConsent
 {
     /// <summary>
+    /// What both consent surfaces show (the onboarding step's "What's included" and the Settings toggle),
+    /// verbatim from the owner's decision A42 D6 (2026-10-19): written by CATEGORY, at the minimum a valid
+    /// consent needs (purpose, kinds of data, recipient, how to withdraw), so a field of a kind already
+    /// named needs no text change. The policy's crash-report section is the detailed layer.
+    /// CrashReportConsentCopyTests pins it and that both pages use this constant.
+    /// </summary>
+    internal const string ConsentText =
+        "Send crash and error reports to help fix problems. They contain technical details about the error, " +
+        "the app and your PC (such as version, Windows and processor), app-session records and an identifier " +
+        "that links reports and sessions from this PC. They never contain your recordings, text, API keys, " +
+        "license keys or files. Stored by Sentry in the EU. You can turn this off at any time in Settings.";
+
+    /// <summary>
     /// Persist <paramref name="requested"/> durably, start or stop the SDK to match the
     /// EFFECTIVE value, and rebuild the log sinks when the SDK's liveness changed. Returns the
     /// consent result (effective value + whether it is durable) for the caller's own reporting.

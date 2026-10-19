@@ -18,7 +18,7 @@ internal enum EngineCpuRequirement
     /// <see cref="EngineCpuRequirements.WhisperRuntimeRunnable"/>, not this row.</summary>
     GgmlAvx2,
 
-    /// <summary><c>parakeet-server</c> (parakeet.cpp v0.5.0, the default Parakeet engine): built with
+    /// <summary><c>parakeet-server</c> (parakeet.cpp v0.6.1, the default Parakeet engine): built with
     /// <c>GGML_NATIVE=OFF</c>, static, no CPU variants. ggml at its pinned commit then enables SSE4.2,
     /// AVX, AVX2 and BMI2, and MSVC's <c>/arch:AVX2</c> brings FMA and F16C — inferred from the
     /// build configuration, consistent with the field crash.</summary>

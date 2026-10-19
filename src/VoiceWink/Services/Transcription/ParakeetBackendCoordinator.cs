@@ -56,12 +56,12 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
     internal const long GgufFileSizeBytes = ParakeetCatalog.GgufFileSizeBytes;
     internal const string GgufSha256 = ParakeetCatalog.GgufSha256;
 
-    /// <summary>parakeet-server.exe v0.5.0 win-VULKAN-x64 (TRN-51, 2026-09-01) — one binary
-    /// serving GPU and CPU (device via the child's PARAKEET_DEVICE; CPU path measured
-    /// byte-identical to the retired win-cpu-x64 build, 0/56 clips on two machines). Measured
-    /// from the vendored bytes; MUST equal installer/runtime/parakeet/EXPECTED_SHA256 — update
-    /// both together (that file's own rule, and a parity test enforces it).</summary>
-    internal const string ServerExeSha256 = "5b2da797198ee0ef9ce4438f2be71cf77fa7089efe7617d956cb6fb75ec54f73";
+    /// <summary>parakeet-server.exe v0.6.1 win-VULKAN-x64 (2026-10-19; v0.5.0 before) — one binary
+    /// serving GPU and CPU (device via the child's PARAKEET_DEVICE); it measured the same error
+    /// counts and per-file output lengths as v0.5.0 on both devices. Measured from the vendored bytes; MUST
+    /// equal installer/runtime/parakeet/EXPECTED_SHA256 — update both together (that file's own
+    /// rule, and a parity test enforces it).</summary>
+    internal const string ServerExeSha256 = "0c834c36dfc2ceab0d25ade2633b7605b314ef0869dee45aa9716c7919e7b715";
 
     /// <summary>Free-space slack over the exact payload size for the migration download.</summary>
     internal const long DiskSlackBytes = 256L * 1024 * 1024;

@@ -44,7 +44,7 @@ internal sealed record LocalModelEntry(
 {
     /// <summary>What the download manager installs: a two-file bundle (GGUF + licence) — staged,
     /// verified per file by SHA-256 and exact length, committed atomically. <b>No file carries a
-    /// fallback URL</b>: enhancement models come only from the mirror, which is what privacy v5
+    /// fallback URL</b>: enhancement models come only from the mirror, which is what the privacy policy (v5, and v6 §3)
     /// promises (A37). <c>Runtime</c> is null — these are not speech models.</summary>
     public TranscriptionModelInfo ToDownloadDescriptor() => new()
     {

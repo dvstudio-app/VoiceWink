@@ -51,7 +51,7 @@ public sealed class UpdatesPage : Page
     /// <summary>
     /// The one wording for the automatic-install option, and it names the restart because that is
     /// the part a user would otherwise be surprised by. Shared with setup's Updates step (Advanced
-    /// setup) under ONB-3's "one option, one description" rule.
+    /// only from LNC-15, both paths since A42) under ONB-3's "one option, one description" rule.
     /// </summary>
     internal const string InstallToggleDescription =
         "Download and install updates in the background. VoiceWink restarts to finish — " +

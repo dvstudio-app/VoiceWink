@@ -4,7 +4,7 @@ namespace VoiceWink.Helpers;
 /// theories can take it as a parameter.</summary>
 public enum SetupPath
 {
-    /// <summary>Language and hotkey, plus the screens that are not defaults: terms, license, help improve.</summary>
+    /// <summary>Language and hotkey, plus the screens that are not defaults: terms, license, help improve, updates.</summary>
     Express,
 
     /// <summary>Express plus the speech-model and AI screens.</summary>
@@ -36,18 +36,18 @@ internal static class OnboardingStepFlow
     /// <summary>The legal step's index in the switch. Not a display number.</summary>
     internal const int LegalStepIndex = 1;
 
-    /// <summary>The Updates step's index in the switch (Advanced only).</summary>
+    /// <summary>The Updates step's index in the switch (both paths since A42, 2026-10-19).</summary>
     internal const int UpdatesStepIndex = 12;
 
     /// <summary>The Done step's index in the switch.</summary>
     internal const int DoneStepIndex = 13;
 
     // Indices are the page's switch cases, which LNC-15 did not renumber: 2 (Theme), 8 (Clipboard)
-    // and 9 (Startup) were removed from both paths (owner delegation, 2026-10-13); 12 (Updates) is on
-    // Advanced only — Express keeps both update defaults ON and shows them on the Done card (owner,
-    // later the same day).
+    // and 9 (Startup) were removed from both paths (owner delegation, 2026-10-13). 12 (Updates) was on
+    // Advanced only from 2026-10-13; since A42 (owner, 2026-10-19) Express offers the
+    // automatic-update-check choice too, so both paths show it.
     private static readonly int[] AdvancedSteps = [0, 1, 3, 4, 5, 6, 7, 10, 11, 12, 13];
-    private static readonly int[] ExpressSteps = [0, 1, 3, 7, 10, 11, 13];
+    private static readonly int[] ExpressSteps = [0, 1, 3, 7, 10, 11, 12, 13];
 
     /// <summary>The steps a run shows, in order: the path's list, minus the legal step when skipped.</summary>
     internal static IReadOnlyList<int> Steps(SetupPath path, bool skipLegal)

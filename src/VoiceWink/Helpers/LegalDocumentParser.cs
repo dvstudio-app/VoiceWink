@@ -88,7 +88,27 @@ public static class LegalDocumentParser
         var body = ParseBody(bodyLines);
         var contentHash = HashBody(bodyText);
 
-        return new LegalDocumentMetadata(version, lastUpdated, title, body, contentHash);
+        return new LegalDocumentMetadata(version, lastUpdated, title, body, contentHash,
+            ChangeSummaryFor(header, contentHash), ChangesSinceFrom(header));
+    }
+
+    // Comma-separated hash prefixes of the earlier bodies the summary is complete for; too-short ones are dropped.
+    private static IReadOnlyList<string> ChangesSinceFrom(Dictionary<string, string> header) =>
+        header.TryGetValue("changes-since", out var list)
+            ? list.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Where(p => p.Length >= ChangesForMinLength).ToArray()
+            : [];
+
+    /// <summary>Minimum <c>changes-for</c> prefix length, so a one-character prefix cannot match by chance.</summary>
+    public const int ChangesForMinLength = 12;
+
+    // Optional and outside the hash: a missing, empty or stale summary is dropped, never a parse failure,
+    // because a parse failure fail-closes the whole app behind the reinstall dialog.
+    private static string? ChangeSummaryFor(Dictionary<string, string> header, string contentHash)
+    {
+        if (!header.TryGetValue("changes", out var summary) || string.IsNullOrWhiteSpace(summary)) return null;
+        if (!header.TryGetValue("changes-for", out var prefix) || prefix.Length < ChangesForMinLength) return null;
+        return contentHash.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? summary : null;
     }
 
     private static IReadOnlyList<MarkdownBlock> ParseBody(string[] lines)

@@ -751,7 +751,8 @@ public sealed class AudioTranscribePage : Page
                 _statusText.Text = "Done — no speech detected";
                 Logger.Information("File transcription produced no content; clipboard left untouched");
             }
-            else if (await _clipboard.SetClipboardAsync(text))
+            // Copied on completion without a click, so marked like a paste (A42 D4, Codex plan r1 A1).
+            else if (await _clipboard.SetClipboardForPasteAsync(text))
             {
                 _statusText.Text = $"Done — {text.Length} characters (copied to clipboard)";
             }

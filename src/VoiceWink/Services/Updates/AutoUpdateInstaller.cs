@@ -180,7 +180,7 @@ public sealed class AutoUpdateInstaller : IDisposable
     /// <para>Called by <c>UpdateViewModel</c>'s toggle hooks (the Settings → Updates surface, the
     /// one place a user can watch a download and opt out). The poll REMAINS as the backstop for
     /// writers that cannot reach this class without a forbidden locator call — onboarding's
-    /// relaunch-wizard path (the Updates step, Advanced setup only since LNC-15) and a settings
+    /// relaunch-wizard path (the Updates step, on both setup paths since A42) and a settings
     /// import — where a residual window of at most one poll interval is the accepted cost; the
     /// service's final token check before the updater hand-off bounds it there.</para>
     /// </summary>

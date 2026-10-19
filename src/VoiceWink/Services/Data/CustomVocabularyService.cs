@@ -47,7 +47,7 @@ public sealed class CustomVocabularyService
         // nothing the sink kept, which is the only reason this line ever rendered the word
         // safely), and the file ships in the default support bundle and the GDPR export through
         // a line-by-line scrub that has no token for an untagged value. Dictionary entries are
-        // user-authored and frequently personal names (the SEC-3 class); privacy-v5 §7 promises
+        // user-authored and frequently personal names (the SEC-3 class); privacy-v5 §7 promised (v6 keeps the promise)
         // they ride only the raw-trace opt-in. Pinned by LogLevelControlTests.
         Logger.Debug("Added vocabulary word ({Length} chars)", normalizedWord.Length);
     }
