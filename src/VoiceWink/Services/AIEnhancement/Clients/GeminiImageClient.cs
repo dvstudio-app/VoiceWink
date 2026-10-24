@@ -163,7 +163,7 @@ public sealed class GeminiImageClient
         await response.EnsureSuccessOrLogAndThrowAsync("Gemini image", Logger, ct).ConfigureAwait(false);
 
         // IMG-4: a parallel batch serializes the alloc-heavy materialization phase
-        // (body string → JsonDocument → base64 decode ≈ 5× the body transiently) through
+        // (body bytes → JsonDocument → base64 decode ≈ 4× the body transiently, the HttpClient's buffer included) through
         // the batch's shared gate; requests stay concurrent. The JsonDocument disposes
         // inside the gated body, before the gate releases. Null gate = today's path.
         var gate = _config.BatchContext?.ResponseMaterializationGate;
@@ -171,21 +171,21 @@ public sealed class GeminiImageClient
             () => MaterializeResponseAsync(response, ct), ct).ConfigureAwait(false);
     }
 
-    /// <summary>Alloc-heavy response materialization — body string → JsonDocument →
+    /// <summary>Alloc-heavy response materialization — body bytes → JsonDocument →
     /// base64 decode, plus the safety/finish-reason verdicts that need the parsed doc.
     /// Split out so the IMG-4 batch gate serializes exactly this section; the
     /// JsonDocument disposes inside it, before the gate releases.</summary>
     private static async Task<byte[]> MaterializeResponseAsync(HttpResponseMessage response, CancellationToken ct)
     {
-        var responseJson = await response.Content.ReadAsStringImageLimitedAsync(ct).ConfigureAwait(false);
-        using var doc = JsonDocument.Parse(responseJson);
+        using var reply = await response.Content.ReadImageJsonAsync(ct).ConfigureAwait(false);
+        var doc = reply.Doc;
 
         // Response: { "candidates": [{ "content": { "parts": [{ "inlineData": { "mimeType": "image/png", "data": "..." } }] } }] }
         // Only the happy-path extraction sits inside the guard: wrong-kind JsonElement
         // access there (e.g. {"candidates":{}}) is API drift that must log Error and
         // reach Sentry, while the safety-block / finish-reason branches BELOW stay
         // outside so their deliberate provider-outcome throws keep Warning semantics.
-        var imageBytes = ProviderResponseGuard.Run<byte[]?>(Logger, "Gemini image", responseJson, () =>
+        var imageBytes = ProviderResponseGuard.Run<byte[]?>(Logger, "Gemini image", reply.Excerpt, () =>
         {
             if (doc.RootElement.TryGetProperty("candidates", out var candidates) &&
                 candidates.GetArrayLength() > 0 &&
@@ -196,10 +196,13 @@ public sealed class GeminiImageClient
                 {
                     if (part.TryGetProperty("inlineData", out var inlineData) &&
                         inlineData.TryGetProperty("data", out var data) &&
-                        data.GetString() is string base64)
+                        ImageReplyJson.Base64OrNull(data) is byte[] bytes)
                     {
-                        Logger.Information("Gemini native image received ({Length} chars base64)", base64.Length);
-                        return Convert.FromBase64String(base64);
+                        Logger.Information("Gemini native image received ({Bytes} bytes)", bytes.Length);
+                        // As the OpenAI and OpenRouter routes do: an empty image is drift, not a result to save.
+                        if (bytes.Length == 0)
+                            throw new InvalidOperationException("Gemini image API returned empty image data");
+                        return bytes;
                     }
                 }
             }
@@ -242,7 +245,7 @@ public sealed class GeminiImageClient
 
         // 200 with no image AND no safety/finish-reason explanation — a parse gap or an
         // API shape change on our side of the contract, so this one belongs in Sentry.
-        Logger.Error("Gemini image API response did not contain expected image data; Body={Body}", responseJson.TruncateForLog());
+        Logger.Error("Gemini image API response did not contain expected image data; Body={Body}", reply.Excerpt.TruncateForLog());
         throw new InvalidOperationException("Gemini image API response did not contain image data");
     }
 

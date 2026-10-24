@@ -269,33 +269,42 @@ public sealed class TranscriptionHistoryService
         return null;
     }
 
-    public async Task<List<TranscriptionRecord>> SearchAsync(string query, int page = 0, int pageSize = 50, CancellationToken ct = default)
+    public Task<List<TranscriptionRecord>> SearchAsync(string query, int page = 0, int pageSize = 50, CancellationToken ct = default)
+        => SearchAsync(query, page, pageSize, null, ct);
+
+    /// <param name="imagesOnly">null = all, true = images only, false = text only</param>
+    public async Task<List<TranscriptionRecord>> SearchAsync(string query, int page, int pageSize, bool? imagesOnly, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return await GetPageAsync(page, pageSize, ct).ConfigureAwait(false);
+            return await GetPageAsync(page, pageSize, imagesOnly, ct).ConfigureAwait(false);
 
         using var db = _dbFactory.CreateDbContext();
-        var lower = query.ToLowerInvariant();
-        return await db.TranscriptionRecords
-            .AsNoTracking()
-            .Where(t => t.Text.ToLower().Contains(lower) ||
-                        (t.EnhancedText != null && t.EnhancedText.ToLower().Contains(lower)))
+        return await SearchQuery(db, query, imagesOnly)
             .OrderByDescending(t => t.Timestamp)
             .Skip(page * pageSize)
             .Take(pageSize)
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<int> SearchCountAsync(string query, CancellationToken ct = default)
+    public Task<int> SearchCountAsync(string query, CancellationToken ct = default)
+        => SearchCountAsync(query, null, ct);
+
+    /// <param name="imagesOnly">null = all, true = images only, false = text only</param>
+    public async Task<int> SearchCountAsync(string query, bool? imagesOnly, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(query))
-            return await GetCountAsync(ct).ConfigureAwait(false);
+            return await GetCountAsync(imagesOnly, ct).ConfigureAwait(false);
 
         using var db = _dbFactory.CreateDbContext();
+        return await SearchQuery(db, query, imagesOnly).CountAsync(ct).ConfigureAwait(false);
+    }
+
+    private static IQueryable<TranscriptionRecord> SearchQuery(VoiceWinkDbContext db, string query, bool? imagesOnly)
+    {
         var lower = query.ToLowerInvariant();
-        return await db.TranscriptionRecords
-            .CountAsync(t => t.Text.ToLower().Contains(lower) ||
-                        (t.EnhancedText != null && t.EnhancedText.ToLower().Contains(lower)), ct).ConfigureAwait(false);
+        return ApplyTypeFilter(db.TranscriptionRecords.AsNoTracking(), imagesOnly)
+            .Where(t => t.Text.ToLower().Contains(lower) ||
+                        (t.EnhancedText != null && t.EnhancedText.ToLower().Contains(lower)));
     }
 
     public async Task<int> GetCountAsync(CancellationToken ct = default)

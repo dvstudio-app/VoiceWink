@@ -178,13 +178,13 @@ public sealed class ImageGenerationClient
     }
 
     /// <summary>
-    /// Sends the generation request and runs the gated materialization (body string →
+    /// Sends the generation request and runs the gated materialization (body bytes →
     /// JsonDocument → inline base64 decode OR URL extraction). OWNS the request and the
     /// buffered response: both become unreachable when this method's state machine
     /// completes, so the caller's URL fallback can never retain a capped envelope
     /// across its download (diff r3 — on .NET 8 disposal does not free HttpContent's
     /// buffered backing array; unreachability does). The batch gate serializes the
-    /// alloc-heavy phase (≈5× the body transiently); requests stay concurrent; the
+    /// alloc-heavy phase (≈4× the body transiently, the HttpClient's buffer included); requests stay concurrent; the
     /// JsonDocument disposes inside the gated body, before the gate releases. Null
     /// gate = today's single-image path.
     /// </summary>
@@ -202,18 +202,18 @@ public sealed class ImageGenerationClient
 
         return await ImageBatchCallContext.RunGatedAsync(gate, async () =>
         {
-            // responseJson stays LOCAL to this gated closure (diff r2): only the parsed
-            // result plus a bounded log excerpt survive it, so the full UTF-16 body can
+            // The parsed reply stays LOCAL to this gated closure (diff r2): only the
+            // decoded result plus a bounded log excerpt survive it, so the full body can
             // never be retained across a fallback download.
-            var responseJson = await response.Content.ReadAsStringImageLimitedAsync(ct).ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(responseJson);
+            using var reply = await response.Content.ReadImageJsonAsync(ct).ConfigureAwait(false);
+            var doc = reply.Doc;
 
             // The guard logs Error + body for ANY InvalidOperationException raised during
             // extraction — the deliberate shape-failure throws below AND wrong-kind
             // JsonElement access (e.g. {"data":{}}) — because the outer enhancement catch
             // downgrades that exception type to Warning (provider-outcome semantics) and
             // 200-with-unexpected-shape is API drift that must reach Sentry.
-            var parsed = ProviderResponseGuard.Run(Logger, "Image", responseJson, () =>
+            var parsed = ProviderResponseGuard.Run(Logger, "Image", reply.Excerpt, () =>
             {
                 if (!doc.RootElement.TryGetProperty("data", out var dataArray) ||
                     dataArray.GetArrayLength() == 0)
@@ -224,10 +224,9 @@ public sealed class ImageGenerationClient
                 var data = dataArray[0];
 
                 // Try b64_json first (inline), then fall back to URL
-                if (data.TryGetProperty("b64_json", out var b64) && b64.GetString() is string base64)
+                if (data.TryGetProperty("b64_json", out var b64) && ImageReplyJson.Base64OrNull(b64) is byte[] bytes)
                 {
-                    Logger.Information("Image received as base64 ({Length} chars)", base64.Length);
-                    var bytes = Convert.FromBase64String(base64);
+                    Logger.Information("Image received as base64 ({Bytes} bytes)", bytes.Length);
                     if (bytes.Length == 0)
                         throw new InvalidOperationException("Image API returned empty image data");
                     return (Bytes: (byte[]?)bytes, Url: (Uri?)null);
@@ -242,7 +241,7 @@ public sealed class ImageGenerationClient
 
                 throw new InvalidOperationException("Image API response contained neither b64_json nor url");
             });
-            return (parsed.Bytes, parsed.Url, Excerpt: responseJson.TruncateForLog());
+            return (parsed.Bytes, parsed.Url, Excerpt: reply.Excerpt.TruncateForLog());
         }, ct).ConfigureAwait(false);
     }
 
@@ -317,8 +316,8 @@ public sealed class ImageGenerationClient
         return await ImageBatchCallContext.RunGatedAsync(
             _config.BatchContext?.ResponseMaterializationGate, async () =>
             {
-                var responseJson = await response.Content.ReadAsStringImageLimitedAsync(ct).ConfigureAwait(false);
-                return ExtractB64Image(responseJson, "Image edit");
+                using var reply = await response.Content.ReadImageJsonAsync(ct).ConfigureAwait(false);
+                return ExtractB64Image(reply, "Image edit");
             }, ct).ConfigureAwait(false);
     }
 
@@ -424,8 +423,8 @@ public sealed class ImageGenerationClient
         return await ImageBatchCallContext.RunGatedAsync(
             _config.BatchContext?.ResponseMaterializationGate, async () =>
             {
-                var responseJson = await response.Content.ReadAsStringImageLimitedAsync(ct).ConfigureAwait(false);
-                return ExtractB64Image(responseJson, "Image");
+                using var reply = await response.Content.ReadImageJsonAsync(ct).ConfigureAwait(false);
+                return ExtractB64Image(reply, "Image");
             }, ct).ConfigureAwait(false);
     }
 
@@ -435,10 +434,10 @@ public sealed class ImageGenerationClient
     /// documents a URL variant for these flows, so no URL fallback here). Guarded
     /// like the main path so contract drift reaches Sentry at Error.
     /// </summary>
-    private static byte[] ExtractB64Image(string responseJson, string providerLabel)
+    private static byte[] ExtractB64Image(ImageReplyJson reply, string providerLabel)
     {
-        using var doc = JsonDocument.Parse(responseJson);
-        return ProviderResponseGuard.Run(Logger, providerLabel, responseJson, () =>
+        var doc = reply.Doc;
+        return ProviderResponseGuard.Run(Logger, providerLabel, reply.Excerpt, () =>
         {
             if (!doc.RootElement.TryGetProperty("data", out var dataArray) ||
                 dataArray.GetArrayLength() == 0)
@@ -446,10 +445,9 @@ public sealed class ImageGenerationClient
                 throw new InvalidOperationException($"{providerLabel} API returned empty data array");
             }
 
-            if (dataArray[0].TryGetProperty("b64_json", out var b64) && b64.GetString() is string base64)
+            if (dataArray[0].TryGetProperty("b64_json", out var b64) && ImageReplyJson.Base64OrNull(b64) is byte[] bytes)
             {
-                Logger.Information("Image received as base64 ({Length} chars)", base64.Length);
-                var bytes = Convert.FromBase64String(base64);
+                Logger.Information("Image received as base64 ({Bytes} bytes)", bytes.Length);
                 if (bytes.Length == 0)
                     throw new InvalidOperationException($"{providerLabel} API returned empty image data");
                 return bytes;

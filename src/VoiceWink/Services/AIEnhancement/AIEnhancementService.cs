@@ -52,6 +52,12 @@ public sealed class AIEnhancementService
     // line uses. Both are test seams; production is LocalReplyWindows.For and the system reader.
     private readonly Func<AIProvider, LocalReplyWindows> _localReplyWindows;
     private readonly IMemoryStateReader _memoryState;
+    // Null in tests that construct the service directly: the E-mail / Chat language rule abstains.
+    private readonly Helpers.ITextLanguageDetector? _languageDetector;
+
+    /// <summary>Whether the container supplied the detector; a missing registration would switch the
+    /// language rule off silently.</summary>
+    internal bool HasLanguageDetector => _languageDetector is not null;
 
     /// <summary>LAI-15: the most recent memory-state line's background write, so tests can await it.</summary>
     internal Task? LastMemoryStateLog { get; private set; }
@@ -93,9 +99,10 @@ public sealed class AIEnhancementService
         AIProviderRegistry providers,
         Func<bool>? networkAvailable = null,
         TimeSpan? enhancementTimeout = null,
-        TimeSpan? localServerEnhancementTimeout = null)
+        TimeSpan? localServerEnhancementTimeout = null,
+        Helpers.ITextLanguageDetector? languageDetector = null)
         : this(httpFactory, apiKeys, settings, providers, networkAvailable, enhancementTimeout,
-            localServerEnhancementTimeout, localReplyWindows: null, memoryStateReader: null)
+            localServerEnhancementTimeout, localReplyWindows: null, memoryStateReader: null, languageDetector)
     {
     }
 
@@ -110,8 +117,10 @@ public sealed class AIEnhancementService
         TimeSpan? enhancementTimeout,
         TimeSpan? localServerEnhancementTimeout,
         Func<AIProvider, LocalReplyWindows>? localReplyWindows,
-        IMemoryStateReader? memoryStateReader)
+        IMemoryStateReader? memoryStateReader,
+        Helpers.ITextLanguageDetector? languageDetector = null)
     {
+        _languageDetector = languageDetector;
         _httpFactory = httpFactory;
         _apiKeys = apiKeys;
         _settings = settings;
@@ -2410,10 +2419,11 @@ public sealed class AIEnhancementService
     /// <c>[Enhancement failed]</c> marker, and the amber pill names the reason. Logs the class and
     /// word counts only — never the reply, which can echo the dictation.
     /// </summary>
-    private static void ThrowIfOutputRefused(AIProvider provider, CustomPrompt prompt, string input, string output)
+    private void ThrowIfOutputRefused(AIProvider provider, CustomPrompt prompt, string input, string output)
     {
         var promptClass = Helpers.LocalPromptClassifier.Classify(prompt);
-        var verdict = Helpers.LocalOutputGuard.Check(promptClass, input, output);
+        Func<string, string?>? topLanguage = _languageDetector is { } detector ? detector.TopLanguage : null;
+        var verdict = Helpers.LocalOutputGuard.Check(promptClass, input, output, topLanguage);
         if (verdict == Helpers.LocalOutputVerdict.Pass)
             return;
         if (verdict == Helpers.LocalOutputVerdict.Replaced)
@@ -2424,6 +2434,14 @@ public sealed class AIEnhancementService
                 // Both counts from the new-word counter, so "N of its M words" and the dictation's
                 // size are measured the same way.
                 provider, promptClass, newWords, replyWords, Helpers.LocalOutputGuard.CountNewWords(null, input).ReplyWords);
+        }
+        else if (verdict == Helpers.LocalOutputVerdict.SwitchedToEnglish)
+        {
+            // Language tags and counts only — never the reply or the dictation.
+            var m = Helpers.LocalOutputGuard.MeasureLanguage(input, output, topLanguage);
+            Logger.Warning("AI enhancement not used: the {Provider} reply to a {PromptClass} prompt reads as English where the dictation read as "
+                + "{DictationLanguage}, and kept {KeptWords} of its {DistinctWords} distinct words; the transcription was used unchanged",
+                provider, promptClass, m.DictationLanguage, m.KeptWords, m.DistinctWords);
         }
         else
         {

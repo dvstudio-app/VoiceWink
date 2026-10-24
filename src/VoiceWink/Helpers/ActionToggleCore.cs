@@ -93,14 +93,4 @@ internal sealed class ActionToggleCore
     public void ShowPrimary() => IsCancelling = false;
 
     public void ShowCancel() => IsCancelling = true;
-
-    /// <summary>
-    /// Which brush the element should carry right now, given whether the pointer is over it.
-    ///
-    /// <para>This is the captured-closure bug expressed as a function: the answer must be derived
-    /// from the CURRENT <see cref="Palette"/> at the moment the pointer moves, never from a value
-    /// sampled when the handlers were attached. A hover that restores the previous state's colour is
-    /// exactly what the old <c>CreateAccentButton</c> shape produced after a swap.</para>
-    /// </summary>
-    public (TogglePalette Palette, bool Hovered) BackgroundFor(bool pointerOver) => (Palette, pointerOver);
 }

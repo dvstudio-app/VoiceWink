@@ -146,13 +146,19 @@ public partial class HistoryViewModel : ObservableObject
             _appliedGeneration = generation;
     }
 
-    /// <summary>Set the type filter and reload from DB.</summary>
+    /// <summary>Set the type filter and reload from DB, keeping the search term (HIS-14).</summary>
     /// <param name="imagesOnly">null = all, true = images only, false = text only</param>
     public async Task SetTypeFilterAsync(bool? imagesOnly)
     {
         _typeFilter = imagesOnly;
-        await LoadAsync(null);
+        await ReloadAsync();
     }
+
+    /// <summary>Show page 0 for the current <see cref="SearchQuery"/> under the current type
+    /// filter: a search when there is a term, the plain list when there is none. HIS-14: the
+    /// search box and the filter tabs are one state, so neither may reset the other.</summary>
+    public Task ReloadAsync()
+        => string.IsNullOrWhiteSpace(SearchQuery) ? LoadAsync(null) : SearchAsync(null);
 
     [RelayCommand]
     public async Task LoadMoreAsync()
@@ -172,7 +178,7 @@ public partial class HistoryViewModel : ObservableObject
         if (IsSearchActive)
         {
             _searchPage++;
-            var items = await _history.SearchAsync(SearchQuery, _searchPage, PageSize);
+            var items = await _history.SearchAsync(SearchQuery, _searchPage, PageSize, _typeFilter);
             if (generation != _loadGeneration)
                 return;
 
@@ -211,10 +217,10 @@ public partial class HistoryViewModel : ObservableObject
         var generation = ++_loadGeneration;
         IsSearchActive = true;
         _searchPage = searchPageToRestore;
-        var items = await _history.SearchAsync(SearchQuery, 0, pageSize);
+        var items = await _history.SearchAsync(SearchQuery, 0, pageSize, _typeFilter);
         if (_afterItemsQueryHook != null)
             await _afterItemsQueryHook();
-        var totalCount = await _history.SearchCountAsync(SearchQuery);
+        var totalCount = await _history.SearchCountAsync(SearchQuery, _typeFilter);
         if (generation != _loadGeneration)
             return; // superseded — see LoadAsync's fence
 

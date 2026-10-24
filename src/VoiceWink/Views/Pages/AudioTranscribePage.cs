@@ -43,7 +43,7 @@ public sealed class AudioTranscribePage : Page
     /// recreation (F27), so a re-attached page must show the right face, not the default one.</summary>
     private AppTheme.ActionToggleButton? _actionButton;
 
-    private Border? _copyButton;
+    private Button? _copyButton;
     private const string CopyButtonLabel = "Copy to Clipboard";
 
     internal static readonly string UnsupportedFormatMessage =
@@ -201,7 +201,7 @@ public sealed class AudioTranscribePage : Page
         _actionButton = AppTheme.CreateActionToggleButton("Select Audio File", "Cancel Transcription");
         _actionButton.Element.HorizontalAlignment = HorizontalAlignment.Center;
         _actionButton.Element.Padding = new Thickness(24, 10, 24, 10);
-        _actionButton.Element.Tapped += async (_, _) =>
+        _actionButton.Element.Click += async (_, _) =>
         {
             if (_actionButton.IsCancelling)
             {
@@ -450,7 +450,7 @@ public sealed class AudioTranscribePage : Page
         // having happened (owner, 2026-09-21). The button's own face carries the verdict, and it
         // branches on the RESULT for the reason History's copy glyph does: "Copied" on a failed
         // copy is a silent lie. The width is held across the swap so the button does not shift.
-        if (_copyButton?.Child is not TextBlock label) return;
+        if (_copyButton?.Content is not TextBlock label) return;
         _copyButton.MinWidth = _copyButton.ActualWidth;
         label.Text = copied ? "✓ Copied" : "Couldn't copy";
         label.Foreground = AppTheme.Brush(copied ? AppTheme.AccentGreenText : AppTheme.FailureText);
@@ -462,7 +462,7 @@ public sealed class AudioTranscribePage : Page
     /// <summary>The Copy button's resting face — label, colour, and no held width.</summary>
     private void RestoreCopyButtonFace()
     {
-        if (_copyButton?.Child is not TextBlock label) return;
+        if (_copyButton?.Content is not TextBlock label) return;
         label.Text = CopyButtonLabel;
         label.Foreground = AppTheme.Brush(AppTheme.TextSecondary);
         _copyButton.MinWidth = 0;

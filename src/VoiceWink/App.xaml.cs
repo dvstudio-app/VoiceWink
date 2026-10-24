@@ -1061,6 +1061,9 @@ public partial class App : Application, Services.IAppLifetime
         // AI Enhancement
         services.AddSingleton(sp => AIProviderRegistry.CreateDefault(
             sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine>()));
+        // The E-mail / Chat language rule's detector; the container disposes it on exit.
+        services.AddSingleton<ITextLanguageDetector>(_ => new TextLanguageDetector(cause =>
+            Log.Warning("Windows' language detector is unavailable ({Cause}); the E-mail / Chat reply-language check is off for this session", cause)));
         services.AddSingleton<AIEnhancementService>();
         // IMG-BG: single-slot coordinator for the background image generation job.
         services.AddSingleton<Services.AIEnhancement.ImageGenerationJobService>();

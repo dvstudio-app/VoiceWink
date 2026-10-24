@@ -53,7 +53,7 @@ public sealed class LicensePage : Page
     // icon after ActivateAsync's empty-key arm, which nulls ActivityMessage while still inside the
     // busy slot — and this icon is the LIC-2a / LIC-4 recovery that force-validates without
     // re-entering a key (Grok plan round, 2026-09-07).
-    private Border? _checkNowButton;
+    private Button? _checkNowButton;
 
     // Nothing tells an OPEN page that the licence changed. The launch reconcile is a fire-and-forget
     // CheckAsync on a pool thread that can persist a disable or a refusal, and every time-driven
@@ -875,7 +875,7 @@ public sealed class LicensePage : Page
     /// the tooltip is the one place the destination survives a blocked browser launch. Making the
     /// tooltip part of the constructor removes the chance of forgetting it a third time (LIC-13).
     /// </summary>
-    private Border CreateBuyButton(bool primary = false)
+    private Button CreateBuyButton(bool primary = false)
     {
         var button = primary
             ? AppTheme.CreateAccentButton("Buy a license", (_, _) => _vm.BuyCommand.Execute(null))

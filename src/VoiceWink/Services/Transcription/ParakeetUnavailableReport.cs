@@ -33,6 +33,11 @@ public enum ParakeetUnavailableCause
     /// altered by antivirus) — the provenance gate refused it.</summary>
     EngineFileDamaged,
 
+    /// <summary>The engine's executable is on disk but could not be opened — security software (a
+    /// Defender attack-surface-reduction rule, 2026-10-21) or a lock refused it. The file may be
+    /// intact; a reinstall does not help.</summary>
+    EngineFileBlocked,
+
     /// <summary>The engine process did not start or never became healthy.</summary>
     EngineFailedToStart,
 
@@ -83,6 +88,9 @@ public enum ParakeetAcquireFailureKind
 
     /// <summary>The executable failed the provenance gate (neither the pinned hash nor our signature).</summary>
     SpawnRefused,
+
+    /// <summary>The executable could not be opened, so the provenance gate could not judge it.</summary>
+    EngineFileUnreadable,
 }
 
 /// <summary>One launch that never became healthy: the facts that separate the crash classes.</summary>

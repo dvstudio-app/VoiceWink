@@ -1,10 +1,10 @@
 ---
-version: 6
-last-updated: 2026-10-19
+version: 7
+last-updated: 2026-10-23
 title: VoiceWink Privacy Policy
-changes: Rewritten to be shorter and clearer. It now also names GitHub and Google as service providers, describes how the counts are limited, and explains your own AI server, app logs and the license's hardware binding. The website installer's report is now sent once after you accept this policy, and VoiceWink keeps its pastes out of Windows clipboard history.
-changes-for: 9a6a93328ef5
-changes-since: 0fbf44947bce
+changes: DV Studio now also counts model downloads, and its page beacon on voicewink.app also records clicks on the Microsoft Store and GitHub links. Neither tells DV Studio which downloads or visits are yours.
+changes-for: cd2e379eaa76
+changes-since: 9a6a93328ef5
 ---
 
 # VoiceWink Privacy Policy
@@ -57,12 +57,12 @@ This is the complete list of connections VoiceWink and its installer make on the
 
 - **License check, to Lemon Squeezy.** When you enter a license key, VoiceWink sends the key and a random label for this PC (for example VoiceWink-3f9a2c71, with no hostname or account name). Lemon Squeezy answers with an identifier for this activation. While a license key is stored on this device and matches it, VoiceWink re-validates that key on each application start after setup is complete, and about once a day while VoiceWink keeps running. Each check sends the key and, once there is one, that identifier. VoiceWink also checks when you press "Check now", and may check when you open the License page. When you remove the license, or when an activation fails, VoiceWink sends the key and the identifier to release the activation. Without a connection, a recent successful check keeps VoiceWink working for up to 30 days. This check is needed to provide the license you bought and cannot be turned off while a paid license is active.
 - **Update check and updates, to updates.voicewink.app.** Shortly after start and then about once a day, VoiceWink asks whether a newer version exists. The request carries your IP address and technical details of the installed copy: its update channel, its version, and the Windows and processor type. When automatic installation is on (the default), updates are downloaded and installed automatically. You can turn off automatic update checking and automatic update installation at any time in the app. You can still check by hand.
-- **Model downloads, to models.voicewink.app.** When VoiceWink needs a speech or AI model that is not yet on your PC, it downloads the model's files. Each request carries your IP address and the name of the file. For speech models only, if that server cannot deliver a file correctly, VoiceWink downloads it from Hugging Face (huggingface.co) instead. Hugging Face handles that request under its own privacy policy and its own responsibility.
+- **Model downloads, to models.voicewink.app.** When VoiceWink needs a speech or AI model that is not yet on your PC, it downloads the model's files. Each request carries your IP address and the name of the file. For speech models only, if that server cannot deliver a file correctly, VoiceWink downloads it from Hugging Face (huggingface.co) instead. Hugging Face handles that request under its own privacy policy and its own responsibility. DV Studio counts these requests as Section 4 describes.
 - **One-time counts, to updates.voicewink.app.** A few short reports that let DV Studio count installations and free-trial starts. Section 4 explains what they can contain, when they are sent and how you can stop them.
 
 ## 4. How we count downloads, installs and free trials
 
-DV Studio counts the requests that show how often VoiceWink is downloaded, installed, updated and tried. The counts come from requests to updates.voicewink.app: update checks, downloads of the installer from our website or the Microsoft Store, and short one-time reports the installer and the app send. This section sets the limits that every count stays within.
+DV Studio counts the requests that show how often VoiceWink is downloaded, installed, updated and tried. The counts come from requests to updates.voicewink.app: update checks, downloads of the installer from our website or the Microsoft Store, and short one-time reports the installer and the app send, and model downloads from models.voicewink.app. This section sets the limits that every count stays within.
 
 **What a count can use.**
 
@@ -74,7 +74,7 @@ DV Studio counts the requests that show how often VoiceWink is downloaded, insta
 
 **What a count never contains.** No installation, device or account identifier, no license key, no name or email address, and no audio, transcript, dictionary, setting or API key. So DV Studio has nothing that links one count to another, or a count to you.
 
-**What the counts are for.** To count the requests and reports received per day or hour, channel and country, and to estimate how much of that traffic is automated, comes from networks operated by Microsoft, or is DV Studio's own testing. The counts show requests received, not completed downloads, installations or trials.
+**What the counts are for.** To count the requests and reports received per day or hour, channel and country, and how often each model is downloaded, and to estimate how much of that traffic is automated, comes from networks operated by Microsoft, or is DV Studio's own testing. The counts show requests received, not completed downloads, installations or trials.
 
 **When the one-time reports are sent.**
 
@@ -114,7 +114,7 @@ This covers voicewink.app and the publisher site dvstudio.app.
 - **Hosting and security.** Cloudflare serves both sites. It processes connection data (IP address, browser, requested page, time) to deliver them and to block abuse.
 - **Cookies.** Cloudflare may set a few strictly necessary security cookies. The Cookie Notice at voicewink.app/cookies lists them.
 - **Cloudflare Web Analytics** (both sites). Cookieless page statistics. It does not fingerprint visitors, and Cloudflare discards your IP address.
-- **DV Studio's page beacon** (voicewink.app only). A small script records which pages are opened and how long each is visible, clicks on the Download and Buy links, and the approximate country. It also records the page you came from, or the tag on a link DV Studio posted (one of a fixed list naming where the link was posted, such as the Microsoft Store listing). It sets no cookie, stores no IP address and writes nothing to your device. To group one day's page views into visits, it makes a code from your IP address, your browser's name, the date and a secret value. The code changes every day, so visits on different days cannot be linked. DV Studio cannot tell which visits are yours.
+- **DV Studio's page beacon** (voicewink.app only). A small script records which pages are opened and how long each is visible, clicks on the Download, Buy, Microsoft Store and GitHub links, and the approximate country. It also records the page you came from, or the tag on a link DV Studio posted (one of a fixed list naming where the link was posted, such as the Microsoft Store listing). It sets no cookie, stores no IP address and writes nothing to your device. To group one day's page views into visits, it makes a code from your IP address, your browser's name, the date and a secret value. The code changes every day, so visits on different days cannot be linked. DV Studio cannot tell which visits are yours.
 - **Opting out of the beacon.** Use the switch on the Cookie Notice page, or set vw-notrack to 1 in your browser's local storage for voicewink.app. The choice lasts until your browser clears that site's data; a private window clears it when closed. A browser that blocks local storage for voicewink.app is not counted at all.
 - **Buying a license.** The Buy buttons go to a checkout run by Lemon Squeezy as merchant of record. What you enter there is governed by Lemon Squeezy's privacy policy. DV Studio then receives from Lemon Squeezy your order and license details: name, email address, country, order history and license keys. You need to give these details to buy a license. DV Studio uses them to provide and support your license, handle refunds and answer your questions. Card details stay with Lemon Squeezy and its payment provider.
 

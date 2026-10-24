@@ -65,4 +65,11 @@ public static class ParakeetServerProvenance
     public static string DescribeRefusal(AuthenticodeSignature.Verdict signature)
         => $"hash does not match the pinned build AND {signature.Describe()} "
            + $"(a shipped copy must be signed by CN={ExpectedSignerCommonName})";
+
+    /// <summary>Why a file that could not be read was refused: the error (exception type and
+    /// HResult) and the signature verdict, which is usually unsigned too because the same refusal
+    /// stops the trust check reading the file.</summary>
+    public static string DescribeUnreadable(string? openError, AuthenticodeSignature.Verdict signature)
+        => $"the file cannot be read ({openError}), so its hash cannot be checked, "
+           + $"AND {signature.Describe()} (a shipped copy must be signed by CN={ExpectedSignerCommonName})";
 }

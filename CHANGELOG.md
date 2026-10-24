@@ -17,6 +17,17 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.119.418] - 2026-10-24
+
+- Fixed a freeze that could happen while a 4K generated image arrived.
+- A chat or e-mail you dictate in another language is no longer pasted in English.
+- When Parakeet's engine file is blocked from opening, the message no longer calls it damaged.
+- The privacy policy now covers counting model downloads and clicks on the website's Microsoft Store and GitHub links; DV Studio cannot tell which are yours. You will be asked to accept it once.
+
+## [1.118.417] - 2026-10-19
+
+- Switching between All, Text and Images in History is faster.
+
 ## [1.118.416] - 2026-10-19
 
 - The privacy policy is rewritten to be shorter and clearer; you will be asked to accept it, and the updated license agreement, once.

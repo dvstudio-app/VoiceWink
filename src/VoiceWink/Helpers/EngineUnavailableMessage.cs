@@ -25,6 +25,7 @@ internal static class EngineUnavailableMessage
             => "Parakeet couldn't start on this PC — pick one on Models",
         ParakeetUnavailableCause.EngineFileMissing => "Parakeet's engine file is missing — reinstall VoiceWink",
         ParakeetUnavailableCause.EngineFileDamaged => "Parakeet's engine file is damaged — reinstall VoiceWink",
+        ParakeetUnavailableCause.EngineFileBlocked => "Parakeet's engine file is blocked — pick one on Models",
         ParakeetUnavailableCause.EngineStoppedForSession => "Parakeet stopped working — restart VoiceWink",
         ParakeetUnavailableCause.StartingUp => "Parakeet is still starting — try again in a moment",
         ParakeetUnavailableCause.VerificationPending => "Parakeet is still checking its model — try again soon",

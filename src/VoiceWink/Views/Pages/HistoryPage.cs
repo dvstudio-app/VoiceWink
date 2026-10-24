@@ -43,7 +43,7 @@ public sealed class HistoryPage : Page
     private TextBlock? _originalText;
     private Border? _enhancedBadge;
     private Microsoft.UI.Xaml.Controls.Image? _detailImage;
-    private Border? _copyImageBtn;
+    private Button? _copyImageBtn;
     private TextBlock? _detailImageNote; // HIS-1: missing/undisplayable-image note in the preview slot
     // HIS-1: fences async BitmapImage ImageOpened/ImageFailed callbacks — bumped on
     // every detail refresh so a stale selection's decode can't paint the current one.
@@ -68,14 +68,30 @@ public sealed class HistoryPage : Page
     private int? _firstRenderedId;
     private int _renderedCount;
     private FrameworkElement? _loadMoreFooter;
-    // Reference-COUNTED (F26): overlapping bulk rebuilds (OnLoaded / OnHistoryChanged /
-    // RenderMoreAsync / DebounceSearchAsync) each open a suppression window across an await;
+    // Reference-COUNTED (F26): overlapping bulk rebuilds (every reload goes through
+    // WithCollectionRefreshSuppressedAsync) each open a suppression window across an await;
     // a plain bool let the first-completing flow clear it while another was still mid-rebuild,
     // leaking its adds through as spurious RefreshList calls. The per-item CollectionChanged
     // refresh is suppressed while ANY window is open — only the last to close re-enables it.
-    // All four sites are UI-thread-only, so a plain int is race-free.
+    // Every site is UI-thread-only, so a plain int is race-free.
     private int _suppressCollectionRefreshDepth;
     private bool SuppressCollectionRefresh => _suppressCollectionRefreshDepth > 0;
+
+    /// <summary>Run a ViewModel load that rewrites <c>Transcriptions</c>; the caller then
+    /// renders once. Unsuppressed, every Clear and Add of the reload queues its own full
+    /// <c>RefreshList</c>: the filter pills did, about 50 list rebuilds per click.</summary>
+    private async Task WithCollectionRefreshSuppressedAsync(Func<Task> load)
+    {
+        _suppressCollectionRefreshDepth++;
+        try
+        {
+            await load();
+        }
+        finally
+        {
+            if (_suppressCollectionRefreshDepth > 0) _suppressCollectionRefreshDepth--;
+        }
+    }
     // Bumped by RefreshList() (search / filter / external refresh rebuild the list from
     // scratch). RenderMoreAsync captures it and bails after an await if it changed, so a
     // mid-load rebuild can't be clobbered by a stale render loop resuming against new state.
@@ -84,6 +100,12 @@ public sealed class HistoryPage : Page
     private bool _isLoadingMore;
     private enum FilterMode { All, Text, Images }
     private FilterMode _filterMode = FilterMode.All;
+    private static bool? TypeFilterOf(FilterMode mode) => mode switch
+    {
+        FilterMode.Text => false,
+        FilterMode.Images => true,
+        _ => null
+    };
 
     public HistoryPage()
     {
@@ -140,23 +162,16 @@ public sealed class HistoryPage : Page
         _viewModel.PropertyChanged += _vmPropertyChanged;
         _viewModel.Transcriptions.CollectionChanged += _transcriptionsCollectionChanged;
         _historyService.HistoryChanged += OnHistoryChanged;
-        _suppressCollectionRefreshDepth++;
         try
         {
             // Sync search state from the (possibly cached) TextBox before loading
             _viewModel.SearchQuery = _searchBox?.Text ?? string.Empty;
-            if (!string.IsNullOrEmpty(_viewModel.SearchQuery))
-                await _viewModel.SearchAsync();
-            else
-                await _viewModel.LoadAsync();
+            // The singleton ViewModel may hold another page instance's filter; this page's pills decide.
+            await WithCollectionRefreshSuppressedAsync(() => _viewModel.SetTypeFilterAsync(TypeFilterOf(_filterMode)));
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Failed to load history data");
-        }
-        finally
-        {
-            if (_suppressCollectionRefreshDepth > 0) _suppressCollectionRefreshDepth--;
         }
         RefreshList();
         UpdateCountText();
@@ -200,15 +215,7 @@ public sealed class HistoryPage : Page
         {
             try
             {
-                _suppressCollectionRefreshDepth++;
-                try
-                {
-                    await _viewModel.RefreshAsync();
-                }
-                finally
-                {
-                    if (_suppressCollectionRefreshDepth > 0) _suppressCollectionRefreshDepth--;
-                }
+                await WithCollectionRefreshSuppressedAsync(_viewModel.RefreshAsync);
 
                 RefreshList(preserveViewport: true); // HIS-7
                 UpdateCountText();
@@ -384,10 +391,9 @@ public sealed class HistoryPage : Page
 
                 if (await dialog.ShowAsync() == ContentDialogResult.Primary)
                 {
-                    if (_filterMode == FilterMode.All)
-                        await _viewModel.DeleteAllCommand.ExecuteAsync(null);
-                    else
-                        await _viewModel.DeleteByTypeAsync(imagesOnly: _filterMode == FilterMode.Images);
+                    await WithCollectionRefreshSuppressedAsync(() => _filterMode == FilterMode.All
+                        ? _viewModel.DeleteAllCommand.ExecuteAsync(null)
+                        : _viewModel.DeleteByTypeAsync(imagesOnly: _filterMode == FilterMode.Images));
                     RefreshList();
                 }
             }
@@ -505,13 +511,7 @@ public sealed class HistoryPage : Page
                 {
                     _filterMode = mode;
                     UpdateFilterVisuals();
-                    bool? typeFilter = mode switch
-                    {
-                        FilterMode.Text => false,
-                        FilterMode.Images => true,
-                        _ => null
-                    };
-                    await _viewModel.SetTypeFilterAsync(typeFilter);
+                    await WithCollectionRefreshSuppressedAsync(() => _viewModel.SetTypeFilterAsync(TypeFilterOf(mode)));
                     RefreshList();
                     UpdateCountText();
                 }
@@ -912,6 +912,10 @@ public sealed class HistoryPage : Page
 
         if (preserveViewport)
             RestoreViewport(previousOffset, previousFirstId);
+        else
+            // HIS-13: a new result set starts at the top. Clearing the panel did not reset the
+            // offset, so a search after Load more and a scroll left the first match off screen.
+            _listScroll?.ChangeView(null, 0, null, disableAnimation: true);
     }
 
     /// <summary>HIS-7: put the user back where they were after an external refresh. Rows added
@@ -1015,15 +1019,7 @@ public sealed class HistoryPage : Page
                 if (_renderedCount >= items.Count)
                 {
                     if (!_viewModel.HasMore) break;
-                    _suppressCollectionRefreshDepth++;
-                    try
-                    {
-                        await _viewModel.LoadMoreAsync();
-                    }
-                    finally
-                    {
-                        if (_suppressCollectionRefreshDepth > 0) _suppressCollectionRefreshDepth--;
-                    }
+                    await WithCollectionRefreshSuppressedAsync(_viewModel.LoadMoreAsync);
                     if (generation != _renderGeneration) return; // list rebuilt mid-load — abort
                     items = _viewModel.Transcriptions; // re-read after async load
                     if (_renderedCount >= items.Count) break; // no progress — avoid spinning
@@ -1683,18 +1679,8 @@ public sealed class HistoryPage : Page
         {
             await Task.Delay(300, ct);
             _viewModel.SearchQuery = query;
-            _suppressCollectionRefreshDepth++;
-            try
-            {
-                if (string.IsNullOrEmpty(query))
-                    await _viewModel.LoadAsync();
-                else
-                    await _viewModel.SearchAsync();
-            }
-            finally
-            {
-                if (_suppressCollectionRefreshDepth > 0) _suppressCollectionRefreshDepth--;
-            }
+            // HIS-14: ReloadAsync keeps the selected tab; LoadAsync() reset it to All under an "images" label.
+            await WithCollectionRefreshSuppressedAsync(_viewModel.ReloadAsync);
             DispatcherQueue.TryEnqueue(() =>
             {
                 RefreshList();

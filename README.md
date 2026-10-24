@@ -6,6 +6,8 @@ at your cursor. Built with .NET 8 + WinUI 3 by DV Studio, inspired by
 
 Product information and downloads: <https://voicewink.app/?src=gh>
 
+[![Listed on Open Source Alternatives](https://www.opensourcealternatives.to/badge-osa.svg)](https://www.opensourcealternatives.to/item/voicewink)
+
 ![The VoiceWink home screen: the recording state and the last transcription](https://voicewink.app/assets/vw-main.webp)
 
 Download the signed installer from the site and try it free for 7 days, with no account or

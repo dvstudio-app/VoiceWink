@@ -41,8 +41,8 @@ public sealed class UpdatesPage : Page
     private TextBlock? _currentVersionBlock;
     private TextBlock? _lastCheckedBlock;
     private TextBlock? _statusTextBlock;
-    private Border? _checkButton;
-    private Border? _applyButton;
+    private Button? _checkButton;
+    private Button? _applyButton;
     private TextBlock? _applyStatusBlock;
     private ToggleSwitch? _checkToggleSwitch;
     private ToggleSwitch? _installToggleSwitch;
@@ -257,9 +257,9 @@ public sealed class UpdatesPage : Page
                     break;
                 case nameof(UpdateViewModel.IsApplying):
                     // CanCheckForUpdates also depends on !IsApplying — re-gate the check button here
-                    // too, or it stays clickable during an apply (the Tapped handler calls
+                    // too, or it stays clickable during an apply (the Click handler calls
                     // ExecuteAsync directly, which ignores CanExecute; the enabled state is enforced
-                    // only through SetButtonEnabled / IsHitTestVisible).
+                    // only through SetButtonEnabled).
                     RefreshCheckButton();
                     RefreshApplyButton();
                     break;

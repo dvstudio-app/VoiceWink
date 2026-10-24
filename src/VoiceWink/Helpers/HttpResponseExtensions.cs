@@ -133,7 +133,7 @@ internal static class HttpResponseExtensions
     internal const long MaxTextResponseBytes = 10 * 1024 * 1024;
 
     /// <summary>
-    /// Maximum response body size for image generation (50 MB). 4K images can be 20-30 MB base64.
+    /// Maximum response body size for image generation (50 MB). 4K images can be 20-50 MB base64.
     /// Internal: the ONE image-response limit — both single and batch clients apply it as
     /// <c>HttpClient.MaxResponseContentBufferSize</c> so an oversized/chunked response fails
     /// DURING buffering instead of after N concurrent full buffers, and the URL-fallback
@@ -149,12 +149,35 @@ internal static class HttpResponseExtensions
         this HttpContent content, CancellationToken ct = default)
         => ReadWithLimitAsync(content, MaxTextResponseBytes, ct);
 
+    /// <summary>How much of an image reply's body the logs keep; the guard truncates it to 200 characters.</summary>
+    private const int ImageReplyExcerptBytes = 256;
+
     /// <summary>
-    /// Read response content with a higher limit for image generation (4K images can be 20-30 MB base64).
+    /// Parses an image-generation reply (4K images can be 20–50 MB of base64) straight from its
+    /// bytes under the image limit, never as a string — see <see cref="ImageReplyJson"/>.
     /// </summary>
-    public static Task<string> ReadAsStringImageLimitedAsync(
+    internal static async Task<ImageReplyJson> ReadImageJsonAsync(
         this HttpContent content, CancellationToken ct = default)
-        => ReadWithLimitAsync(content, MaxImageResponseBytes, ct);
+    {
+        var length = content.Headers.ContentLength;
+        if (length > MaxImageResponseBytes)
+            throw new InvalidOperationException(
+                $"Response size {length} exceeds limit of {MaxImageResponseBytes} bytes.");
+
+        using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        using var limited = new LimitedStream(stream, MaxImageResponseBytes);
+        var buffer = new MemoryStream((int)(length ?? 0));
+        await limited.CopyToAsync(buffer, ct).ConfigureAwait(false);
+
+        // The document keeps the buffer's array; nothing copies the body again.
+        var body = new ReadOnlyMemory<byte>(buffer.GetBuffer(), 0, (int)buffer.Length);
+        // The StreamReader this replaced dropped a UTF-8 byte-order mark; the parser does not.
+        if (body.Span.StartsWith("﻿"u8))
+            body = body[3..];
+        var excerpt = global::System.Text.Encoding.UTF8.GetString(
+            body.Span[..Math.Min(body.Length, ImageReplyExcerptBytes)]);
+        return new ImageReplyJson(global::System.Text.Json.JsonDocument.Parse(body), excerpt);
+    }
 
     private static async Task<string> ReadWithLimitAsync(HttpContent content, long maxBytes, CancellationToken ct)
     {

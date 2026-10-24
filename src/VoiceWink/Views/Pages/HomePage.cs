@@ -30,7 +30,7 @@ public sealed class HomePage : Page
     private readonly LicenseService _license;
     private readonly TextBlock _statusBlock;
     private readonly TextBlock _transcriptionBlock;
-    private readonly Border _copyButton;
+    private readonly Button _copyButton;
     private readonly PropertyChangedEventHandler _vmPropertyChanged;
 
     /// <summary>What the last-transcription card says before anything is dictated. It names no way
@@ -190,10 +190,9 @@ public sealed class HomePage : Page
         };
         _trialLink = AppTheme.CreateActionLink(HomeTrialLine.CountdownLinkText,
             () => App.MainWindowInstance?.NavigateToPage("license"),
-            "Open the License page");
+            "Open the License page", accessibleName: "Open the License page");
         _trialLink.HorizontalAlignment = HorizontalAlignment.Center;
         _trialLink.TextAlignment = TextAlignment.Center;
-        AutomationProperties.SetName(_trialLink, "Open the License page");
         _trialPanel = new StackPanel
         {
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -454,7 +453,7 @@ public sealed class HomePage : Page
         _trialText.Text = line.Text;
         _trialText.Foreground = AppTheme.Brush(emphasized ? AppTheme.WarningText : AppTheme.SubtleText);
         _trialText.FontWeight = emphasized ? FontWeights.SemiBold : FontWeights.Normal;
-        _trialLink.Text = line.LinkText;
+        AppTheme.SetActionLinkText(_trialLink, line.LinkText); // Text = would remove the link
         _trialPanel.Visibility = Visibility.Visible;
     }
 

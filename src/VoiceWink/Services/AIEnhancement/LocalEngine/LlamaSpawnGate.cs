@@ -31,9 +31,19 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 internal static class LlamaSpawnGate
 {
     /// <summary>Spawnable, or why not. The reason names the FILE and, for a signed-at-pack file,
-    /// both proofs (<see cref="ParakeetServerProvenance.DescribeRefusal"/>); app-authored text, a
-    /// file name and a certificate subject only — never a path.</summary>
-    internal readonly record struct Verdict(bool Spawnable, string? RefusalReason);
+    /// both proofs (<see cref="ParakeetServerProvenance.DescribeRefusal"/>, or the read error for a file that cannot be read); app-authored text, a
+    /// file name and a certificate subject only — never a path. <paramref name="RefusalKind"/> is the
+    /// refusal as a fixed token (the constants below, or <see cref="ParakeetSpawnGate"/>'s for a
+    /// signed-at-pack file) — what the once-per-run Sentry report is keyed and labelled by, since the
+    /// reason is redacted there.</summary>
+    internal readonly record struct Verdict(bool Spawnable, string? RefusalReason, string? RefusalKind = null);
+
+    internal const string DirectoryUnreadableKind = "directory-unreadable";
+    internal const string ExtraFileKind = "extra-file";
+    internal const string MissingKind = "missing";
+    internal const string HashMismatchKind = "hash-mismatch";
+    internal const string ReadFailedKind = "read-failed";
+    internal const string WrongArchitectureKind = "wrong-architecture";
 
     /// <summary>The rule over ONE payload set's own pins (LAI-10: x64 or ARM64 — a directory is
     /// never checked against the other set's tables).</summary>
@@ -49,13 +59,19 @@ internal static class LlamaSpawnGate
         // passed on OUR signature (a signed release) has no hash binding it to this set.
         foreach (var name in payload.SignedAtPack.Keys.Concat(payload.PinnedCopies.Keys))
         {
-            if (!HasPeMachine(Path.Combine(payloadDirectory, name), payload.PeMachine))
-                return new Verdict(false, $"{name}: not a {payload.Name} file (PE machine is not 0x{payload.PeMachine:X4})");
+            switch (HasPeMachine(Path.Combine(payloadDirectory, name), payload.PeMachine))
+            {
+                case null:
+                    return new Verdict(false, $"{name}: the file cannot be read", ParakeetSpawnGate.UnreadableKind);
+                case false:
+                    return new Verdict(false, $"{name}: not a {payload.Name} file (PE machine is not 0x{payload.PeMachine:X4})", WrongArchitectureKind);
+            }
         }
         return verdict;
     }
 
-    private static bool HasPeMachine(string path, ushort expected)
+    /// <summary>Null when the file cannot be read — refused, but not a wrong-architecture file.</summary>
+    private static bool? HasPeMachine(string path, ushort expected)
     {
         try
         {
@@ -70,7 +86,7 @@ internal static class LlamaSpawnGate
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return false;
+            return null;
         }
     }
 
@@ -93,14 +109,14 @@ internal static class LlamaSpawnGate
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return new Verdict(false, "the payload directory cannot be read");
+            return new Verdict(false, "the payload directory cannot be read", DirectoryUnreadableKind);
         }
 
         foreach (var name in present)
         {
             if (!signedAtPack.ContainsKey(name) && !pinnedCopies.ContainsKey(name))
             {
-                return new Verdict(false, $"{name} is not part of the pinned payload");
+                return new Verdict(false, $"{name} is not part of the pinned payload", ExtraFileKind);
             }
         }
 
@@ -109,27 +125,36 @@ internal static class LlamaSpawnGate
         {
             if (!presentSet.Contains(name))
             {
-                return new Verdict(false, $"{name} is missing");
+                return new Verdict(false, $"{name} is missing", MissingKind);
             }
         }
 
         foreach (var (name, sha) in pinnedCopies)
         {
-            if (!ParakeetSpawnGate.HashMatches(Path.Combine(payloadDirectory, name), sha))
+            var hash = ParakeetSpawnGate.CheckHash(Path.Combine(payloadDirectory, name), sha);
+            switch (hash.Check)
             {
-                return new Verdict(false, $"{name}: hash does not match the pinned copy");
+                case ParakeetSpawnGate.HashCheck.Match:
+                    continue;
+                case ParakeetSpawnGate.HashCheck.Missing:
+                    return new Verdict(false, $"{name} is missing", MissingKind);
+                case ParakeetSpawnGate.HashCheck.Unreadable:
+                    return new Verdict(false, $"{name}: the file cannot be read ({hash.OpenError})", ParakeetSpawnGate.UnreadableKind);
+                case ParakeetSpawnGate.HashCheck.ReadFailed:
+                    return new Verdict(false, $"{name}: the file cannot be read ({hash.OpenError})", ReadFailedKind);
+                default:
+                    return new Verdict(false, $"{name}: hash does not match the pinned copy", HashMismatchKind);
             }
         }
 
-        var verify = verifySignature ?? AuthenticodeSignature.Verify;
+        // The Parakeet rule per file — hash first, signature on anything else, an unreadable file
+        // named as such rather than as a hash mismatch.
         foreach (var (name, sha) in signedAtPack)
         {
-            var path = Path.Combine(payloadDirectory, name);
-            var hashMatches = ParakeetSpawnGate.HashMatches(path, sha);
-            var signature = hashMatches ? AuthenticodeSignature.Verdict.Unsigned : verify(path);
-            if (!ParakeetServerProvenance.IsTrusted(hashMatches, signature))
+            var file = ParakeetSpawnGate.Check(Path.Combine(payloadDirectory, name), sha, verifySignature);
+            if (!file.Spawnable)
             {
-                return new Verdict(false, $"{name}: {ParakeetServerProvenance.DescribeRefusal(signature)}");
+                return new Verdict(false, $"{name}: {file.RefusalReason}", file.RefusalKind);
             }
         }
 

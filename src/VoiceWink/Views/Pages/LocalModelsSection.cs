@@ -326,7 +326,7 @@ internal static class LocalModelsSection
             }
         }
 
-        download.Element.Tapped += (_, _) =>
+        download.Element.Click += (_, _) =>
         {
             if (download.IsCancelling)
             {
@@ -344,13 +344,13 @@ internal static class LocalModelsSection
             Watch(store.StartDownload(entry.Id));
         };
 
-        selectBtn.Tapped += (_, _) =>
+        selectBtn.Click += (_, _) =>
         {
             select(entry.Id);
             Render();
         };
 
-        delete.Tapped += async (_, _) =>
+        delete.Click += async (_, _) =>
         {
             var dialog = new ContentDialog
             {

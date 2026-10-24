@@ -324,9 +324,14 @@ internal sealed class LlamaServerProcess
                 {
                     // Not charged: nothing was spawned. Sanitized - the reason can carry a certificate
                     // subject, which is attacker-authored text on a planted file - and logged as
-                    // {LocalException}, which the Sentry path redacts: this Error IS a Sentry event, and
-                    // {Reason} carried that subject into it (2026-10-17, the parakeet-server sites' fix).
-                    Logger.Error("llama-server: refusing to spawn - {LocalException}", LogValueSanitizer.SingleLine(verdict.RefusalReason));
+                    // {LocalException}, which the Sentry path redacts: the first refusal is a Sentry event,
+                    // and {Reason} carried that subject into it (2026-10-17, the parakeet-server sites' fix).
+                    // Error once per run and refusal kind, Warning after: a persistent refusal (an
+                    // antivirus holding the files) would otherwise file one Sentry event per acquire.
+                    // The kind is a fixed token, so it is the key and the one field Sentry can read.
+                    var kind = verdict.RefusalKind ?? "refused";
+                    Logger.Write(SessionErrorBudget.LevelFor("llama-spawn-refused:" + kind),
+                        "llama-server: refusing to spawn ({RefusalKind}) - {LocalException}", kind, LogValueSanitizer.SingleLine(verdict.RefusalReason));
                     return default;
                 }
                 var apiKey = LlamaServerLaunch.NewApiKey();

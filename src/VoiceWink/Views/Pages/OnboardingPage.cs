@@ -337,17 +337,15 @@ public sealed class OnboardingPage : Page
         {
             _path = path;
             UpdateOptionStyle(expressBorder, path == SetupPath.Express);
-            UpdateOptionChildColors(expressBorder, path == SetupPath.Express);
             UpdateOptionStyle(advancedBorder, path == SetupPath.Advanced);
-            UpdateOptionChildColors(advancedBorder, path == SetupPath.Advanced);
         }
-        expressBorder.Tapped += (_, _) => Choose(SetupPath.Express);
-        advancedBorder.Tapped += (_, _) => Choose(SetupPath.Advanced);
+        expressBorder.Click += (_, _) => Choose(SetupPath.Express);
+        advancedBorder.Click += (_, _) => Choose(SetupPath.Advanced);
         _contentPanel.Children.Add(expressBorder);
         _contentPanel.Children.Add(advancedBorder);
 
         var startBtn = AppTheme.CreateAccentButton("Get Started");
-        startBtn.Tapped += (_, _) => ShowStep(OnboardingStepFlow.LegalStepIndex);
+        startBtn.Click += (_, _) => ShowStep(OnboardingStepFlow.LegalStepIndex);
         AddButtonRow(startBtn);
     }
 
@@ -404,7 +402,7 @@ public sealed class OnboardingPage : Page
                 Margin = new Thickness(0, 0, 0, 8),
             });
             var exitBtn = AppTheme.CreateDangerButton("Exit");
-            exitBtn.Tapped += (_, _) => Environment.Exit(0);
+            exitBtn.Click += (_, _) => Environment.Exit(0);
             AddButtonRow(CreateBackButton(), exitBtn);
             return;
         }
@@ -428,7 +426,7 @@ public sealed class OnboardingPage : Page
                 Margin = new Thickness(0, 0, 0, 8),
             });
             var skipBtn = AppTheme.CreateAccentButton("Continue");
-            skipBtn.Tapped += (_, _) => ShowStep(3);
+            skipBtn.Click += (_, _) => ShowStep(3);
             AddButtonRow(CreateBackButton(), skipBtn);
             return;
         }
@@ -472,7 +470,7 @@ public sealed class OnboardingPage : Page
         checkbox.Checked += (_, _) => AppTheme.SetButtonEnabled(continueBtn, true, "Accept and continue");
         checkbox.Unchecked += (_, _) => AppTheme.SetButtonEnabled(continueBtn, false, "Accept and continue");
 
-        continueBtn.Tapped += (_, _) =>
+        continueBtn.Click += (_, _) =>
         {
             try
             {
@@ -501,7 +499,7 @@ public sealed class OnboardingPage : Page
         };
 
         var declineBtn = AppTheme.CreateSecondaryButton("Decline and exit");
-        declineBtn.Tapped += (_, _) => Environment.Exit(0);
+        declineBtn.Click += (_, _) => Environment.Exit(0);
 
         AddButtonRow(CreateBackButton(), continueBtn, declineBtn);
     }
@@ -612,7 +610,7 @@ public sealed class OnboardingPage : Page
 
         // Continue button — saves language setting and advances
         var langContinueBtn = AppTheme.CreateAccentButton("Continue");
-        langContinueBtn.Tapped += (_, _) =>
+        langContinueBtn.Click += (_, _) =>
         {
             _settings.SetString(AppDefaults.SelectedLanguage, _selectedLanguage);
             // Sync the ViewModel singleton so the Models page shows the correct language
@@ -666,24 +664,20 @@ public sealed class OnboardingPage : Page
             LocalOptionDescription(_parakeetAvailable, _selectedLanguage),
             !_useCloudTranscription);
 
-        cloudBorder.Tapped += (_, _) =>
+        cloudBorder.Click += (_, _) =>
         {
             _useCloudTranscription = true;
             _stepCache.Remove(5); // Rebuild config step for cloud
             UpdateOptionStyle(cloudBorder, true);
-            UpdateOptionChildColors(cloudBorder, true);
             UpdateOptionStyle(localBorder, false);
-            UpdateOptionChildColors(localBorder, false);
         };
 
-        localBorder.Tapped += (_, _) =>
+        localBorder.Click += (_, _) =>
         {
             _useCloudTranscription = false;
             _stepCache.Remove(5); // Rebuild config step for local
             UpdateOptionStyle(cloudBorder, false);
-            UpdateOptionChildColors(cloudBorder, false);
             UpdateOptionStyle(localBorder, true);
-            UpdateOptionChildColors(localBorder, true);
         };
 
         // LOCAL FIRST (ONB-1, owner 2026-08-05: "with Parakeet the game has changed"). The order
@@ -693,14 +687,14 @@ public sealed class OnboardingPage : Page
         // seam; the alternative, constructing this Page in a test, is not possible).
         //
         // The construction order above is immaterial to what renders; what the handlers require is
-        // only that both Borders exist before either is attached.
+        // only that both cards exist before either is attached.
         foreach (var card in ChoiceCardOrder)
         {
             _contentPanel.Children.Add(card == TranscriptionChoiceCard.Local ? localBorder : cloudBorder);
         }
 
         var choiceNextBtn = AppTheme.CreateAccentButton("Continue");
-        choiceNextBtn.Tapped += (_, _) => ShowStep(5);
+        choiceNextBtn.Click += (_, _) => ShowStep(5);
         AddButtonRow(CreateBackButton(), choiceNextBtn);
     }
 
@@ -795,14 +789,14 @@ public sealed class OnboardingPage : Page
             if (downloaded.Contains(modelName, ModelDiskReconciliation.NameComparer))
             {
                 var continueBtn = AppTheme.CreateAccentButton("Continue with Built-in Model");
-                continueBtn.Tapped += (_, _) => ShowStep(6);
+                continueBtn.Click += (_, _) => ShowStep(6);
                 AddButtonRow(CreateBackButton(), continueBtn);
             }
             else if (_watchedSpeechRow is { IsDownloading: true })
             {
                 // The download carries on past this step (BuildLocalDetailPanel).
                 var continueBtn = AppTheme.CreateAccentButton("Continue");
-                continueBtn.Tapped += (_, _) => ShowStep(6);
+                continueBtn.Click += (_, _) => ShowStep(6);
                 AddButtonRow(CreateBackButton(), continueBtn);
             }
             else if (InstalledCatalogModels.Known(downloaded).Count > 0
@@ -833,7 +827,7 @@ public sealed class OnboardingPage : Page
                 // Choosing correctly needs a real policy (prefer the current selection, then
                 // language compatibility) behind a stale-file-aware seam. That is its own change.
                 var skipBtn = AppTheme.CreateSecondaryButton("Skip download for now");
-                skipBtn.Tapped += (_, _) => ShowStep(6);
+                skipBtn.Click += (_, _) => ShowStep(6);
                 AddButtonRow(CreateBackButton(), skipBtn);
             }
             else
@@ -843,7 +837,7 @@ public sealed class OnboardingPage : Page
         }
     }
 
-    private Border BuildCloudDetailPanel(StackPanel panel)
+    private Button BuildCloudDetailPanel(StackPanel panel)
     {
         var providers = new[] { ModelProvider.Groq, ModelProvider.OpenAI, ModelProvider.Deepgram, ModelProvider.ElevenLabs };
         var providerLabels = new[] { "Groq", "OpenAI", "Deepgram", "ElevenLabs" };
@@ -1053,7 +1047,7 @@ public sealed class OnboardingPage : Page
             }
         }
 
-        saveKeyBtn.Tapped += async (_, _) => await SaveAndValidateKeyAsync();
+        saveKeyBtn.Click += async (_, _) => await SaveAndValidateKeyAsync();
 
         PopulateModels(providers[0]);
 
@@ -1073,7 +1067,7 @@ public sealed class OnboardingPage : Page
 
         // Select button — returned to caller for button row layout
         var selectBtn = AppTheme.CreateAccentButton("Continue with Cloud Model");
-        selectBtn.Tapped += async (_, _) =>
+        selectBtn.Click += async (_, _) =>
         {
             // Save and validate any key in the box (same logic as Save button)
             var inputAtStart = _keyInputGeneration;
@@ -1580,7 +1574,7 @@ public sealed class OnboardingPage : Page
                 });
             }
 
-            downloadBtn.Tapped += (_, _) =>
+            downloadBtn.Click += (_, _) =>
             {
                 if (row is null)
                 {
@@ -1632,7 +1626,7 @@ public sealed class OnboardingPage : Page
 
         // ── Buttons ──
         var continueBtn = AppTheme.CreateAccentButton("Continue");
-        continueBtn.Tapped += async (_, _) =>
+        continueBtn.Click += async (_, _) =>
         {
             // Validate any unsaved keys before proceeding. Run ALL validators in one pass (don't
             // short-circuit on the first failure), so a key that fails validation on one provider
@@ -2263,7 +2257,7 @@ public sealed class OnboardingPage : Page
             }
         }
 
-        saveKeyBtn.Tapped += async (_, _) => await SaveAndValidateEnhKeyAsync();
+        saveKeyBtn.Click += async (_, _) => await SaveAndValidateEnhKeyAsync();
 
         apiKeyBox.PasswordChanged += (_, _) => _keyInputGeneration++;
         providerCombo.SelectionChanged += async (_, _) =>
@@ -2528,7 +2522,7 @@ public sealed class OnboardingPage : Page
         }
 
         UpdateContinue();
-        hotkeyNextBtn.Tapped += (_, _) =>
+        hotkeyNextBtn.Click += (_, _) =>
         {
             if (Clashes(_selectedHotkey).Count > 0) return;
             ShowStep(10);
@@ -2590,7 +2584,7 @@ public sealed class OnboardingPage : Page
                 Margin = new Thickness(0, 0, 0, 8),
             });
             var skipBtn = AppTheme.CreateAccentButton("Continue");
-            skipBtn.Tapped += (_, _) => ShowStep(11);
+            skipBtn.Click += (_, _) => ShowStep(11);
             AddButtonRow(CreateBackButton(), skipBtn);
             return;
         }
@@ -2617,7 +2611,7 @@ public sealed class OnboardingPage : Page
                     "All features are unlocked. Activate a purchased key before the trial ends to keep recording.");
                 var continueBtn = AppTheme.CreateAccentButton("Continue");
                 continueBtn.HorizontalAlignment = HorizontalAlignment.Left;
-                continueBtn.Tapped += (_, _) => ShowStep(11);
+                continueBtn.Click += (_, _) => ShowStep(11);
                 content.Children.Add(continueBtn);
                 slot1 = card;
                 break;
@@ -2662,7 +2656,7 @@ public sealed class OnboardingPage : Page
                 var trialStatus = CreateLicenseStatusLine();
                 var trialBtn = AppTheme.CreateAccentButton("Start free trial");
                 trialBtn.HorizontalAlignment = HorizontalAlignment.Left;
-                trialBtn.Tapped += (_, _) =>
+                trialBtn.Click += (_, _) =>
                 {
                     // Re-resolve at click time. A key activated in slot 2 moments ago can leave this
                     // card on screen while the machine now holds a STORED key — an expired key
@@ -2734,7 +2728,7 @@ public sealed class OnboardingPage : Page
         var activateBtn = buyLeads
             ? AppTheme.CreateSecondaryButton("Activate")
             : AppTheme.CreateAccentButton("Activate");
-        activateBtn.Tapped += async (_, _) =>
+        activateBtn.Click += async (_, _) =>
         {
             AppTheme.SetButtonEnabled(activateBtn, false, "Activating...");
             try
@@ -2794,7 +2788,7 @@ public sealed class OnboardingPage : Page
             var continueBtn = buyLeads
                 ? AppTheme.CreateSecondaryButton("Continue")
                 : AppTheme.CreateAccentButton("Continue");
-            continueBtn.Tapped += (_, _) => ShowStep(11);
+            continueBtn.Click += (_, _) => ShowStep(11);
             AddButtonRow(CreateBackButton(), continueBtn);
         }
         else
@@ -2921,14 +2915,14 @@ public sealed class OnboardingPage : Page
         // switch as set, so the local log can be kept without sending crash reports. The next
         // step is Updates, on both paths since A42 (owner, 2026-10-19).
         var yesBtn = AppTheme.CreateAccentButton("Yes, send crash reports");
-        yesBtn.Tapped += (_, _) =>
+        yesBtn.Click += (_, _) =>
         {
             ApplyHelpImproveConsent(crashReports: true, promptLog: keepPromptLog);
             ShowStep(OnboardingStepFlow.UpdatesStepIndex);
         };
 
         var noBtn = AppTheme.CreateSecondaryButton("No thanks");
-        noBtn.Tapped += (_, _) =>
+        noBtn.Click += (_, _) =>
         {
             ApplyHelpImproveConsent(crashReports: false, promptLog: keepPromptLog);
             ShowStep(OnboardingStepFlow.UpdatesStepIndex);
@@ -3074,7 +3068,7 @@ public sealed class OnboardingPage : Page
         _contentPanel.Children.Add(warning);
 
         var continueBtn = AppTheme.CreateAccentButton("Continue");
-        continueBtn.Tapped += (_, _) => ShowStep(DoneStepIndex);
+        continueBtn.Click += (_, _) => ShowStep(DoneStepIndex);
         AddButtonRow(CreateBackButton(), continueBtn);
     }
 
@@ -3213,7 +3207,7 @@ public sealed class OnboardingPage : Page
         }
 
         var finishBtn = AppTheme.CreateAccentButton("Start Using VoiceWink");
-        finishBtn.Tapped += (_, _) =>
+        finishBtn.Click += (_, _) =>
         {
             // First, before ANY write: the recording hotkey must clash with nothing. The Hotkeys
             // step refuses a clashing choice and holds Continue on a clashing stored or seeded key,
@@ -3473,8 +3467,15 @@ public sealed class OnboardingPage : Page
     /// <summary>
     /// Creates a selectable option card with icon, title, and subtitle.
     /// Used for the Express / Advanced path cards and the cloud / local transcription cards.
+    ///
+    /// <para>A <see cref="Button"/> since A11Y-2 (2026-10-23): it was a tapped <c>Border</c>, which
+    /// Tab skips, so a keyboard user could take only the preselected path — Advanced setup could
+    /// not be chosen. Callers wire <c>Click</c>. The card owns its brushes and gives the template's
+    /// hover, press and disabled keys the same instances, so it looks as before (no hover tint) and
+    /// <see cref="UpdateOptionStyle"/> recolours it in place. Narrator reads the title and, on the
+    /// chosen card, "Selected".</para>
     /// </summary>
-    private static Border CreateSelectableOption(string glyph, string title, string subtitle, bool isSelected)
+    private static Button CreateSelectableOption(string glyph, string title, string subtitle, bool isSelected)
     {
         var iconBlock = new FontIcon
         {
@@ -3506,43 +3507,55 @@ public sealed class OnboardingPage : Page
             Children = { iconBlock, textPanel }
         };
 
-        var border = new Border
+        var background = new SolidColorBrush();
+        var borderBrush = new SolidColorBrush();
+        var card = new Button
         {
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(20, 14, 20, 14),
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            Child = row
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            Background = background,
+            BorderBrush = borderBrush,
+            // A click leaves focus where it was, as the Border did; Tab still reaches the card.
+            AllowFocusOnInteraction = false,
+            Content = row
         };
-        UpdateOptionStyle(border, isSelected);
+        foreach (var state in new[] { "PointerOver", "Pressed", "Disabled" })
+        {
+            card.Resources["ButtonBackground" + state] = background;
+            card.Resources["ButtonBorderBrush" + state] = borderBrush;
+        }
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(card, title);
+        // The name replaces what the content would say, so the subtitle (a download size, what a
+        // path adds) is given as help text, read after the name.
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(card, subtitle);
+        UpdateOptionStyle(card, isSelected);
 
-        return border;
+        return card;
     }
 
     /// <summary>
-    /// Updates an option border to selected (accent) or deselected (card) style.
+    /// Updates an option card to selected (accent) or deselected (card) style, its icon and title
+    /// colours included.
     /// </summary>
-    private static void UpdateOptionStyle(Border border, bool isSelected)
+    private static void UpdateOptionStyle(Button card, bool isSelected)
     {
-        if (isSelected)
-        {
-            border.Background = AppTheme.Brush(AppTheme.ActivePillBg);
-            border.BorderBrush = AppTheme.Brush(AppTheme.AccentBlue);
-            border.BorderThickness = new Thickness(2);
-        }
-        else
-        {
-            border.Background = AppTheme.Brush(AppTheme.CardBg);
-            border.BorderBrush = AppTheme.Brush(AppTheme.CardBorderColor);
-            border.BorderThickness = new Thickness(1);
-        }
+        if (card.Background is SolidColorBrush background)
+            background.Color = isSelected ? AppTheme.ActivePillBg : AppTheme.CardBg;
+        if (card.BorderBrush is SolidColorBrush borderBrush)
+            borderBrush.Color = isSelected ? AppTheme.AccentBlue : AppTheme.CardBorderColor;
+        card.BorderThickness = new Thickness(isSelected ? 2 : 1);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(card, isSelected ? "Selected" : string.Empty);
+        UpdateOptionChildColors(card, isSelected);
     }
 
     /// <summary>
-    /// Updates child text/icon colors inside a selectable option border.
+    /// Updates child text/icon colors inside a selectable option card.
     /// </summary>
-    private static void UpdateOptionChildColors(Border border, bool isSelected)
+    private static void UpdateOptionChildColors(Button card, bool isSelected)
     {
-        if (border.Child is StackPanel row && row.Children.Count >= 2)
+        if (card.Content is StackPanel row && row.Children.Count >= 2)
         {
             if (row.Children[0] is FontIcon icon)
                 icon.Foreground = AppTheme.Brush(isSelected ? AppTheme.AccentBlueText : AppTheme.TextSecondary);
@@ -3750,10 +3763,10 @@ public sealed class OnboardingPage : Page
 
 
     /// <summary>Creates a Back button (does not add to panel).</summary>
-    private Border CreateBackButton()
+    private Button CreateBackButton()
     {
         var btn = AppTheme.CreateSecondaryButton("Back");
-        btn.Tapped += (_, _) => ShowStep(_step - 1);
+        btn.Click += (_, _) => ShowStep(_step - 1);
         return btn;
     }
 

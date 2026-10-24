@@ -222,11 +222,13 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
     private string TombstonePath => Path.Combine(_modelsDirectory, TombstoneFileName);
 
     /// <summary>One derivation: the facts + the decision + the identity, taken under
-    /// <c>_state</c> so the ledger and tombstone reads are coherent.</summary>
+    /// <c>_state</c> so the ledger and tombstone reads are coherent. <c>ExeMissing</c> is true only
+    /// for POSITIVE absence of the engine executable.</summary>
     internal readonly record struct Snapshot(
         ParakeetTransitionState State,
         ParakeetTransitionDecision Decision,
-        string? InstallIdentity);
+        string? InstallIdentity,
+        bool ExeMissing);
 
     internal async Task<Snapshot> DeriveAsync(CancellationToken ct)
     {
@@ -327,11 +329,16 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
             }
         }
 
+        // CX1 again: File.Exists reads a deny that also blocks the attribute read as "missing", and
+        // the pill would say "reinstall". Only POSITIVE absence is missing; unknown lets the spawn
+        // gate run, which tells a refused open (blocked) from a damaged file.
+        var exeMissing = ProbePresence(_serverExePath) == false;
+
         var state = new ParakeetTransitionState(
             PcppFeatureOn: true, // this type only exists in a flag-on composition.
             SherpaInstalled: sherpaInstalled,
             Gguf: tier,
-            PcppRunnable: File.Exists(_serverExePath) && !_server.IsStormTripped
+            PcppRunnable: !exeMissing && !_server.IsStormTripped
                           && Volatile.Read(ref _consecutiveWholeCallFailures) < MaxConsecutiveWholeCallFailures,
             PcppHasServed: identity is not null
                            && string.Equals(_servedIdentity, identity, StringComparison.Ordinal),
@@ -350,12 +357,13 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
             EnsureMigrationDownloadStartedUnderState(tier);
         }
 
-        return new Snapshot(state, decision, identity);
+        return new Snapshot(state, decision, identity, exeMissing);
     }
 
     /// <summary>Tri-state occupancy probe: true = something is at the path, false = POSITIVE
     /// absence (FileNotFound/DirectoryNotFound), null = unreadable — the caller decides the
-    /// safe direction, and every caller here treats unknown as "cannot proceed" (CX1).</summary>
+    /// safe direction: the tombstone and bundle reads treat unknown as "cannot proceed" (CX1); the
+    /// engine executable's read lets the spawn gate decide.</summary>
     private static bool? ProbePresence(string path)
     {
         try
@@ -539,7 +547,7 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
     /// Ordered by what the user can do: a missing executable (reinstall) before a latched backend
     /// (restart) before a hash still in flight (wait).</summary>
     private ParakeetUnavailableReport ReportForNoServe(Snapshot snapshot)
-        => ReportForNoServe(File.Exists(_serverExePath), snapshot.State.PcppRunnable, _server.IsStormTripped,
+        => ReportForNoServe(!snapshot.ExeMissing, snapshot.State.PcppRunnable, _server.IsStormTripped,
             snapshot.State.Gguf);
 
     /// <summary>The pure decision behind <see cref="ReportForNoServe(Snapshot)"/> — case-tabled.</summary>
@@ -594,12 +602,15 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
     /// <summary>Why an acquire that reached the spawn path returned no lease. A predecessor still
     /// exiting is transient even when a launch already died this call: the deferred CPU retry runs at
     /// the next preparation, so "still starting" is the true sentence. A refused executable is a
-    /// damaged install — a reinstall is the repair, never another model (self-review, copy lens).</summary>
+    /// damaged install — a reinstall is the repair, never another model (self-review, copy lens).
+    /// An executable that could not even be opened is blocked, not damaged: a reinstall writes the
+    /// same bytes the block refuses again (2026-10-21).</summary>
     internal static ParakeetUnavailableReport ReportForAcquire(ParakeetAcquireFailure? failure) => failure?.Kind switch
     {
         ParakeetAcquireFailureKind.PredecessorExiting => new(ParakeetUnavailableCause.StartingUp, failure),
         ParakeetAcquireFailureKind.StormTripped => new(ParakeetUnavailableCause.EngineStoppedForSession, failure),
         ParakeetAcquireFailureKind.SpawnRefused => new(ParakeetUnavailableCause.EngineFileDamaged, failure),
+        ParakeetAcquireFailureKind.EngineFileUnreadable => new(ParakeetUnavailableCause.EngineFileBlocked, failure),
         _ => new(ParakeetUnavailableCause.EngineFailedToStart, failure),
     };
 

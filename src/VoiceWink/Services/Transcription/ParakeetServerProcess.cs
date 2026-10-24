@@ -478,7 +478,11 @@ public sealed class ParakeetServerProcess
                 // Sentry breadcrumb — the name-redacted property keeps it in the local file only
                 // (Codex + Kimi diff r1).
                 Logger.Warning("parakeet-server: refusing to spawn - {LocalException}", LogValueSanitizer.SingleLine(gate.RefusalReason));
-                return Failed(ParakeetAcquireFailureKind.SpawnRefused, detail: gate.RefusalKind ?? "refused");
+                return Failed(
+                    gate.RefusalKind == ParakeetSpawnGate.UnreadableKind
+                        ? ParakeetAcquireFailureKind.EngineFileUnreadable
+                        : ParakeetAcquireFailureKind.SpawnRefused,
+                    detail: gate.RefusalKind ?? "refused");
             }
 
             // TRN-51 (codex plan round, Blocker 2): an Auto (GPU) child that exits BEFORE health

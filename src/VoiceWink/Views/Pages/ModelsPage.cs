@@ -774,12 +774,12 @@ public sealed class ModelsPage : Page
         {
             if (!model.IsSelected)
             {
-                Border? selectBtn = null;
+                Button? selectBtn = null;
                 if (!unavailable)
                 {
                     var select = AppTheme.CreateCompactButton("Select");
                     select.MinWidth = AppTheme.ModelCardControlMinWidth;
-                    select.Tapped += async (_, _) =>
+                    select.Click += async (_, _) =>
                     {
                         // The English-only confirmation dialog that used to sit here is gone with the
                         // rows it guarded (2026-08-03): no catalogue model is English-only, so it could
@@ -796,7 +796,7 @@ public sealed class ModelsPage : Page
                 }
 
                 var deleteBtn = AppTheme.CreateCompactButton("Delete", isDanger: true);
-                deleteBtn.Tapped += async (_, _) =>
+                deleteBtn.Click += async (_, _) =>
                 {
                     var dialog = new ContentDialog
                     {
@@ -818,7 +818,7 @@ public sealed class ModelsPage : Page
                         // (settings naming a missing model + a silent re-download at the next
                         // recording start). AsyncRelayCommand does NOT gate ExecuteAsync — its
                         // no-concurrent-executions default only feeds CanExecute, which a
-                        // Tapped+= wiring never consults (measured against toolkit 8.4.0).
+                        // Click+= wiring never consults (measured against toolkit 8.4.0).
                         // `.Execute` instead of the await would separately let RefreshModelList
                         // rebuild the card before IsDownloaded flips (the UAT 15.16 dead-button
                         // class) and fault an unobserved task. (The toolkit strips the Async
@@ -840,7 +840,7 @@ public sealed class ModelsPage : Page
         {
             var downloadBtn = AppTheme.CreateCompactButton("Download", isAccent: true);
             downloadBtn.MinWidth = AppTheme.ModelCardControlMinWidth;
-            downloadBtn.Tapped += async (_, _) =>
+            downloadBtn.Click += async (_, _) =>
             {
                 AppTheme.SetButtonEnabled(downloadBtn, false);
                 rightPanel.Children.Remove(downloadBtn);
@@ -943,7 +943,7 @@ public sealed class ModelsPage : Page
         var cancelBtn = AppTheme.CreateCompactButton("Cancel", isDanger: true);
         // The Downloads card's Cancel: it also stops a dictation waiting for this model, and a
         // dictation does not start the model again by itself until a Download button asks.
-        cancelBtn.Tapped += (_, _) => Services.Transcription.BackgroundDownloads.Instance.Cancel(model.Name);
+        cancelBtn.Click += (_, _) => Services.Transcription.BackgroundDownloads.Instance.Cancel(model.Name);
 
         PropertyChangedEventHandler progressHandler = (_, e) =>
         {
@@ -1262,7 +1262,7 @@ public sealed class ModelsPage : Page
 
         var saveBtn = AppTheme.CreateCompactButton("Save", isAccent: true);
         ToolTipService.SetToolTip(saveBtn, AppTheme.SaveKeyTooltip);
-        saveBtn.Tapped += async (_, _) =>
+        saveBtn.Click += async (_, _) =>
         {
             try
             {
@@ -1381,7 +1381,7 @@ public sealed class ModelsPage : Page
         if (isEditing)
         {
             var cancelBtn = AppTheme.CreateCompactButton("Cancel");
-            cancelBtn.Tapped += (_, _) => RefreshCloudProviders();
+            cancelBtn.Click += (_, _) => RefreshCloudProviders();
             container.Children.Add(cancelBtn);
         }
     }
@@ -1485,7 +1485,7 @@ public sealed class ModelsPage : Page
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(0, 0, 4, 0)
                 };
-                // The disabled Select beside it cannot show a tooltip (no hit testing), so the reason sits here.
+                // The disabled Select beside it cannot show a tooltip, so the reason sits here.
                 AppTheme.SetIconLabel(warningIcon, "Needs this provider's API key");
                 rightPanel.Children.Add(warningIcon);
             }
@@ -1500,7 +1500,7 @@ public sealed class ModelsPage : Page
             }
             else
             {
-                selectBtn.Tapped += (_, _) =>
+                selectBtn.Click += (_, _) =>
                 {
                     _viewModel.SelectCloudModel(modelName);
                     RefreshModelList();

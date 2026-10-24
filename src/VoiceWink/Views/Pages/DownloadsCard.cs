@@ -153,7 +153,7 @@ internal sealed class DownloadsCard
             Root.Children.Add(text);
             Root.Children.Add(_button.Element);
 
-            _button.Element.Tapped += (_, _) =>
+            _button.Element.Click += (_, _) =>
             {
                 if (_row is not { } row)
                     return;

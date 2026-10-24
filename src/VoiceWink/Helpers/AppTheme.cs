@@ -1146,7 +1146,7 @@ public static class AppTheme
     ///
     /// <para>They were literals in FIVE places before UI-3 (<see cref="CreateAccentButton"/>,
     /// <see cref="CreateCompactButton"/>'s accent branch, <c>HomePage</c>'s record button, and both
-    /// faces of <see cref="BrushFor"/>), so an accent tweak could land on one face of a button that
+    /// faces of <see cref="ColorFor"/>), so an accent tweak could land on one face of a button that
     /// swaps between them and not the other — the drift Kimi flagged at r7 and Codex finished
     /// counting at r8, after a first pass caught only three of the five. Only the HOVER values need
     /// naming: the resting colours are already the shared <see cref="AccentBlue"/> /
@@ -1161,75 +1161,132 @@ public static class AppTheme
     public static readonly Windows.UI.Color AccentBlueHover = ColorHelper.FromArgb(255, 30, 144, 255);
     private static readonly Windows.UI.Color AccentRedHover = ColorHelper.FromArgb(255, 220, 80, 80);
 
-    /// <summary>Blue filled accent button.</summary>
-    public static Border CreateAccentButton(string text, TappedEventHandler? onTapped = null)
+    /// <summary>
+    /// The one way a factory button is built (A11Y-2, 2026-10-23): a plain <see cref="Button"/>, so
+    /// keyboard focus, Enter/Space and the "button" role come with the control. Until then every
+    /// factory here returned a <see cref="Border"/> with a <c>Tapped</c> handler, which Tab skips —
+    /// a keyboard user could not get past setup's terms step (UAT 293.23). The old look is kept
+    /// through the Button's own resource keys, the sidebar's mechanism (<c>MainWindow.CreateSidebarButton</c>).
+    ///
+    /// <para>Each button gets its OWN brushes, never the shared <see cref="Brush"/> cache, so
+    /// <see cref="SetButtonPalette"/> can recolour one button by changing brushes the template
+    /// already points at. The stretch alignments are a Border's defaults (a Button's are Left and
+    /// Center), so a button sits in its row exactly where the Border did. The pinned SDK's default
+    /// Button style sets no MinWidth or MinHeight, so the padding decides the size as before.</para>
+    /// </summary>
+    private static Button NewThemedButton(UIElement content, Windows.UI.Color normal, Windows.UI.Color hover,
+        Windows.UI.Color pressed, Windows.UI.Color? border, Thickness padding, double cornerRadius = 8)
     {
-        var normalBg = Brush(AccentBlue);
-        var hoverBg = Brush(AccentBlueHover);
-
-        var border = new Border
+        var normalBrush = new SolidColorBrush(normal);
+        var borderBrush = new SolidColorBrush(border ?? Colors.Transparent);
+        var button = new Button
         {
-            Background = normalBg,
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(16, 8, 16, 8),
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = 13,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = Brush(TextPrimary),
-                HorizontalAlignment = HorizontalAlignment.Center
-            }
+            Content = content,
+            Background = normalBrush,
+            BorderBrush = borderBrush,
+            BorderThickness = new Thickness(border.HasValue ? 1 : 0),
+            CornerRadius = new CornerRadius(cornerRadius),
+            Padding = padding,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            // A click leaves focus where it was, as the Border did (a word box keeps it after Add);
+            // Tab still reaches the button.
+            AllowFocusOnInteraction = false,
         };
+        button.Resources["ButtonBackgroundPointerOver"] = new SolidColorBrush(hover);
+        button.Resources["ButtonBackgroundPressed"] = new SolidColorBrush(pressed);
+        // A disabled button keeps its face; SetButtonEnabled dims it, as the Border's opacity did.
+        button.Resources["ButtonBackgroundDisabled"] = normalBrush;
+        foreach (var key in ButtonBorderStateKeys)
+            button.Resources[key] = borderBrush;
+        // Tunnelling, so it runs before the Button's own key handling (see SetButtonEnabled).
+        button.PreviewKeyDown += SwallowActivationWhileInert;
+        button.PreviewKeyUp += SwallowActivationWhileInert;
+        return button;
+    }
 
-        border.PointerEntered += (_, _) => border.Background = hoverBg;
-        border.PointerExited += (_, _) => border.Background = normalBg;
+    private static void SwallowActivationWhileInert(object sender, KeyRoutedEventArgs e)
+    {
+        if (sender is Button button && InertWhileFocused.TryGetValue(button, out _)
+            && e.Key is Windows.System.VirtualKey.Enter or Windows.System.VirtualKey.Space)
+            e.Handled = true;
+    }
 
-        if (onTapped != null) border.Tapped += onTapped;
+    /// <summary>Factory buttons SetButtonEnabled kept enabled but inert because they had focus.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Button, object> InertWhileFocused = new();
+    private static readonly object InertMarker = new();
 
-        return border;
+    private static readonly string[] ButtonBorderStateKeys =
+        ["ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled"];
+
+    /// <summary>
+    /// Recolours a factory button's resting, hover and pressed faces in place. Use it, never a
+    /// <c>Background</c> write: the template replaces <c>Background</c> under the pointer, so a raw
+    /// write is lost on the first hover.
+    /// </summary>
+    internal static void SetButtonPalette(Button button, Windows.UI.Color normal, Windows.UI.Color hover, Windows.UI.Color pressed)
+    {
+        if (button.Background is SolidColorBrush resting) resting.Color = normal;
+        if (button.Resources.TryGetValue("ButtonBackgroundPointerOver", out var h) && h is SolidColorBrush hoverBrush)
+            hoverBrush.Color = hover;
+        if (button.Resources.TryGetValue("ButtonBackgroundPressed", out var p) && p is SolidColorBrush pressedBrush)
+            pressedBrush.Color = pressed;
+    }
+
+    private static TextBlock ButtonLabel(string text, double fontSize, Windows.UI.Color foreground, bool semiBold) => new()
+    {
+        Text = text,
+        FontSize = fontSize,
+        FontWeight = semiBold ? FontWeights.SemiBold : FontWeights.Normal,
+        Foreground = Brush(foreground),
+        HorizontalAlignment = HorizontalAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    /// <summary>Blue filled accent button.</summary>
+    public static Button CreateAccentButton(string text, RoutedEventHandler? onClick = null)
+    {
+        var button = NewThemedButton(ButtonLabel(text, 13, TextPrimary, semiBold: true),
+            AccentBlue, AccentBlueHover, AccentBlueHover, border: null, new Thickness(16, 8, 16, 8));
+        if (onClick != null) button.Click += onClick;
+        return button;
     }
 
     /// <summary>
     /// One button whose LABEL, PALETTE and action follow the state of a long operation — "Download
     /// X" while idle, "Cancel Download" while it runs (UI-3).
     ///
-    /// <para><b>Why a type rather than two calls.</b> <see cref="CreateAccentButton"/> captures its
-    /// palette in the pointer-handler CLOSURES, so re-tinting an existing button leaves hover
-    /// restoring the old colour on the next mouse-out. This holds the palette in a FIELD the
-    /// handlers read at event time, which is what makes a live swap correct instead of
-    /// almost-correct.</para>
+    /// <para><b>Why a type rather than two calls.</b> The palette changes with the state, so the
+    /// button's faces must be re-read from the CORE at every swap — a palette captured when the
+    /// button was built leaves hover showing the old colour. <see cref="Repaint"/> recolours the
+    /// button's own brushes (<see cref="SetButtonPalette"/>), which the template's hover and press
+    /// states already point at.</para>
     ///
     /// <para>Owner rule (UAT §91.5): *"instead of a separate cancel download button, the already
     /// existing Download button should simply change to 'Cancel Download' … This should be universal
     /// wherever it applies in the app."* A shared type is how the second and third site get the
     /// behaviour without a hand-rolled copy — the [[UI-2]] lesson.</para>
     ///
-    /// <para>A <see cref="Border"/> rather than a templated control, per the repo's standing WinUI 3
-    /// constraint: templated controls have failed CLI-launched builds on missing template resources,
-    /// and a Border carrying a TextBlock needs none.</para>
+    /// <para>A <see cref="Button"/> since A11Y-2 (it was a <see cref="Border"/>, which Tab skips);
+    /// Button is a templated control the CLI-launched build already renders (the sidebar, PR
+    /// #1217), which is what the WinUI 3 constraint asks.</para>
     /// </summary>
     public sealed class ActionToggleButton
     {
         private readonly ActionToggleCore _core;
         private readonly TextBlock _label;
-        private bool _pointerOver;
 
-        internal ActionToggleButton(Border element, TextBlock label, ActionToggleCore core)
+        internal ActionToggleButton(Button element, TextBlock label, ActionToggleCore core)
         {
             Element = element;
             _label = label;
             _core = core;
-
-            // Resolve from the CORE at event time, never from a value captured when the handlers
-            // were attached — that capture is the bug this design exists to prevent.
-            element.PointerEntered += (_, _) => { _pointerOver = true; Repaint(); };
-            element.PointerExited += (_, _) => { _pointerOver = false; Repaint(); };
-
             Repaint();
         }
 
-        public Border Element { get; }
+        public Button Element { get; }
 
         /// <summary>True while the button is showing its cancel face — what callers branch on.</summary>
         public bool IsCancelling => _core.IsCancelling;
@@ -1251,26 +1308,26 @@ public static class AppTheme
         private void Repaint()
         {
             _label.Text = _core.Label;
-            var (palette, hovered) = _core.BackgroundFor(_pointerOver);
-            Element.Background = BrushFor(palette, hovered);
+            var hover = ColorFor(_core.Palette, hovered: true);
+            SetButtonPalette(Element, ColorFor(_core.Palette, hovered: false), hover, hover);
         }
     }
 
     /// <summary>
-    /// Maps a toggle state to its brush. Re-read on every repaint, so a theme change mid-operation
+    /// Maps a toggle state to its colour. Re-read on every repaint, so a theme change mid-operation
     /// gives the post-swap face the NEW palette — something captured closures can never do.
     /// </summary>
-    internal static Brush BrushFor(TogglePalette palette, bool hovered) => palette switch
+    internal static Windows.UI.Color ColorFor(TogglePalette palette, bool hovered) => palette switch
     {
-        TogglePalette.Cancel => Brush(hovered ? AccentRedHover : AccentRed),
-        _ => Brush(hovered ? AccentBlueHover : AccentBlue),
+        TogglePalette.Cancel => hovered ? AccentRedHover : AccentRed,
+        _ => hovered ? AccentBlueHover : AccentBlue,
     };
 
     /// <summary>
     /// Builds an <see cref="ActionToggleButton"/> in its primary state. BOTH labels are bound here,
     /// and the transitions take no arguments, so a caller structurally cannot put the cancel label
     /// on the primary state (Codex diff review — the earlier API allowed exactly that while its doc
-    /// claimed labels could not drift). The caller wires ONE <c>Tapped</c> handler and branches on
+    /// claimed labels could not drift). The caller wires ONE <c>Click</c> handler and branches on
     /// <see cref="ActionToggleButton.IsCancelling"/>. <paramref name="compact"/> gives it the
     /// <see cref="CreateCompactButton"/> size, for a model card where it sits beside Select, Delete
     /// and <see cref="CreateActiveStatusBadge"/>.
@@ -1278,21 +1335,12 @@ public static class AppTheme
     public static ActionToggleButton CreateActionToggleButton(string primaryText, string cancelText, bool compact = false)
     {
         var core = new ActionToggleCore(primaryText, cancelText);
-        var label = new TextBlock
-        {
-            FontSize = compact ? CompactControlFontSize : 13,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = Brush(TextPrimary),
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-        var border = new Border
-        {
-            CornerRadius = new CornerRadius(8),
-            Padding = compact ? CompactControlPadding : new Thickness(16, 8, 16, 8),
-            MinWidth = compact ? ModelCardControlMinWidth : 0,
-            Child = label
-        };
-        return new ActionToggleButton(border, label, core);
+        var label = ButtonLabel(string.Empty, compact ? CompactControlFontSize : 13, TextPrimary, semiBold: true);
+        // Repaint (in the constructor) sets the label and the palette for the primary state.
+        var button = NewThemedButton(label, AccentBlue, AccentBlueHover, AccentBlueHover, border: null,
+            compact ? CompactControlPadding : new Thickness(16, 8, 16, 8));
+        button.MinWidth = compact ? ModelCardControlMinWidth : 0;
+        return new ActionToggleButton(button, label, core);
     }
 
     // One size for everything on a model card's right side: Select, Delete, Download and the Active badge.
@@ -1328,44 +1376,22 @@ public static class AppTheme
     };
 
     /// <summary>Subtle secondary button with border.</summary>
-    public static Border CreateSecondaryButton(string text, TappedEventHandler? onTapped = null)
+    public static Button CreateSecondaryButton(string text, RoutedEventHandler? onClick = null)
     {
-        var normalBg = TransparentBrush;
-        var hoverBg = Brush(HoverBg);
-
-        var border = new Border
-        {
-            Background = normalBg,
-            BorderBrush = Brush(CardBorderColor),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(16, 8, 16, 8),
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = 13,
-                Foreground = Brush(TextSecondary),
-                HorizontalAlignment = HorizontalAlignment.Center
-            }
-        };
-
-        border.PointerEntered += (_, _) => border.Background = hoverBg;
-        border.PointerExited += (_, _) => border.Background = normalBg;
-
-        if (onTapped != null) border.Tapped += onTapped;
-
-        return border;
+        var button = NewThemedButton(ButtonLabel(text, 13, TextSecondary, semiBold: false),
+            Colors.Transparent, HoverBg, HoverBg, CardBorderColor, new Thickness(16, 8, 16, 8));
+        if (onClick != null) button.Click += onClick;
+        return button;
     }
 
     /// <summary>
-    /// A glyph-only button — a 24×24 <see cref="Border"/> around a <see cref="Viewbox"/> holding a
+    /// A glyph-only button — a 24×24 <see cref="Button"/> around a <see cref="Viewbox"/> holding a
     /// <see cref="FontIcon"/> — for an action that belongs BESIDE a line of text rather than in a
     /// button row (LIC-25: the License page's refresh beside the status chip). History's per-row
     /// copy/redo controls are the same shape, built inline before this existed and left as they are:
     /// their hover colours carry meaning of their own. Neutral hover (<see cref="HoverBg"/>), never a
-    /// tinted one — green means success in this app. The accessible name doubles as the tooltip, and
-    /// the tooltip is load-bearing: a <see cref="Border"/> is not a <c>Control</c>, so UIA may not
-    /// announce the name, and a glyph alone names nothing to a pointer user.
+    /// tinted one — green means success in this app. The accessible name doubles as the tooltip: a
+    /// glyph names nothing, to a pointer user or to Narrator.
     ///
     /// <para><paramref name="glyphSize"/> tunes the GLYPH only; the 24 DIP border is fixed and is the
     /// pointer target (LIC-26, Codex plan round). The two were separated rather than scaled together
@@ -1383,7 +1409,7 @@ public static class AppTheme
     /// centred glyph lands on the row's exact mid-line, about 0.75 DIP above 12 px capitals. Layout
     /// rounding cannot place anything at 0.75, so the License page passes 1.</para>
     /// </summary>
-    public static Border CreateIconButton(string glyph, string accessibleName, TappedEventHandler onTapped,
+    public static Button CreateIconButton(string glyph, string accessibleName, RoutedEventHandler onClick,
                                           double glyphSize = 12, double glyphOffsetY = 0)
     {
         var icon = new FontIcon
@@ -1392,40 +1418,45 @@ public static class AppTheme
             FontSize = 11,
             Foreground = Brush(SubtleText),
         };
-        var normalBg = TransparentBrush;
-        var hoverBg = Brush(HoverBg);
-
-        var border = new Border
+        // (0, +y, 0, -y) is a pure translation of a centred fixed-size child: its margin box stays
+        // glyphSize tall, so the centring arithmetic is unchanged and only the ink moves.
+        var glyphBox = new Viewbox
         {
-            Width = 24,
-            Height = 24,
-            CornerRadius = new CornerRadius(4),
-            VerticalAlignment = VerticalAlignment.Center,
-            Background = normalBg,
-            // (0, +y, 0, -y) is a pure translation of a centred fixed-size child: its margin box stays
-            // glyphSize tall, so the centring arithmetic is unchanged and only the ink moves.
-            Child = new Viewbox
-            {
-                Width = glyphSize,
-                Height = glyphSize,
-                Margin = new Thickness(0, glyphOffsetY, 0, -glyphOffsetY),
-                Child = icon,
-            },
+            Width = glyphSize,
+            Height = glyphSize,
+            Margin = new Thickness(0, glyphOffsetY, 0, -glyphOffsetY),
+            Child = icon,
         };
+        var button = NewThemedButton(glyphBox, Colors.Transparent, HoverBg, HoverBg, border: null,
+            new Thickness(0), cornerRadius: 4);
+        button.Width = 24;
+        button.Height = 24;
+        button.VerticalAlignment = VerticalAlignment.Center;
 
-        border.PointerEntered += (_, _) => { border.Background = hoverBg; icon.Foreground = Brush(TextSecondary); };
-        border.PointerExited += (_, _) => { border.Background = normalBg; icon.Foreground = Brush(SubtleText); };
-        border.Tapped += onTapped;
+        OnPointerHover(button,
+            () => icon.Foreground = Brush(TextSecondary),
+            () => icon.Foreground = Brush(SubtleText));
+        button.Click += onClick;
 
-        SetIconLabel(border, accessibleName);
-        return border;
+        SetIconLabel(button, accessibleName);
+        return button;
+    }
+
+    /// <summary>
+    /// Pointer enter/exit on a factory button. Registered with <c>handledEventsToo</c> because a
+    /// <see cref="Button"/> handles pointer input itself; the template's resource keys already own
+    /// the background, so this is only for what they cannot reach (an icon's colour).
+    /// </summary>
+    private static void OnPointerHover(UIElement element, Action enter, Action exit)
+    {
+        element.AddHandler(UIElement.PointerEnteredEvent, new PointerEventHandler((_, _) => enter()), true);
+        element.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, _) => exit()), true);
     }
 
     /// <summary>
     /// Names a glyph-only control twice, the same way: as its tooltip (a pointer user sees only the
-    /// glyph) and as its accessible name (a <see cref="Border"/> is not a <c>Control</c>, so nothing
-    /// else names it). The one way every icon-only button in the app is labelled (2026-10-14 tooltip
-    /// pass), <see cref="CreateIconButton"/> included.
+    /// glyph) and as its accessible name (a glyph is not a name). The one way every icon-only
+    /// button in the app is labelled (2026-10-14 tooltip pass), <see cref="CreateIconButton"/> included.
     /// </summary>
     public static void SetIconLabel(FrameworkElement element, string label)
     {
@@ -1442,37 +1473,28 @@ public static class AppTheme
     /// configures hover content), each tap's own tooltip is always closed, and a generation guard
     /// keeps rapid re-taps from leaving a stuck glyph. Then the hover label comes back.
     /// </summary>
-    public static Border CreateCopyButton(string label, string copiedLabel,
+    public static Button CreateCopyButton(string label, string copiedLabel,
         Func<string> getText, Func<string, Task<bool>> copy)
     {
         const string CopyGlyph = "";
         var icon = new FontIcon { Glyph = CopyGlyph, FontSize = 11, Foreground = Brush(SubtleText) };
-        var button = new Border
-        {
-            Width = 24,
-            Height = 24,
-            CornerRadius = new CornerRadius(4),
-            VerticalAlignment = VerticalAlignment.Center,
-            Background = TransparentBrush,
-            Child = new Viewbox { Width = 12, Height = 12, Child = icon },
-        };
+        var hover = ColorHelper.FromArgb(30, 142, 142, 147);
+        var button = NewThemedButton(new Viewbox { Width = 12, Height = 12, Child = icon },
+            Colors.Transparent, hover, hover, border: null, new Thickness(0), cornerRadius: 4);
+        button.Width = 24;
+        button.Height = 24;
+        button.VerticalAlignment = VerticalAlignment.Center;
         SetIconLabel(button, label);
         var feedbackGeneration = 0;
         var feedbackActive = false; // hover must not overwrite the feedback tint
-        button.PointerEntered += (_, _) =>
+        OnPointerHover(button,
+            () => { if (!feedbackActive) icon.Foreground = Brush(TextPrimary); },
+            () => { if (!feedbackActive) icon.Foreground = Brush(SubtleText); });
+        // The button sits inside History rows that react to their own tap; the Border it replaced
+        // marked the tap handled, and so does this, so a copy never also acts on the row.
+        button.AddHandler(UIElement.TappedEvent, new TappedEventHandler((_, e) => e.Handled = true), true);
+        button.Click += async (_, _) =>
         {
-            button.Background = Brush(ColorHelper.FromArgb(30, 142, 142, 147));
-            if (!feedbackActive) icon.Foreground = Brush(TextPrimary);
-        };
-        button.PointerExited += (_, _) =>
-        {
-            button.Background = TransparentBrush;
-            if (!feedbackActive) icon.Foreground = Brush(SubtleText);
-        };
-        button.PointerPressed += (_, pe) => pe.Handled = true;
-        button.Tapped += async (_, e) =>
-        {
-            e.Handled = true;
             var copied = await copy(getText() ?? "");
             var generation = ++feedbackGeneration;
             feedbackActive = true;
@@ -1508,126 +1530,119 @@ public static class AppTheme
     public const double LinkHoverOpacity = 0.9;
 
     /// <summary>
-    /// Link-style TextBlock (hover-dim + tap action) for an in-page ACTION rather than a URL — the
-    /// License page's lost-key / try-without-a-key links and the onboarding License step's lost-key /
-    /// buy links share it (moved here from LicensePage on 2026-09-02 so the wizard did not grow a
-    /// second copy). Tapped, not PointerPressed: PointerPressed fires on any pointer contact including
-    /// right-click and touch-begin-before-release; Tapped is the primary-action gesture (mouse left
-    /// click, single-finger tap) and matches link semantics.
+    /// Link-style text (hover-dim + click action) for an in-page ACTION rather than a URL — the
+    /// License page's lost-key and feedback links, the onboarding License step's lost-key link and
+    /// Home's trial line share it (moved here from LicensePage on 2026-09-02 so the wizard did not
+    /// grow a second copy). A TextBlock holding ONE inline <see cref="Hyperlink"/> since A11Y-2
+    /// (2026-10-23): the Hyperlink takes keyboard focus, runs on Enter and is announced as a link,
+    /// which a tapped TextBlock never was. Change its text through <see cref="SetActionLinkText"/>:
+    /// assigning the TextBlock's <c>Text</c> replaces its inlines and removes the link.
     /// </summary>
-    public static TextBlock CreateActionLink(string text, Action onTap, string? tooltip = null)
+    public static TextBlock CreateActionLink(string text, Action onTap, string? tooltip = null, string? accessibleName = null)
     {
+        var hyperlink = new Hyperlink
+        {
+            Foreground = Brush(AccentBlueText),
+            UnderlineStyle = UnderlineStyle.None, // the look this replaced
+        };
+        // The Hyperlink is what takes focus, so Narrator reads its name, not the TextBlock's.
+        if (accessibleName != null)
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(hyperlink, accessibleName);
+        hyperlink.Inlines.Add(new Run { Text = text });
+        hyperlink.Click += (_, _) => onTap();
+
         var link = new TextBlock
         {
-            Text = text,
-            Foreground = Brush(AccentBlueText),
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 4, 0, 0),
         };
-        link.Tapped += (_, _) => onTap();
+        link.Inlines.Add(hyperlink);
         link.PointerEntered += (_, _) => link.Opacity = LinkHoverOpacity;
         link.PointerExited += (_, _) => link.Opacity = 1.0;
         if (tooltip != null) ToolTipService.SetToolTip(link, tooltip);
         return link;
     }
 
-    /// <summary>Danger button (red text, subtle bg).</summary>
-    public static Border CreateDangerButton(string text, TappedEventHandler? onTapped = null)
+    /// <summary>Changes the text of a <see cref="CreateActionLink"/> link and keeps the link.</summary>
+    public static void SetActionLinkText(TextBlock link, string text)
     {
-        var normalBg = TransparentBrush;
-        var hoverBg = Brush(ColorHelper.FromArgb(30, 255, 69, 58));
+        if (link.Inlines.Count > 0 && link.Inlines[0] is Hyperlink hyperlink
+            && hyperlink.Inlines.Count > 0 && hyperlink.Inlines[0] is Run run)
+            run.Text = text;
+    }
 
-        var border = new Border
-        {
-            Background = normalBg,
-            BorderBrush = Brush(ColorHelper.FromArgb(80, 255, 69, 58)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(16, 8, 16, 8),
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = 13,
-                Foreground = Brush(FailureText),
-                HorizontalAlignment = HorizontalAlignment.Center
-            }
-        };
-
-        border.PointerEntered += (_, _) => border.Background = hoverBg;
-        border.PointerExited += (_, _) => border.Background = normalBg;
-
-        if (onTapped != null) border.Tapped += onTapped;
-
-        return border;
+    /// <summary>Danger button (red text, subtle bg).</summary>
+    public static Button CreateDangerButton(string text, RoutedEventHandler? onClick = null)
+    {
+        var hover = ColorHelper.FromArgb(30, 255, 69, 58);
+        var button = NewThemedButton(ButtonLabel(text, 13, FailureText, semiBold: false),
+            Colors.Transparent, hover, hover, ColorHelper.FromArgb(80, 255, 69, 58), new Thickness(16, 8, 16, 8));
+        if (onClick != null) button.Click += onClick;
+        return button;
     }
 
     /// <summary>Compact button for use inside cards and list rows. Supports accent, danger, and default styles.</summary>
-    public static Border CreateCompactButton(string text, bool isAccent = false, bool isDanger = false, TappedEventHandler? onTapped = null)
+    public static Button CreateCompactButton(string text, bool isAccent = false, bool isDanger = false, RoutedEventHandler? onClick = null)
     {
-        SolidColorBrush normalBg, hoverBg, textBrush;
-        SolidColorBrush? borderBrush = null;
+        Windows.UI.Color normal, hover, foreground;
+        Windows.UI.Color? border = null;
 
         if (isAccent)
         {
-            normalBg = Brush(AccentBlue);
-            hoverBg = Brush(AccentBlueHover);
-            textBrush = Brush(TextPrimary);
+            normal = AccentBlue;
+            hover = AccentBlueHover;
+            foreground = TextPrimary;
         }
         else if (isDanger)
         {
-            normalBg = TransparentBrush;
-            hoverBg = Brush(ColorHelper.FromArgb(30, 255, 69, 58));
-            textBrush = Brush(FailureText);
-            borderBrush = Brush(ColorHelper.FromArgb(80, 255, 69, 58));
+            normal = Colors.Transparent;
+            hover = ColorHelper.FromArgb(30, 255, 69, 58);
+            foreground = FailureText;
+            border = ColorHelper.FromArgb(80, 255, 69, 58);
         }
         else
         {
-            normalBg = Brush(ColorHelper.FromArgb(128, CardBorderColor.R, CardBorderColor.G, CardBorderColor.B));
-            hoverBg = Brush(HoverBg);
-            textBrush = Brush(TextSecondary);
+            normal = ColorHelper.FromArgb(128, CardBorderColor.R, CardBorderColor.G, CardBorderColor.B);
+            hover = HoverBg;
+            foreground = TextSecondary;
         }
 
-        var border = new Border
-        {
-            Background = normalBg,
-            BorderBrush = borderBrush,
-            BorderThickness = borderBrush != null ? new Thickness(1) : new Thickness(0),
-            CornerRadius = new CornerRadius(8),
-            // The danger button's 1 px border comes out of the padding, so it is exactly as tall as
-            // Select, Download and the Active badge (a Select beside it stretches to its height).
-            Padding = borderBrush != null ? CompactControlPaddingInsideBorder : CompactControlPadding,
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = CompactControlFontSize,
-                FontWeight = FontWeights.SemiBold,
-                Foreground = textBrush,
-                VerticalAlignment = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Center
-            }
-        };
+        var pressed = ColorHelper.FromArgb(
+            (byte)Math.Min(255, hover.A + 30),
+            (byte)Math.Max(0, hover.R - 20),
+            (byte)Math.Max(0, hover.G - 20),
+            (byte)Math.Max(0, hover.B - 20));
 
-        border.PointerEntered += (_, _) => border.Background = hoverBg;
-        border.PointerExited += (_, _) => border.Background = normalBg;
-        border.PointerPressed += (_, _) => border.Background = Brush(ColorHelper.FromArgb(
-            (byte)Math.Min(255, hoverBg.Color.A + 30),
-            (byte)Math.Max(0, hoverBg.Color.R - 20),
-            (byte)Math.Max(0, hoverBg.Color.G - 20),
-            (byte)Math.Max(0, hoverBg.Color.B - 20)));
-        border.PointerReleased += (_, _) => border.Background = hoverBg;
-
-        if (onTapped != null) border.Tapped += onTapped;
-
-        return border;
+        // The danger button's 1 px border comes out of the padding, so it is exactly as tall as
+        // Select, Download and the Active badge (a Select beside it stretches to its height).
+        var button = NewThemedButton(ButtonLabel(text, CompactControlFontSize, foreground, semiBold: true),
+            normal, hover, pressed, border,
+            border.HasValue ? CompactControlPaddingInsideBorder : CompactControlPadding);
+        if (onClick != null) button.Click += onClick;
+        return button;
     }
 
-    /// <summary>Disable/enable a compact button (or any Border-based button).</summary>
-    public static void SetButtonEnabled(Border btn, bool enabled, string? text = null)
+    /// <summary>
+    /// Disable/enable a factory button. <c>IsEnabled</c> also takes a disabled button out of the
+    /// Tab order and tells Narrator; the 0.5 opacity is the disabled look the Border-era buttons
+    /// had. A disabled control shows no tooltip, so put a reason on a sibling.
+    ///
+    /// <para>The one exception: a button disabled while it has keyboard focus. Disabling it would
+    /// move focus to the next control, and the user's next Enter would press THAT (Codex diff r1,
+    /// A11Y-2: Enter on setup's Activate, Enter again, and Buy opened). That button stays enabled and
+    /// focused but inert — dimmed, no hit testing, Enter and Space swallowed — until it is enabled
+    /// again. A mouse click never focuses a factory button, so only a keyboard press reaches this.</para>
+    /// </summary>
+    public static void SetButtonEnabled(Button btn, bool enabled, string? text = null)
     {
-        btn.Opacity = enabled ? 1.0 : 0.5;
+        var inert = !enabled && btn.FocusState != FocusState.Unfocused;
+        if (inert) InertWhileFocused.AddOrUpdate(btn, InertMarker);
+        else InertWhileFocused.Remove(btn);
+        btn.IsEnabled = enabled || inert;
         btn.IsHitTestVisible = enabled;
-        if (text != null && btn.Child is TextBlock tb)
+        btn.Opacity = enabled ? 1.0 : 0.5;
+        if (text != null && btn.Content is TextBlock tb)
             tb.Text = text;
     }
 

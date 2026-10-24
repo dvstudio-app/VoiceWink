@@ -11,6 +11,8 @@ public enum LocalOutputVerdict
     /// <summary>LAI-17: the reply is mostly words the dictation does not contain — a refusal or an
     /// answer about as long as the dictation, or a reply in another language.</summary>
     Replaced,
+    /// <summary>2026-10-21: an E-mail or Chat reply in English to a dictation that was not.</summary>
+    SwitchedToEnglish,
 }
 
 /// <summary>
@@ -26,7 +28,8 @@ public enum LocalOutputVerdict
 /// firewall is prompt-only, so nothing stopped the refusal reaching the cursor.</para>
 ///
 /// <para><b>The rules are length, measured, not a phrase list</b> (design plan §5.3's table, columns
-/// a and b; column c "language changed" ships only with a measured detector, and none exists). The
+/// a and b; column c "language changed" ships only with a measured detector — the language rule at
+/// the end of these remarks is that, for a reply turned into English). The
 /// class is <see cref="LocalPromptClassifier.Classify"/>'s:</para>
 /// <list type="bullet">
 /// <item>Cleanup — grew: <c>2·out &gt; 3·in + 16</c> (LAI-9: across 185 cleanups in the owner's
@@ -70,6 +73,28 @@ public enum LocalOutputVerdict
 /// long paraphrase), while failing cleanups the length lines let through are caught, most of them
 /// replies in another language (the script prints the count). 1,447 replies from six cloud providers
 /// trip neither rule, which is why the guard runs for every provider.</para>
+///
+/// <para><b>A fourth rule, E-mail and Chat only: a reply turned into English (2026-10-21).</b> A
+/// Dutch dictation into Teams came back from the built-in Qwen3.5 2B as an English chat message
+/// (owner report). The new-word rule cannot judge E-mail or Chat — "I regret that I am unable to
+/// attend…" made casual keeps none of its words and is correct — so this rule asks what a
+/// translation changes and a rewrite does not, all three at once: the reply keeps under two fifths
+/// of the dictation's distinct words (at least <see cref="LanguageDistinctFloor"/> of them), Windows'
+/// language detector (<see cref="TextLanguageDetector"/>) reads the reply as English, and it reads
+/// the dictation, repeated words removed (<see cref="DedupeForDetection"/>), as another language.
+/// No answer on either side abstains. Drift INTO English is what small models do; another pair of
+/// languages is not checked, and the chosen recognition language is not consulted (with English
+/// chosen over Dutch speech it would switch the rule off exactly where it is needed). The first
+/// version judged by word lists of eight languages and missed every other one; the detector
+/// replaced it (owner decision, 2026-10-21). Evidence, <c>tools/language-guard-compare</c> (its
+/// README states the method and limits): on 70 correct rewrites and 48 switches in 16 languages it
+/// refuses 2 rewrites and catches 46 switches — the lists caught 14 — and on the committed bench it
+/// refuses none of 230 correct replies and catches all 16 switches. The 2 refused are English
+/// dictations the detector reads as another language ("Width six centimeters height ten
+/// centimeters depth nine centimeters" as Polish, "Antes doubled, antes tripled…" as Spanish), whose
+/// replies keep few words; the owner accepted them, and they are pinned as a known residual. Prompt
+/// wording was measured first and rejected: no rewording lowered the 2B's switches reliably, and the
+/// strongest made them more frequent (bench README, "Language retention").</para>
 /// </remarks>
 internal static class LocalOutputGuard
 {
@@ -87,8 +112,10 @@ internal static class LocalOutputGuard
     internal const int NewWordFloor = 6;
 
     /// <summary>The class's checks over <paramref name="input"/> → <paramref name="output"/>:
-    /// the two length lines first, then the new-word rule.</summary>
-    internal static LocalOutputVerdict Check(LocalPromptClass promptClass, string input, string output)
+    /// the two length lines first, then the new-word rule (Clean-up) or the language rule
+    /// (E-mail / Chat, judged only with a <paramref name="topLanguage"/> detector).</summary>
+    internal static LocalOutputVerdict Check(LocalPromptClass promptClass, string input, string output,
+        Func<string, string?>? topLanguage = null)
     {
         // An answer has no length relation to its question (LAI-12): "366" answers a 16-word
         // question, and a request for a list can run to paragraphs.
@@ -119,7 +146,66 @@ internal static class LocalOutputGuard
             if (newWords >= NewWordFloor && 2 * newWords >= replyWords)
                 return LocalOutputVerdict.Replaced;
         }
+        if (promptClass is LocalPromptClass.EmailChat && MeasureLanguage(input, output, topLanguage).SwitchedToEnglish)
+            return LocalOutputVerdict.SwitchedToEnglish;
         return LocalOutputVerdict.Pass;
+    }
+
+    /// <summary>The fewest distinct dictation words the language rule judges: a shorter dictation keeps
+    /// or loses a word by chance. Its own constant, not <see cref="NewWordFloor"/> (Kimi diff r1), so
+    /// tuning one rule never re-tunes the other.</summary>
+    internal const int LanguageDistinctFloor = 6;
+
+    /// <summary>
+    /// The facts behind the language rule, also what its log line reports: how many of the
+    /// dictation's distinct words the reply keeps (<see cref="Words"/>' tokens, so both sides are
+    /// split alike), and the language the detector reads for each side — null when it was not asked
+    /// (the reply keeps enough words, or no detector) or gave no answer.
+    /// </summary>
+    internal readonly record struct LanguageMeasure(
+        int KeptWords, int DistinctWords, string? DictationLanguage, string? ReplyLanguage)
+    {
+        internal bool LittleKept => DistinctWords >= LanguageDistinctFloor && 5 * KeptWords < 2 * DistinctWords;
+
+        internal bool SwitchedToEnglish =>
+            LittleKept && ReplyLanguage == "en" && DictationLanguage is { } source && source != "en";
+    }
+
+    /// <summary>Measures <paramref name="input"/> → <paramref name="output"/>, asking
+    /// <paramref name="topLanguage"/> only when the reply keeps little of the dictation — the reply
+    /// first, the dictation (<see cref="DedupeForDetection"/>) only when the reply reads as English.</summary>
+    internal static LanguageMeasure MeasureLanguage(string? input, string? output, Func<string, string?>? topLanguage)
+    {
+        var distinct = new HashSet<string>(Words(input), StringComparer.Ordinal);
+        var reply = new HashSet<string>(Words(output), StringComparer.Ordinal);
+        var kept = distinct.Count(reply.Contains);
+        var measure = new LanguageMeasure(kept, distinct.Count, null, null);
+        if (!measure.LittleKept || topLanguage is null)
+            return measure;
+        measure = measure with { ReplyLanguage = topLanguage(output ?? "") };
+        return measure.ReplyLanguage == "en"
+            ? measure with { DictationLanguage = topLanguage(DedupeForDetection(input)) }
+            : measure;
+    }
+
+    /// <summary>
+    /// The dictation with repeated words removed (first occurrence kept, compared case-insensitively
+    /// with punctuation trimmed), the text the detector reads: repetition amplified one ambiguous word
+    /// in the plan's measurement — an English dictation repeating a word that is also French read as French.
+    /// </summary>
+    internal static string DedupeForDetection(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "";
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var kept = new List<string>();
+        foreach (var token in text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var key = token.Trim(".,;:!?\"'()[]—-".ToCharArray()).ToLowerInvariant();
+            if (key.Length > 0 && seen.Add(key))
+                kept.Add(token);
+        }
+        return string.Join(' ', kept);
     }
 
     /// <summary>

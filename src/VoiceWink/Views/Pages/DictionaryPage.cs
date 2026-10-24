@@ -37,7 +37,7 @@ public sealed class DictionaryPage : Page
     private TextBox? _replacementOriginalBox;
     private TextBox? _replacementTargetBox;
     private TextBlock? _replacementSubmitLabel;
-    private Border? _replacementCancelButton;
+    private Button? _replacementCancelButton;
     // One submit at a time (Codex + Gemini diff r1): Enter then a click on Add before the
     // database await returned inserted the boxes' text twice. Set for the whole async span.
     private bool _replacementSubmitPending;
@@ -223,7 +223,7 @@ public sealed class DictionaryPage : Page
         };
 
         var addWordBtn = CreateCompactAccentButton("Add");
-        addWordBtn.Tapped += async (_, _) =>
+        addWordBtn.Click += async (_, _) =>
         {
             try
             {
@@ -329,14 +329,14 @@ public sealed class DictionaryPage : Page
         replBox.KeyDown += HandleEnterKey;
 
         var addReplBtn = CreateCompactAccentButton("Add");
-        _replacementSubmitLabel = (TextBlock)addReplBtn.Child;
-        addReplBtn.Tapped += async (_, _) => await SubmitReplacementAsync();
+        _replacementSubmitLabel = (TextBlock)addReplBtn.Content;
+        addReplBtn.Click += async (_, _) => await SubmitReplacementAsync();
 
         var cancelEditBtn = AppTheme.CreateCompactButton("Cancel");
         cancelEditBtn.Height = 34;
         cancelEditBtn.VerticalAlignment = VerticalAlignment.Top;
         cancelEditBtn.Visibility = Visibility.Collapsed;
-        cancelEditBtn.Tapped += (_, _) => EndEditReplacement(clearBoxes: true);
+        cancelEditBtn.Click += (_, _) => EndEditReplacement(clearBoxes: true);
         _replacementCancelButton = cancelEditBtn;
 
         // A Grid, not a horizontal StackPanel (owner UAT 2026-09-13): the StackPanel gave each box
@@ -839,7 +839,7 @@ public sealed class DictionaryPage : Page
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     //  Compact accent button (smaller than AppTheme.CreateAccentButton)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    private static Border CreateCompactAccentButton(string text)
+    private static Button CreateCompactAccentButton(string text)
     {
         var btn = AppTheme.CreateCompactButton(text, isAccent: true);
         btn.Height = 34;

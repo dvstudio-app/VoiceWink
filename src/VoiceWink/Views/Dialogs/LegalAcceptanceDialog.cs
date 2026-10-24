@@ -85,19 +85,21 @@ public sealed class LegalAcceptanceDialog : ContentDialog
             // Only the documents whose accepted hash differs are listed, so an existing user sees
             // what moved without reading both texts again. Inside the scroller: at large text sizes a
             // summary above it pushed the checkbox out of the height-capped dialog.
-            var changes = new StackPanel { Spacing = 6 };
+            var changes = new StackPanel { Spacing = 14 };
             changes.Children.Add(new TextBlock
             {
                 Text = "What changed",
-                FontSize = 14,
+                FontSize = 16,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 Foreground = AppTheme.Brush(AppTheme.TextPrimary),
             });
             if (state.EulaChanged)
-                changes.Children.Add(ChangeLine("EULA", service.Eula!.SummaryFor(state.AcceptedEulaHash)));
+                changes.Children.Add(ChangeEntry("EULA", service.Eula!.SummaryFor(state.AcceptedEulaHash)));
             if (state.PrivacyChanged)
-                changes.Children.Add(ChangeLine("Privacy Policy", service.Privacy!.SummaryFor(state.AcceptedPrivacyHash)));
-            termsPanel.Children.Insert(0, changes);
+                changes.Children.Add(ChangeEntry("Privacy Policy", service.Privacy!.SummaryFor(state.AcceptedPrivacyHash)));
+
+            // The card and its bottom margin keep the EULA header from reading as part of the summary.
+            termsPanel.Children.Insert(0, AppTheme.CreateCard(changes, 16));
         }
 
         panel.Children.Add(AppTheme.CreateDialogScroller(termsPanel, 360));
@@ -106,22 +108,28 @@ public sealed class LegalAcceptanceDialog : ContentDialog
         return panel;
     }
 
-    private static TextBlock ChangeLine(string name, string? summary)
+    private static StackPanel ChangeEntry(string name, string? summary) => new()
     {
-        var line = new TextBlock
+        Spacing = 4,
+        Children =
         {
-            FontSize = 13,
-            Foreground = AppTheme.Brush(AppTheme.TextPrimary),
-            TextWrapping = TextWrapping.Wrap,
-        };
-        line.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run
-        {
-            Text = name + ": ",
-            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
-        });
-        line.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = summary ?? "updated." });
-        return line;
-    }
+            new TextBlock
+            {
+                Text = name,
+                FontSize = 14,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = AppTheme.Brush(AppTheme.TextPrimary),
+            },
+            new TextBlock
+            {
+                Text = summary ?? "Updated.",
+                FontSize = 14,
+                LineHeight = 22,
+                Foreground = AppTheme.Brush(AppTheme.TextSecondary),
+                TextWrapping = TextWrapping.Wrap,
+            },
+        },
+    };
 
     private static TextBlock SectionHeader(string text) => new()
     {

@@ -51,8 +51,8 @@ public enum GgufTier
 /// executes this function at all.)</param>
 /// <param name="SherpaInstalled">The legacy 4-file bundle passes the manager's installed check.</param>
 /// <param name="Gguf">The GGUF artifact's state.</param>
-/// <param name="PcppRunnable">The pcpp backend can actually run (server binary present, spawn
-/// path healthy). Step 0 row 10: a valid GGUF with an unrunnable backend serves sherpa.</param>
+/// <param name="PcppRunnable">The pcpp backend can actually run (server binary not positively
+/// absent — an unreadable one is left to the spawn gate — spawn path healthy). Step 0 row 10: a valid GGUF with an unrunnable backend serves sherpa.</param>
 /// <param name="PcppHasServed">pcpp has successfully served ≥1 transcription on this install —
 /// the gate on offering legacy cleanup (row 7 / row 10 note).</param>
 /// <param name="DiskAllowsGguf">The free-space precheck for the GGUF download passes (row 9).</param>
