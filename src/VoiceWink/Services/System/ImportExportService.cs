@@ -2,22 +2,75 @@ using System.Text.Json;
 using Serilog;
 using VoiceWink.Helpers;
 using VoiceWink.Services.AppMode;
+using VoiceWink.Services.Data;
 
 namespace VoiceWink.Services.System;
 
+/// <summary>Which parts of a backup file an export writes or an import applies.</summary>
+[Flags]
+public enum BackupParts
+{
+    None = 0,
+    Settings = 1,
+    Dictionary = 2,
+    All = Settings | Dictionary,
+}
+
 /// <summary>
-/// Export/import all settings as JSON.
+/// Export/import a backup file: the settings as a flat JSON object of portable preferences, plus
+/// (optionally) the Dictionary under the reserved <see cref="DictionaryKey"/>.
+///
+/// <para><b>Why flat with reserved keys, not an envelope:</b> a backup written before the
+/// Dictionary travelled has no reserved key and imports as settings exactly as before; and an
+/// older VoiceWink reading a new file skips the unknown reserved keys and still applies the
+/// settings — an envelope would make it apply none (older builds refuse a file over 1 MB, so
+/// this holds up to that size). Both reserved names start with an
+/// underscore, which no settings key does (pinned by a test).</para>
+///
+/// <para><b>One gate:</b> every import reads the file through <see cref="ReadBackupAsync"/> —
+/// size, shape, format version, the whole-file sensitive-key refusal and the Dictionary's
+/// parsing all happen there, before anything is applied, whichever part is asked for.</para>
 /// </summary>
 public sealed class ImportExportService
 {
     private static ILogger Logger => Log.ForContext<ImportExportService>();
 
-    private readonly SettingsService _settings;
+    /// <summary>Marks a backup file and its version. Absent = a settings file written before the
+    /// Dictionary travelled.</summary>
+    internal const string FormatKey = "_format";
+    internal const string FormatValue = "voicewink-backup/1";
+    /// <summary>The Dictionary's section: <c>{ "words": [..], "replacements": [{ "original",
+    /// "replacement", "enabled" }] }</c>.</summary>
+    internal const string DictionaryKey = "_dictionary";
 
-    public ImportExportService(SettingsService settings)
+    private readonly SettingsService _settings;
+    private readonly DictionaryTransfer? _dictionary;
+
+    /// <param name="dictionary">The Dictionary's database side. Optional only so settings-only
+    /// callers (and their tests) need not build a database; DI always supplies it, and asking for
+    /// the Dictionary part without it is refused before anything is written.</param>
+    public ImportExportService(SettingsService settings, DictionaryTransfer? dictionary = null)
     {
         _settings = settings;
+        _dictionary = dictionary;
     }
+
+    /// <summary>The ONE size limit, for both directions: an export larger than an import accepts
+    /// would be a backup nobody can read.</summary>
+    internal const long MaxBackupBytes = 4 * 1_048_576;
+
+    // Every entry refuses while persistence is suppressed (mid data-erasure): the settings write
+    // would be a silent no-op, and a Dictionary read or write would open — and so recreate — the
+    // database the erasure just deleted.
+    private void EnsurePersistenceAvailable(string verb)
+    {
+        if (_settings.IsPersistenceSuppressed)
+            throw new InvalidOperationException(
+                $"The backup can't be {verb} right now — persistence is disabled (e.g. a data wipe is in progress). Restart the app and try again.");
+    }
+
+    private DictionaryTransfer RequireDictionary()
+        => _dictionary ?? throw new InvalidOperationException("The Dictionary isn't available for backup in this session.");
 
     /// <summary>
     /// Keys that must never be included in exported/imported settings.
@@ -132,7 +185,64 @@ public sealed class ImportExportService
     private static bool IsImportableKey(string key) =>
         !IsSensitiveKey(key) && !IsImportProtectedKey(key) && TryGetExpectedKind(key, out _);
 
-    public async Task ExportAsync(string filePath)
+    /// <summary>Settings-only export (the pre-Dictionary behaviour).</summary>
+    public Task ExportAsync(string filePath) => ExportAsync(filePath, BackupParts.Settings);
+
+    public async Task ExportAsync(string filePath, BackupParts parts)
+    {
+        EnsurePersistenceAvailable("exported");
+        if (parts == BackupParts.None)
+            throw new ArgumentException("Nothing to export.", nameof(parts));
+        var dictionary = parts.HasFlag(BackupParts.Dictionary) ? RequireDictionary() : null;
+
+        var filtered = new Dictionary<string, JsonElement>();
+        var strippedCount = 0;
+        if (parts.HasFlag(BackupParts.Settings))
+            strippedCount = await CollectSettingsAsync(filtered).ConfigureAwait(false);
+        filtered[FormatKey] = JsonSerializer.SerializeToElement(FormatValue);
+        if (dictionary != null)
+            filtered[DictionaryKey] = SerializeDictionary(await dictionary.ReadAsync().ConfigureAwait(false));
+
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(filtered, options);
+        if (bytes.LongLength > MaxBackupBytes)
+            throw new InvalidOperationException(
+                $"The backup would be {bytes.LongLength:N0} bytes, more than the {MaxBackupBytes:N0} bytes an import accepts. Nothing was written.");
+
+        // Write to a SAME-DIRECTORY temp file, then atomically replace the target — so a write
+        // failure mid-way can't truncate the user's EXISTING backup at filePath (Codex diff r5).
+        var tmpPath = filePath + ".tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(tmpPath, bytes).ConfigureAwait(false);
+            File.Move(tmpPath, filePath, overwrite: true); // same-volume rename = atomic replace
+        }
+        catch
+        {
+            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best-effort cleanup */ }
+            throw;
+        }
+
+        // SEC-4: user-chosen destination. Token last so the rendered scrub reaches it.
+        Logger.Information("Backup exported (parts {Parts}, {Stripped} sensitive keys excluded): filePath={UserFilePath}",
+            parts, strippedCount, Helpers.LogPathProjection.FileNameOnly(filePath));
+    }
+
+    private static JsonElement SerializeDictionary(DictionarySnapshot snapshot)
+        => JsonSerializer.SerializeToElement(new Dictionary<string, object>
+        {
+            ["words"] = snapshot.Words,
+            ["replacements"] = snapshot.Rules.Select(r => new Dictionary<string, object>
+            {
+                ["original"] = r.OriginalText,
+                ["replacement"] = r.ReplacementText,
+                ["enabled"] = r.IsEnabled,
+            }).ToList(),
+        });
+
+    /// <summary>Fills <paramref name="filtered"/> with every importable preference's effective
+    /// value; returns how many persisted keys were stripped.</summary>
+    private async Task<int> CollectSettingsAsync(Dictionary<string, JsonElement> filtered)
     {
         // Legacy-key migration must run BEFORE Flush so its removal is materialized into the
         // snapshot being exported (a user can export before anything else touched App Mode).
@@ -146,12 +256,9 @@ public sealed class ImportExportService
         // FlushOrThrow is a SILENT no-op under persistence suppression (mid data-erasure), so a read
         // below could see a half-deleted/missing file and produce a bogus "successful" default-only
         // export. Treat suppression as failure (Codex diff r5).
-        if (_settings.IsPersistenceSuppressed)
-            throw new InvalidOperationException(
-                "Settings can't be exported right now — persistence is disabled (e.g. a data wipe is in progress). Restart the app and try again.");
+        EnsurePersistenceAvailable("exported");
 
         var settingsPath = _settings.FilePath;
-        var filtered = new Dictionary<string, JsonElement>();
         var strippedCount = 0;
 
         // Read the persisted snapshot. A GENUINE absence (fresh profile, nothing persisted yet) is
@@ -191,44 +298,113 @@ public sealed class ImportExportService
                 filtered[key] = JsonSerializer.SerializeToElement(defaultValue);
         }
 
-        // Write to a SAME-DIRECTORY temp file, then atomically replace the target — so a write
-        // failure mid-way can't truncate the user's EXISTING backup at filePath (Codex diff r5).
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        var tmpPath = filePath + ".tmp";
-        try
-        {
-            await File.WriteAllTextAsync(tmpPath, JsonSerializer.Serialize(filtered, options)).ConfigureAwait(false);
-            File.Move(tmpPath, filePath, overwrite: true); // same-volume rename = atomic replace
-        }
-        catch
-        {
-            try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { /* best-effort cleanup */ }
-            throw;
-        }
-
-        // SEC-4: user-chosen destination. Token last so the rendered scrub reaches it.
-        Logger.Information("Settings exported ({Stripped} sensitive keys excluded): filePath={UserFilePath}",
-            strippedCount, Helpers.LogPathProjection.FileNameOnly(filePath));
+        return strippedCount;
     }
 
-    /// <summary>Maximum import file size (1 MB).</summary>
-    private const long MaxImportFileSizeBytes = 1_048_576;
+    /// <summary>
+    /// A backup file read and validated by <see cref="ReadBackupAsync"/>, holding nothing of the
+    /// file but the validated settings and the parsed Dictionary — applying it never reads the
+    /// file again.
+    /// </summary>
+    public sealed class BackupFile
+    {
+        internal BackupFile(IReadOnlyDictionary<string, JsonElement> settingsToApply, DictionarySnapshot? dictionary, int dictionarySkipped, string sourceName)
+        {
+            SettingsToApply = settingsToApply;
+            Dictionary = dictionary;
+            DictionarySkipped = dictionarySkipped;
+            SourceName = sourceName;
+        }
 
-    /// <summary>Outcome of a settings import.</summary>
-    public sealed record ImportResult(int AppliedCount);
+        internal IReadOnlyDictionary<string, JsonElement> SettingsToApply { get; }
+        internal DictionarySnapshot? Dictionary { get; }
+        /// <summary>Dictionary entries that were not words or rules (wrong type, a blank side).</summary>
+        internal int DictionarySkipped { get; }
+        /// <summary>The file NAME only (SEC-4) for log lines.</summary>
+        internal string SourceName { get; }
 
+        public bool HasSettings => SettingsToApply.Count > 0;
+        public bool HasDictionary => Dictionary != null;
+    }
+
+    /// <summary>Outcome of an import. <paramref name="DictionaryFailed"/>: the settings were applied
+    /// and durable, then the Dictionary could not be written (nothing of it was added).</summary>
+    public sealed record ImportResult(
+        int AppliedCount,
+        DictionaryMergeResult? Dictionary = null,
+        int DictionarySkipped = 0,
+        bool DictionaryFailed = false);
+
+    /// <summary>Settings-only import (the pre-Dictionary behaviour): a file's Dictionary is
+    /// ignored, and a file with no applicable setting applies nothing rather than failing.</summary>
     public async Task<ImportResult> ImportAsync(string filePath)
     {
+        var backup = await ReadBackupAsync(filePath).ConfigureAwait(false);
+        return new ImportResult(ApplySettings(backup));
+    }
+
+    /// <summary>Reads, validates and applies <paramref name="parts"/> of a file in one go — the
+    /// Dictionary page's path; the gate is the same one the Settings page previews with.</summary>
+    public async Task<ImportResult> ImportAsync(string filePath, BackupParts parts)
+        => await ImportAsync(await ReadBackupAsync(filePath).ConfigureAwait(false), parts).ConfigureAwait(false);
+
+    /// <summary>
+    /// Applies the requested parts of a validated backup: settings first (durable or reverted,
+    /// as before), then the Dictionary in one database write. A part the file does not carry is
+    /// refused before anything changes. When both were asked for and the Dictionary write fails
+    /// after the settings landed, the result says so instead of throwing — the settings ARE
+    /// applied, and the user must be told which half happened.
+    /// </summary>
+    public async Task<ImportResult> ImportAsync(BackupFile backup, BackupParts parts)
+    {
+        EnsurePersistenceAvailable("imported");
+        if (parts == BackupParts.None)
+            throw new ArgumentException("Nothing to import.", nameof(parts));
+        var wantSettings = parts.HasFlag(BackupParts.Settings);
+        var wantDictionary = parts.HasFlag(BackupParts.Dictionary);
+        if (wantSettings && !backup.HasSettings)
+            throw new InvalidOperationException("This file has no settings.");
+        if (wantDictionary && !backup.HasDictionary)
+            throw new InvalidOperationException("This file has no Dictionary.");
+        var dictionary = wantDictionary ? RequireDictionary() : null;
+
+        var applied = wantSettings ? ApplySettings(backup) : 0;
+        if (dictionary == null)
+            return new ImportResult(applied);
+
+        try
+        {
+            var merged = await dictionary.MergeAsync(backup.Dictionary!).ConfigureAwait(false);
+            return new ImportResult(applied, merged, backup.DictionarySkipped);
+        }
+        catch (Exception ex) when (wantSettings)
+        {
+            Logger.Error(ex, "Dictionary import failed after the settings were applied");
+            return new ImportResult(applied, null, backup.DictionarySkipped, DictionaryFailed: true);
+        }
+    }
+
+    /// <summary>
+    /// THE file gate, for every import: size, a JSON object at the root, a known format, no
+    /// sensitive key anywhere in the file (whichever part is asked for), a well-formed Dictionary
+    /// section — and the settings validated into what an import would apply. Nothing is applied.
+    /// </summary>
+    public async Task<BackupFile> ReadBackupAsync(string filePath)
+    {
+        EnsurePersistenceAvailable("imported");
+
         // Validate file size before reading
         var fileInfo = new FileInfo(filePath);
-        if (fileInfo.Length > MaxImportFileSizeBytes)
+        if (fileInfo.Length > MaxBackupBytes)
         {
             throw new InvalidOperationException(
-                $"Import file is too large ({fileInfo.Length:N0} bytes). Maximum allowed size is {MaxImportFileSizeBytes:N0} bytes.");
+                $"Import file is too large ({fileInfo.Length:N0} bytes). Maximum allowed size is {MaxBackupBytes:N0} bytes.");
         }
 
         var json = await File.ReadAllTextAsync(filePath).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("This file isn't a VoiceWink backup.");
 
         // Reject any import that contains sensitive state (prevent key/license injection)
         foreach (var prop in doc.RootElement.EnumerateObject())
@@ -245,6 +421,17 @@ public sealed class ImportExportService
             }
         }
 
+        // A backup this version cannot read is refused before anything is asked or applied —
+        // a later format may move what the reserved keys mean.
+        if (doc.RootElement.TryGetProperty(FormatKey, out var format)
+            && !(format.ValueKind == JsonValueKind.String && format.GetString() == FormatValue))
+            throw new InvalidOperationException("This backup was made by a newer version of VoiceWink. Update VoiceWink and try again.");
+
+        DictionarySnapshot? dictionary = null;
+        var dictionarySkipped = 0;
+        if (doc.RootElement.TryGetProperty(DictionaryKey, out var dictionarySection))
+            dictionary = ParseDictionary(dictionarySection, out dictionarySkipped);
+
         // Old exports carry the pre-rename App Mode key ("powerModeConfigs"). The new key wins
         // regardless of JSON property order or casing, so pre-scan for it case-insensitively;
         // the legacy property is aliased to the new key only when the new key is absent.
@@ -260,6 +447,8 @@ public sealed class ImportExportService
         foreach (var prop in doc.RootElement.EnumerateObject())
         {
             var name = prop.Name;
+            if (name is FormatKey or DictionaryKey)
+                continue; // the backup's own sections, not settings — never logged as unknown
             if (name.Equals(AppDefaults.CustomPrompts, StringComparison.OrdinalIgnoreCase))
                 name = AppDefaults.CustomPrompts; // canonicalize case (Codex r3)
             else if (name.Equals(AppDefaults.AppModeConfigs, StringComparison.OrdinalIgnoreCase))
@@ -302,6 +491,15 @@ public sealed class ImportExportService
 
             toApply[name] = prop.Value.Clone(); // last-valid-wins on duplicate canonical keys
         }
+
+        return new BackupFile(toApply, dictionary, dictionarySkipped, Helpers.LogPathProjection.FileNameOnly(filePath));
+    }
+
+    /// <summary>Applies a validated file's settings — durable, or reverted and thrown. Returns how
+    /// many were applied (0 is a success: nothing in the file was applicable).</summary>
+    private int ApplySettings(BackupFile backup)
+    {
+        var toApply = backup.SettingsToApply;
 
         // UPD-4: invalidate the defaults-manifest domain(s) that WILL apply — derived from the
         // SAME canonical set, so it can't diverge from what the apply below does — and do it
@@ -373,9 +571,66 @@ public sealed class ImportExportService
                 "Settings can't be imported right now — persistence is disabled (e.g. a data wipe is in progress). Restart the app and try again.");
         }
 
-        // SEC-4: user-chosen source.
+        // SEC-4: user-chosen source (already projected to its file name).
         Logger.Information("Settings imported ({Count} keys applied): filePath={UserFilePath}",
-            importedCount, Helpers.LogPathProjection.FileNameOnly(filePath));
-        return new ImportResult(importedCount);
+            importedCount, backup.SourceName);
+        return importedCount;
+    }
+
+    /// <summary>
+    /// The Dictionary section, read at the trust boundary: the containers must have the right
+    /// shape (anything else is a damaged file, refused whole); an ENTRY of the wrong type — a
+    /// word that is not a string, a rule without both texts, an <c>enabled</c> that is not a
+    /// boolean — is skipped and counted, never guessed at. An absent <c>enabled</c> reads as on,
+    /// as every rule was before rules could be switched off.
+    /// </summary>
+    private static DictionarySnapshot ParseDictionary(JsonElement section, out int skipped)
+    {
+        const string damaged = "The Dictionary in this file is damaged.";
+        if (section.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException(damaged);
+        skipped = 0;
+
+        var words = new List<string>();
+        if (section.TryGetProperty("words", out var wordsEl))
+        {
+            if (wordsEl.ValueKind != JsonValueKind.Array) throw new InvalidOperationException(damaged);
+            foreach (var w in wordsEl.EnumerateArray())
+            {
+                if (w.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(w.GetString()))
+                    words.Add(w.GetString()!);
+                else
+                    skipped++;
+            }
+        }
+
+        var rules = new List<DictionaryRule>();
+        if (section.TryGetProperty("replacements", out var rulesEl))
+        {
+            if (rulesEl.ValueKind != JsonValueKind.Array) throw new InvalidOperationException(damaged);
+            foreach (var r in rulesEl.EnumerateArray())
+            {
+                if (r.ValueKind == JsonValueKind.Object
+                    && r.TryGetProperty("original", out var o) && o.ValueKind == JsonValueKind.String
+                    && r.TryGetProperty("replacement", out var t) && t.ValueKind == JsonValueKind.String
+                    && DictionaryMerge.SplitVariants(o.GetString()!).Length > 0
+                    && !string.IsNullOrWhiteSpace(t.GetString()))
+                {
+                    var enabled = true;
+                    if (r.TryGetProperty("enabled", out var e))
+                    {
+                        if (e.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) { skipped++; continue; }
+                        enabled = e.GetBoolean();
+                    }
+                    rules.Add(new DictionaryRule(o.GetString()!, t.GetString()!, enabled));
+                }
+                else
+                {
+                    skipped++;
+                }
+            }
+        }
+
+        return new DictionarySnapshot(words, rules);
     }
 }

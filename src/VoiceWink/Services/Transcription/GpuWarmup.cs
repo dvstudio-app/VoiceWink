@@ -114,6 +114,10 @@ internal sealed class GpuWarmup
     private Configuration? _config;
     private int _parakeetQueued;
     private Task _parakeetTask = Task.CompletedTask;
+    // TRN-49: the model-install re-offer. All three under _parakeetLock.
+    private bool _parakeetStartRequested;   // the gated start asked for a warm-up
+    private int _parakeetInstalls;          // bumped per install; a no-model run re-resolves when it moved
+    private bool _parakeetAdmissionClosed;  // a quiesce ran: no warm child may start beside a resident or a delete
 
     // ---- TRN-64: the Whisper leg has its OWN scope, re-created per queued run ----
     //
@@ -135,6 +139,13 @@ internal sealed class GpuWarmup
     private WhisperVerdictSlot? _whisperVerdict;
     private readonly Dictionary<string, GpuSelfTestOutcome> _whisperSessionVerdicts = new(StringComparer.OrdinalIgnoreCase);
     private GpuSelfTestOutcome? _whisperSessionPin;
+    // TRN-49: the long warm shape yields to real decodes — the count of yields and the running shape's CTS.
+    private long _whisperDecodeEpoch;
+    private bool _whisperLatencyEnded; // user work cut a long shape short: no more warm-ups this session
+    private CancellationTokenSource? _whisperLatencyCts;
+    private Task _whisperLatencyDone = Task.CompletedTask; // ends when the shape ends or its supervisor records the wedge
+    private int _whisperUserWork; // real loads and decodes between their yield and their end: no long shape starts meanwhile
+    private CancellationTokenSource _shutdownCts = new(); // the only cancel that stops a long shape's wedge supervisor
     private volatile bool _shutdown;
     private const string UnnamedModel = "";
 
@@ -227,6 +238,18 @@ internal sealed class GpuWarmup
             _whisperVerdict = null;
             _whisperSessionVerdicts.Clear();
             _whisperSessionPin = null;
+            _whisperDecodeEpoch = 0;
+            _whisperLatencyEnded = false;
+            _whisperLatencyCts = null;
+            _whisperLatencyDone = Task.CompletedTask;
+            _whisperUserWork = 0;
+            _shutdownCts = new CancellationTokenSource();
+        }
+        lock (_parakeetLock)
+        {
+            _parakeetStartRequested = false;
+            _parakeetInstalls = 0;
+            _parakeetAdmissionClosed = false;
         }
         _shutdown = false;
         WhisperSelfTestBudgetOverride = null;
@@ -271,6 +294,7 @@ internal sealed class GpuWarmup
         if (cancelsWhisper)
         {
             CancellationTokenSource? whisper;
+            CancellationTokenSource? shutdown = null;
             lock (_whisperLock)
             {
                 if (reason is GpuWarmupCancelReason.Shutdown or GpuWarmupCancelReason.DataErasure)
@@ -278,8 +302,13 @@ internal sealed class GpuWarmup
                     // Under the lock: QueueWhisperWarmup re-reads it there, so a load racing this
                     // cancel cannot publish a run nothing will ever cancel (self-review, concurrency lens).
                     _shutdown = true;
+                    shutdown = _shutdownCts;
                 }
                 whisper = _whisperCts;
+            }
+            if (shutdown is not null)
+            {
+                TryCancel(shutdown, "Whisper GPU warm-up shutdown callback failed");
             }
             if (whisper is not null && !whisper.IsCancellationRequested)
             {
@@ -467,6 +496,8 @@ internal sealed class GpuWarmup
     /// <summary>Test seam (REL-39): the Whisper queue's shutdown latch, set by Cancel(Shutdown | DataErasure).</summary>
     internal bool IsShutdownForTests => _shutdown;
 
+    internal Task ParakeetRunForTests { get { lock (_parakeetLock) { return _parakeetTask; } } }
+
     /// <summary>UI-12: is that engine's warm-up/self-test in flight right now? Whisper: the queued
     /// run's task; Parakeet: the queued task under its lock. False unconfigured.</summary>
     internal bool IsSelfTestRunning(GpuSelfTestEngine engine)
@@ -571,6 +602,8 @@ internal sealed class GpuWarmup
         lock (_parakeetLock)
         {
             task = _parakeetQueued == 0 ? null : _parakeetTask;
+            // TRN-49: with the read, so an install after this quiesce cannot start a warm child beside the resident.
+            _parakeetAdmissionClosed = true;
         }
 
         if (task is not null)
@@ -762,6 +795,10 @@ internal sealed class GpuWarmup
                 // untested second model would otherwise decode on the GPU the incident is about.
                 needsWarm = false;
             }
+            if (_whisperLatencyEnded)
+            {
+                needsWarm = false; // TRN-49: a warm-up already gave way to user work; the next start warms
+            }
             if (processorRebuilt && model is not null
                 && _whisperSessionVerdicts.TryGetValue(model, out var ran) && ran == GpuSelfTestOutcome.Unknown)
             {
@@ -793,7 +830,8 @@ internal sealed class GpuWarmup
             _whisperQueuedModel = key;
             verdict = needsTest ? new WhisperVerdictSlot() : null;
             _whisperVerdict = verdict;
-            _whisperTask = Task.Run(() => RunWhisperSelfTestAsync(service, config, model, cts, verdict));
+            var epochAtQueue = _whisperDecodeEpoch; // at the publish, so a decode yielding before the run starts is seen
+            _whisperTask = Task.Run(() => RunWhisperSelfTestAsync(service, config, model, cts, verdict, epochAtQueue, needsWarm));
         }
         YieldGpuProbe(userWork: false, always: true);   // speech GPU work started: the AI engine's measurement gives way
         // UI-12: "Checking…" BEGINS with the run — a page built before this load queued the test
@@ -825,11 +863,12 @@ internal sealed class GpuWarmup
     /// (self-review, fail-open lens).</summary>
     private async Task RunWhisperSelfTestAsync(
         WhisperTranscriptionService service, Configuration config, string? model,
-        CancellationTokenSource cts, WhisperVerdictSlot? verdict)
+        CancellationTokenSource cts, WhisperVerdictSlot? verdict, long epochAtQueue, bool needsWarm)
     {
         var outcome = GpuSelfTestOutcome.Unknown;
         var claimed = false;        // this run owns the verdict (the watchdog did not get there first)
         var decodedNothing = false; // cancelled, or no processor: the GPU was never exercised
+        var settled = false;        // the verdict slot was completed before the long warm shape
         CancellationTokenSource? watchdog = null;
         try
         {
@@ -977,6 +1016,28 @@ internal sealed class GpuWarmup
                 }
             }
 
+            if (!needsWarm)
+            {
+                return; // TRN-49: a test-only run (warmed already, or warm-ups ended): no long shape, no re-mark
+            }
+            // TRN-49: a dictation past 30 s compiles a second window; GPU and catalog models only (an unnamed one has no gate to refuse a wedge).
+            if (model is not null && WhisperBackendLog.ObservedVulkanDevices >= 1)
+            {
+                if (verdict is not null)
+                {
+                    verdict.SetResult(outcome); // the decode gate need not wait for this decode
+                    settled = true;
+                }
+                var longShape = clip?.TiledForWhisperLongShape() ?? new float[GpuSelfTestClip.WhisperLongShapeSamples];
+                if (!await WarmWhisperLongShapeAsync(config, model, cts, epochAtQueue,
+                        async (token, onDecodeStarting) => await service.WarmUpDecodeAsync(
+                            longShape, token, onNoProcessor: () => ReleaseWhisperQueue(cts), onDecodeStarting: onDecodeStarting)
+                            .ConfigureAwait(false) is not null).ConfigureAwait(false))
+                {
+                    return; // skipped, yielded, cut or wedged: nothing more was warmed, so no mark
+                }
+            }
+
             config.Marker.MarkWhisperWarmed();
             Logger.Information("Whisper GPU warm-up complete");
         }
@@ -1003,7 +1064,7 @@ internal sealed class GpuWarmup
                 {
                     claimed = verdict.TryClaim(); // false: the watchdog owns it and its Inconclusive stands
                 }
-                if (claimed)
+                if (claimed && !settled)
                 {
                     if (decodedNothing)
                     {
@@ -1075,6 +1136,151 @@ internal sealed class GpuWarmup
                 (int)floor.TotalMilliseconds, (double)work / GpuSelfTestClip.SampleRate, (double)clip.Samples.Length / GpuSelfTestClip.SampleRate);
         }
         return GpuSpeedFloor.Judge(samples, floor);
+    }
+
+    /// <summary>TRN-49: warm whisper.cpp's second 30 s window so the first long dictation skips its compile; true only when it decoded.</summary>
+    internal async Task<bool> WarmWhisperLongShapeAsync(
+        Configuration config, string? model, CancellationTokenSource cts, long epochAtQueue,
+        Func<CancellationToken, Action, Task<bool>> decodeLongShape)
+    {
+        using var latency = new CancellationTokenSource();
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var markerPinsCpu = config.Marker.ReadVerdict(GpuSelfTestEngine.Whisper).PinsCpu;
+        CancellationToken shutdown;
+        lock (_whisperLock)
+        {
+            if (_shutdown || markerPinsCpu || _whisperSessionPin is { } pin && GpuWarmupMarker.PinsCpu(pin))
+            {
+                return false; // Whisper leaves this card at the next start: no latency work on it
+            }
+            if (_whisperLatencyEnded || _whisperDecodeEpoch != epochAtQueue || _whisperUserWork != 0)
+            {
+                _whisperLatencyEnded = true;
+                Logger.Information("Whisper GPU warm-up: a transcription arrived during the self-test - long shape skipped");
+                return false;
+            }
+            _whisperLatencyCts = latency;
+            _whisperLatencyDone = done.Task;
+            shutdown = _shutdownCts.Token;
+        }
+        var budget = WhisperSelfTestBudgetOverride ?? WarmDecodeBudget;
+        using var decode = CancellationTokenSource.CreateLinkedTokenSource(cts.Token, latency.Token);
+        try
+        {
+            var longTask = decodeLongShape(decode.Token, () => { decode.CancelAfter(budget); started.TrySetResult(); });
+            // Timed from the decode's start, so a wait for the model lock behind a real decode is never a wedge.
+            await Task.WhenAny(longTask, started.Task).ConfigureAwait(false);
+            if (!longTask.IsCompleted
+                // A selection or reload still supervises: a decode that ignored its abort holds the lock the next load waits on.
+                && await Task.WhenAny(longTask, Task.Delay(budget + QuiesceConfirmBudget, shutdown)).ConfigureAwait(false) != longTask)
+            {
+                shutdown.ThrowIfCancellationRequested(); // shutdown or erasure: write nothing
+                EndWhisperLatencyWork();
+                var gpuName = WhisperBackendLog.ObservedGpuName;
+                var persisted = RecordWhisperVerdict(config, model, GpuSelfTestOutcome.Inconclusive, gpuName);
+                Logger.Write(GpuSelfTestReport.LevelFor(persisted),
+                    "Whisper GPU warm-up: the long shape did not finish within {Seconds:F0}s on {GpuName} - Whisper refuses the graphics card for this session and starts on the CPU next time (TRN-49) [display drivers on this PC: {DriverSignature}]",
+                    (budget + QuiesceConfirmBudget).TotalSeconds,
+                    gpuName ?? GpuToggleAvailability.UnnamedGpu,
+                    GpuSelfTestReport.DriverOrUnknown(GpuWarmupMarker.CurrentDriverSignature()));
+                TryCancel(cts, "Whisper GPU self-test abort callback failed");
+                return false;
+            }
+            try
+            {
+                return await longTask.ConfigureAwait(false); // false: the processor went away
+            }
+            catch (OperationCanceledException) when (!cts.IsCancellationRequested)
+            {
+                EndWhisperLatencyWork();
+                if (latency.IsCancellationRequested)
+                {
+                    Logger.Information("Whisper GPU warm-up: long shape stopped for a transcription");
+                }
+                else
+                {
+                    Logger.Warning("Whisper GPU warm-up: the long shape hit its {Seconds:F0}s cap - not marked warmed (TRN-49)", budget.TotalSeconds);
+                }
+                return false;
+            }
+        }
+        finally
+        {
+            lock (_whisperLock)
+            {
+                if (ReferenceEquals(_whisperLatencyCts, latency))
+                {
+                    _whisperLatencyCts = null;
+                }
+            }
+            done.TrySetResult(); // after any wedge verdict above, so a decode waiting on it reads that verdict
+        }
+    }
+
+    private void EndWhisperLatencyWork()
+    {
+        lock (_whisperLock)
+        {
+            _whisperLatencyEnded = true;
+        }
+    }
+
+    /// <summary>TRN-49: stop the long warm shape before a real Whisper load or decode takes the model lock; the task ends once it has stopped or been recorded wedged.</summary>
+    public Task YieldWhisperLatencyWork()
+    {
+        CancellationTokenSource? latency;
+        Task done;
+        lock (_whisperLock)
+        {
+            _whisperDecodeEpoch++;
+            latency = _whisperLatencyCts;
+            done = _whisperLatencyDone;
+        }
+        if (latency is not null)
+        {
+            try
+            {
+                TryCancel(latency, "Whisper warm-up yield callback failed");
+            }
+            catch (ObjectDisposedException)
+            {
+                // The shape ended between the read and the cancel: nothing to stop.
+            }
+        }
+        return done;
+    }
+
+    /// <summary>TRN-49: held by a real Whisper load or decode from before its yield to its end, so a run queued meanwhile starts no long shape.</summary>
+    internal IDisposable BeginWhisperUserWork()
+    {
+        lock (_whisperLock)
+        {
+            _whisperUserWork++;
+        }
+        return new WhisperUserWork(this);
+    }
+
+    private sealed class WhisperUserWork(GpuWarmup owner) : IDisposable
+    {
+        private GpuWarmup? _owner = owner;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _owner, null) is { } warmup)
+            {
+                lock (warmup._whisperLock)
+                {
+                    warmup._whisperUserWork--;
+                }
+            }
+        }
+    }
+
+    /// <summary>TRN-49: this session's own refusing pin, which refuses every Whisper model.</summary>
+    internal bool WhisperSessionRefusesEveryModel
+    {
+        get { lock (_whisperLock) { return _whisperSessionPin is { } pin && GpuWarmupMarker.RefusesDecode(pin); } }
     }
 
     /// <summary>The queued run found no processor: release ITS queue slot (only if it is still
@@ -1282,20 +1488,44 @@ internal sealed class GpuWarmup
     /// fail-soft, and the run itself goes to its own <c>Task.Run</c>.</summary>
     public void QueueParakeetWarmup()
     {
+        lock (_parakeetLock)
+        {
+            _parakeetStartRequested = true;
+        }
+        TryQueueParakeetWarmup();
+    }
+
+    /// <summary>TRN-49: re-offer the warm-up the gated start could not run for lack of a model; never after a cancel or quiesce.</summary>
+    public void OnParakeetModelInstalled()
+    {
+        bool requested;
+        lock (_parakeetLock)
+        {
+            _parakeetInstalls++;
+            requested = _parakeetStartRequested;
+        }
+        if (requested && TryQueueParakeetWarmup())
+        {
+            Logger.Information("GPU warm-up: the Parakeet model was installed - warming it now");
+        }
+    }
+
+    private bool TryQueueParakeetWarmup()
+    {
         var config = _config;
         if (config?.Parakeet is not { } plan || _cts.IsCancellationRequested)
         {
-            return;
+            return false;
         }
         if (!config.Marker.ParakeetNeedsWarmup())
         {
-            return;
+            return false;
         }
         lock (_parakeetLock)
         {
-            if (_parakeetQueued != 0)
+            if (_parakeetQueued != 0 || _parakeetAdmissionClosed || _cts.IsCancellationRequested)
             {
-                return;
+                return false;
             }
             var resolveClip = config.ResolveClip;
             _parakeetTask = Task.Run(() => RunParakeetWarmupAsync(
@@ -1307,6 +1537,7 @@ internal sealed class GpuWarmup
         // otherwise miss the whole Parakeet run and only see its end (Kimi diff r2). Outside the
         // lock: subscribers marshal and may read IsSelfTestRunning, which takes it.
         NotifyChanged();
+        return true;
     }
 
     /// <param name="healthBudgetOverride">Test seam only: the health budget is 30 s wall-clock
@@ -1335,10 +1566,28 @@ internal sealed class GpuWarmup
         GpuWarmupMarker marker, ParakeetPlan plan, CancellationToken ct,
         TimeSpan? healthBudgetOverride, GpuSelfTestClip? clip)
     {
-        var ggufPath = plan.ResolveGgufPath();
-        if (ggufPath is null)
+        string? ggufPath;
+        while (true)
         {
-            return; // no eligible model installed — nothing to warm, nothing to log.
+            int installsSeen;
+            lock (_parakeetLock)
+            {
+                installsSeen = _parakeetInstalls;
+            }
+            ggufPath = plan.ResolveGgufPath();
+            if (ggufPath is not null)
+            {
+                break;
+            }
+            // TRN-49: an install since the read resolves again in THIS run, since a quiesce reads the task only once.
+            lock (_parakeetLock)
+            {
+                if (_parakeetInstalls == installsSeen || ct.IsCancellationRequested || _parakeetAdmissionClosed)
+                {
+                    _parakeetQueued = 0;
+                    return;
+                }
+            }
         }
 
         var result = await ParakeetEphemeralChild.RunAsync(

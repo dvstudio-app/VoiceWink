@@ -35,20 +35,26 @@ internal static class TimeSavedEstimate
     public static string CardText(double minutes) =>
         minutes < 60 ? $"{minutes:F0} min" : $"{minutes / 60:F1} hrs";
 
+    /// <summary>Hours in the workday Home counts in (owner, 2026-10-25: 24-hour days would understate it).</summary>
+    public const int WorkdayHours = 8;
+
     /// <summary>The large figure on Home's time-saved card, shown from the very start (owner,
-    /// 2026-10-14 — an hour's threshold hid it from new users): minutes until the first hour, then
-    /// hours. Always rounded DOWN — an estimate shown as a reminder must never round up. Under a
-    /// minute (a new install, or nothing dictated yet) reads "Less than a minute", never "0 minutes".</summary>
+    /// 2026-10-14 — an hour's threshold hid it from new users): workdays, hours and minutes together,
+    /// zero parts left out (owner, 2026-10-25). Always rounded DOWN to the minute — an estimate shown
+    /// as a reminder must never round up. Under a minute (a new install, or nothing dictated yet)
+    /// reads "Less than a minute", never "0 minutes".</summary>
     public static string HomeValue(double minutes)
     {
         if (!(minutes >= 1)) return "Less than a minute";   // also NaN
-        if (minutes < 60)
-        {
-            var wholeMinutes = (long)Math.Floor(minutes);
-            return wholeMinutes == 1 ? "1 minute" : $"{wholeMinutes} minutes";
-        }
-        var hours = (long)Math.Floor(minutes / 60);
-        return hours == 1 ? "1 hour" : $"{hours:N0} hours";
+        var total = (long)Math.Floor(minutes);
+        var workdays = total / (WorkdayHours * 60);
+        var hours = total % (WorkdayHours * 60) / 60;
+        var mins = total % 60;
+        var parts = new List<string>(3);
+        if (workdays > 0) parts.Add(workdays == 1 ? "1 workday" : $"{workdays:N0} workdays");
+        if (hours > 0) parts.Add(hours == 1 ? "1 hour" : $"{hours} hours");
+        if (mins > 0) parts.Add(mins == 1 ? "1 minute" : $"{mins} minutes");
+        return string.Join(" ", parts);
     }
 
     /// <summary>The line under the figure on Home's card.</summary>
@@ -57,5 +63,5 @@ internal static class TimeSavedEstimate
     /// <summary>The tooltip on Home's card: what the estimate assumes, and where the detail is.</summary>
     public static string HomeCardTooltip =>
         $"Estimated: typing at {TypingWpm:F0} words a minute compared with dictating, corrections " +
-        "included. Opens Metrics.";
+        $"included. A workday is {WorkdayHours} hours. Opens Metrics.";
 }

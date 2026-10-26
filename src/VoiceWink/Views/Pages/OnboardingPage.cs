@@ -474,7 +474,7 @@ public sealed class OnboardingPage : Page
         {
             try
             {
-                // A42 D1: the website build's installation report goes out once, right after the FIRST
+                // A42 D1 + A45: every public build's installation report goes out once, right after the FIRST
                 // acceptance is saved — read before Accept() records it, and fail closed (no report) if
                 // the state cannot be read. A failed save throws past the send, so it sends nothing.
                 bool firstAcceptance;

@@ -1020,10 +1020,11 @@ public sealed class SettingsPage : Page
     }
 
     /// <summary>
-    /// Settings backup — preferences only, deliberately a SEPARATE card from "Your data" above.
-    /// The distinction is the point: that one exports your dictation content under GDPR, this one
-    /// exports preferences and excludes secrets and device-specific keys. They were adjacent
-    /// sub-headers inside one card before the 2026-08-04 grouping pass, which understated it.
+    /// Settings backup — preferences and the Dictionary, deliberately a SEPARATE card from "Your
+    /// data" above. The distinction is the point: that one exports your dictation content under
+    /// GDPR, this one moves a setup to another PC and excludes secrets and device-specific keys.
+    /// They were adjacent sub-headers inside one card before the 2026-08-04 grouping pass, which
+    /// understated it.
     /// </summary>
     private Border BuildSettingsBackupCard()
     {
@@ -1031,16 +1032,16 @@ public sealed class SettingsPage : Page
         settingsBackupHeader.Margin = new Thickness(0, 0, 0, 4);
         var settingsBackupBlurb = new TextBlock
         {
-            Text = "Save your preferences to a file, or restore them from one. Secrets and " +
-                   "device-specific settings aren't included.",
+            Text = "Save your preferences and Dictionary to a file, or restore them from one. " +
+                   "Secrets and device-specific settings aren't included.",
             Foreground = AppTheme.Brush(AppTheme.TextSecondary),
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 8),
         };
-        var exportSettingsButton = AppTheme.CreateSecondaryButton("Export settings",
+        var exportSettingsButton = AppTheme.CreateSecondaryButton("Export",
             async (_, _) => await ExportSettingsAsync());
-        var importSettingsButton = AppTheme.CreateSecondaryButton("Import settings",
+        var importSettingsButton = AppTheme.CreateSecondaryButton("Import",
             async (_, _) => await ImportSettingsAsync());
         var settingsBackupButtons = new FlowPanel
         {
@@ -1064,37 +1065,22 @@ public sealed class SettingsPage : Page
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileSavePicker
-            {
-                SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads,
-                SuggestedFileName = $"voicewink-export-{DateTime.Now:yyyy-MM-dd}",
-            };
-            picker.FileTypeChoices.Add("Zip archive", new List<string> { ".zip" });
-
-            if (App.MainWindow is null)
-            {
-                Logger.Warning("Export aborted: no main window for picker hwnd");
-                return;
-            }
-            WinRT.Interop.InitializeWithWindow.Initialize(
-                picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
-
-            var file = await picker.PickSaveFileAsync();
-            if (file is null) return; // user cancelled
+            var path = await FilePickers.PickSaveFileAsync($"voicewink-export-{DateTime.Now:yyyy-MM-dd}", "Zip archive", ".zip");
+            if (path is null) return; // user cancelled
 
             var svc = App.Services.GetRequiredService<GdprExportService>();
-            var result = await svc.ExportAsync(file.Path, includeMedia);
+            var result = await svc.ExportAsync(path, includeMedia);
             if (result.SkippedFileCount > 0)
             {
                 await ShowInfoAsync("Export complete (with omissions)",
-                    $"Your data was exported to:\n{file.Path}\n\n" +
+                    $"Your data was exported to:\n{path}\n\n" +
                     $"{result.SkippedFileCount} file(s) could not be included (in use by another " +
                     "app, unreadable, or damaged). If a file was merely in use, closing other " +
                     "apps and exporting again may capture it.");
             }
             else
             {
-                await ShowInfoAsync("Export complete", $"Your data was exported to:\n{file.Path}");
+                await ShowInfoAsync("Export complete", $"Your data was exported to:\n{path}");
             }
         }
         catch (Exception ex)
@@ -1104,72 +1090,83 @@ public sealed class SettingsPage : Page
         }
     }
 
-    /// <summary>Export re-importable preferences (ImportExportService JSON — sensitive keys stripped) via FileSavePicker.</summary>
+    /// <summary>Export preferences (sensitive keys stripped) and the Dictionary to one backup file.</summary>
     private async Task ExportSettingsAsync()
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileSavePicker
-            {
-                SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads,
-                SuggestedFileName = $"voicewink-settings-{DateTime.Now:yyyy-MM-dd}",
-            };
-            picker.FileTypeChoices.Add("Settings file", new List<string> { ".json" });
+            var path = await FilePickers.PickSaveFileAsync($"voicewink-backup-{DateTime.Now:yyyy-MM-dd}", "Backup file", ".json");
+            if (path is null) return; // user cancelled
 
-            if (App.MainWindow is null)
-            {
-                Logger.Warning("Export settings aborted: no main window for picker hwnd");
-                return;
-            }
-            WinRT.Interop.InitializeWithWindow.Initialize(
-                picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
-
-            var file = await picker.PickSaveFileAsync();
-            if (file is null) return; // user cancelled
-
-            await App.Services.GetRequiredService<ImportExportService>().ExportAsync(file.Path);
-            await ShowInfoAsync("Settings exported", $"Your preferences were exported to:\n{file.Path}");
+            await App.Services.GetRequiredService<ImportExportService>().ExportAsync(path, BackupParts.All);
+            await ShowInfoAsync("Backup exported", $"Your preferences and Dictionary were exported to:\n{path}");
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Settings export failed");
-            await ShowInfoAsync("Export failed", "Sorry, the settings export couldn't be completed.\n\n" + ex.Message);
+            await ShowInfoAsync("Export failed", "Sorry, the export couldn't be completed.\n\n" + ex.Message);
         }
     }
 
-    /// <summary>Import preferences from an ImportExportService JSON via FileOpenPicker (sensitive keys rejected, device-local keys skipped).</summary>
+    /// <summary>Import a backup file: read and validate it once, ask which parts to apply when it
+    /// carries both, then apply exactly what was read.</summary>
     private async Task ImportSettingsAsync()
     {
         try
         {
-            var picker = new Windows.Storage.Pickers.FileOpenPicker
-            {
-                SuggestedStartLocation = Windows.Storage.Pickers.PickerLocationId.Downloads,
-            };
-            picker.FileTypeFilter.Add(".json");
+            var path = await FilePickers.PickOpenFileAsync(".json");
+            if (path is null) return; // user cancelled
 
-            if (App.MainWindow is null)
+            var service = App.Services.GetRequiredService<ImportExportService>();
+            var backup = await service.ReadBackupAsync(path);
+            var parts = (backup.HasSettings ? BackupParts.Settings : BackupParts.None)
+                      | (backup.HasDictionary ? BackupParts.Dictionary : BackupParts.None);
+            if (parts == BackupParts.None)
             {
-                Logger.Warning("Import settings aborted: no main window for picker hwnd");
+                await ShowInfoAsync("Nothing to import", "This file has no settings or Dictionary to import.");
                 return;
             }
-            WinRT.Interop.InitializeWithWindow.Initialize(
-                picker, WinRT.Interop.WindowNative.GetWindowHandle(App.MainWindow));
+            if (parts == BackupParts.All)
+            {
+                parts = await AskBackupPartsAsync();
+                if (parts == BackupParts.None) return; // cancelled
+            }
 
-            var file = await picker.PickSingleFileAsync();
-            if (file is null) return; // user cancelled
-
-            var result = await App.Services.GetRequiredService<ImportExportService>().ImportAsync(file.Path);
-
-            var msg = $"{result.AppliedCount} setting(s) applied.";
-            msg += "\n\nRestart VoiceWink for all changes to take effect.";
-            await ShowInfoAsync("Settings imported", msg);
+            var result = await service.ImportAsync(backup, parts);
+            await ShowInfoAsync("Backup imported", BackupImportSummary.Describe(result, parts));
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Settings import failed");
-            await ShowInfoAsync("Import failed", "Sorry, the settings couldn't be imported.\n\n" + ex.Message);
+            await ShowInfoAsync("Import failed", "Sorry, the backup couldn't be imported.\n\n" + ex.Message);
         }
+    }
+
+    /// <summary>Which parts of a backup carrying both to apply; None when cancelled.</summary>
+    private async Task<BackupParts> AskBackupPartsAsync()
+    {
+        if (XamlRoot is null) return BackupParts.None; // the page left while the file was read
+        var settingsBox = new CheckBox { Content = "Settings", IsChecked = true };
+        var dictionaryBox = new CheckBox { Content = "Dictionary", IsChecked = true };
+        var dialog = new ContentDialog
+        {
+            Title = "Import from this file",
+            Content = new StackPanel { Spacing = 4, Children = { settingsBox, dictionaryBox } },
+            PrimaryButtonText = "Import",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = this.XamlRoot,
+            RequestedTheme = AppTheme.ElementTheme,
+        };
+        void Sync(object _, RoutedEventArgs __) =>
+            dialog.IsPrimaryButtonEnabled = settingsBox.IsChecked == true || dictionaryBox.IsChecked == true;
+        settingsBox.Checked += Sync; settingsBox.Unchecked += Sync;
+        dictionaryBox.Checked += Sync; dictionaryBox.Unchecked += Sync;
+
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            return BackupParts.None;
+        return (settingsBox.IsChecked == true ? BackupParts.Settings : BackupParts.None)
+             | (dictionaryBox.IsChecked == true ? BackupParts.Dictionary : BackupParts.None);
     }
 
     /// <summary>Confirm + delete transcription history (text + image rows and their media files).</summary>
@@ -1346,18 +1343,7 @@ public sealed class SettingsPage : Page
     }
 
     /// <summary>Minimal informational dialog (single close button).</summary>
-    private async Task ShowInfoAsync(string title, string message)
-    {
-        var dialog = new ContentDialog
-        {
-            Title = title,
-            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
-            CloseButtonText = "OK",
-            XamlRoot = this.XamlRoot,
-            RequestedTheme = AppTheme.ElementTheme,
-        };
-        await dialog.ShowAsync();
-    }
+    private Task ShowInfoAsync(string title, string message) => AppTheme.ShowMessageAsync(XamlRoot, title, message);
 
     /// <summary>
     /// General section — theme plus the three window/startup behaviours. Created 2026-08-04 in the

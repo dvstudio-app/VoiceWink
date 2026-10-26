@@ -82,7 +82,8 @@ public sealed class WordReplacementService
             {
                 try
                 {
-                    var next = compiled.Pattern!.Replace(result, compiled.Replacement);
+                    // An evaluator keeps the user's text literal: as a replacement string, $1 / $& / $$ are substitutions.
+                    var next = compiled.Pattern!.Replace(result, _ => compiled.Replacement);
                     if (!ReferenceEquals(next, result)) { result = next; anyChanged = true; }
                 }
                 catch (Exception ex)
@@ -136,7 +137,8 @@ public sealed class WordReplacementService
                 }
                 else
                 {
-                    var pattern = new Regex($@"\b{Regex.Escape(original)}\b",
+                    // Not \b, which needs a word char inside ("c++" never matched); ZWNJ/ZWJ stay word chars as in \b.
+                    var pattern = new Regex($@"(?<![\w\u200C\u200D]){Regex.Escape(original)}(?![\w\u200C\u200D])",
                         RegexOptions.IgnoreCase | RegexOptions.Compiled, RegexTimeout);
                     compiled.Add(new CompiledReplacement(original, row.ReplacementText, IsCjk: false, Pattern: pattern));
                 }

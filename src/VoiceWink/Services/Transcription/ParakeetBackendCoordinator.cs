@@ -201,6 +201,8 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
         // ServeSherpa path accessor) at the WRONG artifact. The plan round named the old line the
         // flip's most dangerous; ParakeetBackendCoordinatorTests pins this default's name.
         _sherpaDescriptor = sherpaDescriptorOverride ?? ParakeetCatalog.SherpaDescriptor;
+        // TRN-49: a model that lands after startup re-offers the warm-up; reads _warmup when it fires, so the test overload's instance applies.
+        downloads.BundleInstalled += OnBundleInstalled;
         _availableFreeBytes = availableFreeBytes
             ?? (() =>
             {
@@ -214,6 +216,14 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                     return 0; // unreadable disk state gates the DOWNLOAD closed, nothing else.
                 }
             });
+    }
+
+    private void OnBundleInstalled(string modelName)
+    {
+        if (string.Equals(modelName, _gguf.Name, StringComparison.OrdinalIgnoreCase))
+        {
+            _warmup.OnParakeetModelInstalled();
+        }
     }
 
     private string GgufBundleDir => Path.Combine(_modelsDirectory, _gguf.Name);

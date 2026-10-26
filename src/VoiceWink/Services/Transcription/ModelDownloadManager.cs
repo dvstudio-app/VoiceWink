@@ -561,6 +561,7 @@ public sealed class ModelDownloadManager
 
         var counted = false;
         var containmentVerified = false;
+        var committed = false;
         try
         {
             // Containment comes FIRST — before the install-state read, before enumeration, before
@@ -674,6 +675,7 @@ public sealed class ModelDownloadManager
             ct.ThrowIfCancellationRequested();
 
             Directory.Move(staging, destination);
+            committed = true;
             Logger.Information("Model bundle installed: {Path}", destination);
             progress?.Report(1.0);
             return destination;
@@ -704,6 +706,27 @@ public sealed class ModelDownloadManager
         {
             if (counted) global::System.Threading.Interlocked.Decrement(ref _activeDownloads);
             modelLock.Release();
+            if (committed) RaiseBundleInstalled(model.Name); // after the release: a handler may start another install (TRN-49)
+        }
+    }
+
+    /// <summary>TRN-49: the model's name, once per bundle this manager committed, on the installing thread.</summary>
+    internal event Action<string>? BundleInstalled;
+
+    internal void RaiseBundleInstalled(string modelName)
+    {
+        if (BundleInstalled is not { } handlers) return;
+        // Per handler: one throwing subscriber must neither fail a committed install nor silence the next.
+        foreach (var handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((Action<string>)handler)(modelName);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning(ex, "A model-install subscriber threw");
+            }
         }
     }
 

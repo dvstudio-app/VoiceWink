@@ -345,6 +345,6 @@ public sealed class GdprExportService
         "Not included: downloaded speech and AI-enhancement models (Models/) — these are a\n" +
         "re-downloadable cache,\n" +
         "not personal data.\n\n" +
-        "Re-import: history, vocabulary, and word replacements can be imported into a fresh\n" +
-        "VoiceWink install; API keys and the license key must be re-entered.\n";
+        "This export is a copy for you to keep; VoiceWink does not import it. To move your\n" +
+        "settings and Dictionary to another PC, use Settings > Settings backup.\n";
 }

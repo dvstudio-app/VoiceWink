@@ -6,6 +6,7 @@ using VoiceWink.Helpers;
 using VoiceWink.Services.Data;
 using VoiceWink.Services.Licensing;
 using VoiceWink.Services.System;
+using VoiceWink.Services.Updates;
 
 namespace VoiceWink.ViewModels;
 
@@ -24,11 +25,12 @@ public partial class LicenseViewModel : ObservableObject
 
     private readonly LicenseService _license;
 
-    // LNC-14: the days-of-use count behind "Leave a review", and the clipboard behind "Copy link". Null
-    // only through the one-argument constructor the tests use (no review link, a copy that reports
-    // failure); the DI constructor supplies both.
+    // LNC-14: the days-of-use count behind "Leave a review", the clipboard behind Tell a friend's copy
+    // buttons and the found-us report. Null only through the one-argument constructor the tests use (no
+    // review link, a copy that reports failure, no found-us question); the DI constructor supplies all three.
     private readonly UsageDays? _usageDays;
     private readonly ClipboardService? _clipboard;
+    private readonly FoundUsReport? _foundUs;
 
     // Cross-command in-flight flag. Interlocked so concurrent entry from two different
     // commands (e.g., an OnLoaded refresh + a user-clicked Activate) is fully serialized.
@@ -163,16 +165,17 @@ public partial class LicenseViewModel : ObservableObject
     /// <summary>The tests' constructor: no review link, a copy that reports failure. Internal, so the
     /// container can only ever take the one below — a missing registration then fails loudly at resolve
     /// time instead of quietly losing "Leave a review" and "Copy link".</summary>
-    internal LicenseViewModel(LicenseService license) : this(license, usageDays: null, clipboard: null)
+    internal LicenseViewModel(LicenseService license) : this(license, usageDays: null, clipboard: null, foundUs: null)
     {
     }
 
     /// <summary>The DI constructor.</summary>
-    public LicenseViewModel(LicenseService license, UsageDays? usageDays, ClipboardService? clipboard)
+    public LicenseViewModel(LicenseService license, UsageDays? usageDays, ClipboardService? clipboard, FoundUsReport? foundUs)
     {
         _license = license;
         _usageDays = usageDays;
         _clipboard = clipboard;
+        _foundUs = foundUs;
         // Read-only state first so the page can render without waiting for network.
         // Status is seeded from the synchronous GetCachedStatus so a freshly-resolved
         // VM doesn't briefly flash "Unlicensed" to the user before the async refresh
@@ -822,9 +825,26 @@ public partial class LicenseViewModel : ObservableObject
 
     private const string SupportMailFailure = "Couldn't open your email app. Write to " + VoiceWinkUrls.SupportEmail + ".";
 
+    /// <summary>Whether the Activated panel asks "How did you find VoiceWink?" — a rebuild trigger, cleared once an answer is delivered.</summary>
+    [ObservableProperty] private bool _canAskFoundUs;
+
+    /// <summary>Sends the picked found-us answer and reports the outcome on the activity line.</summary>
     [RelayCommand]
-    public void OpenFoundUsMail() =>
-        OpenOrReport(FeedbackLinks.BuildFoundUsMailto(AboutInfo.CurrentVersion), SupportMailFailure);
+    public async Task ReportFoundUsAsync(string tag)
+    {
+        // Hidden while sending, so a second answer cannot meet the first one's in-flight guard and read as a failure.
+        CanAskFoundUs = false;
+        Announce(FeedbackLinks.FoundUsSending, LicenseActivityKind.Progress);
+        if (_foundUs is not null && await _foundUs.SendAsync(tag))
+        {
+            Announce(FeedbackLinks.FoundUsThanks, LicenseActivityKind.Success);
+        }
+        else
+        {
+            CanAskFoundUs = _foundUs?.CanAsk ?? false;
+            Announce(FeedbackLinks.FoundUsFailure, LicenseActivityKind.Failure);
+        }
+    }
 
     [RelayCommand]
     public void OpenWhyNotBuyingMail() =>
@@ -840,17 +860,8 @@ public partial class LicenseViewModel : ObservableObject
             Announce("Couldn't open the Microsoft Store.", LicenseActivityKind.Failure);
     }
 
-    [RelayCommand]
-    public void TellAFriend() =>
-        OpenOrReport(FeedbackLinks.BuildTellAFriendMailto(), "Couldn't open your email app.");
-
-    [RelayCommand]
-    public async Task CopyShareLinkAsync()
-    {
-        var copied = _clipboard is not null && await _clipboard.SetClipboardAsync(VoiceWinkUrls.Marketing);
-        if (copied) Announce("Link copied.", LicenseActivityKind.Success);
-        else Announce("Couldn't copy the link.", LicenseActivityKind.Failure);
-    }
+    /// <summary>Tell a friend's copy buttons; false when nothing was copied.</summary>
+    public async Task<bool> CopyTextAsync(string text) => _clipboard is not null && await _clipboard.SetClipboardAsync(text);
 
     private void OpenOrReport(string target, string failure)
     {
@@ -860,6 +871,8 @@ public partial class LicenseViewModel : ObservableObject
 
     private void RefreshLocalState()
     {
+        // Re-read each tick: another page instance may have a send in flight or just delivered one.
+        CanAskFoundUs = _foundUs?.CanAsk ?? false;
         MaskedKey = _license.GetMaskedLicenseKey();
         LastValidatedUtc = _license.GetLastValidatedUtc();
         // GetTrialTimeRemaining is recomputed from the wall clock on EVERY call, so it can never

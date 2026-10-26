@@ -7,6 +7,7 @@ using VoiceWink.Controls;
 using VoiceWink.Helpers;
 using VoiceWink.Services.Licensing;
 using VoiceWink.ViewModels;
+using VoiceWink.Views.Dialogs;
 
 namespace VoiceWink.Views.Pages;
 
@@ -291,7 +292,8 @@ public sealed class LicensePage : Page
             or nameof(LicenseViewModel.InstanceLine)
             or nameof(LicenseViewModel.StoredKeyExpired)
             or nameof(LicenseViewModel.KeyExpiresAt)
-            or nameof(LicenseViewModel.TryoutEnded))
+            or nameof(LicenseViewModel.TryoutEnded)
+            or nameof(LicenseViewModel.CanAskFoundUs))
         {
             DispatcherQueue.TryEnqueue(RebuildStatePanel);
         }
@@ -355,7 +357,7 @@ public sealed class LicensePage : Page
             _vm.Status, _vm.ActivateFormRequested, _vm.TryoutEnded, _vm.StoredKeyExpired);
         // LNC-14: which feedback links this panel carries — the same pure-decision shape, beside the
         // plan, so this method still decides nothing itself.
-        var feedback = FeedbackLinks.ForLicensePanel(plan, _vm.DaysOfUse);
+        var feedback = FeedbackLinks.ForLicensePanel(plan, _vm.DaysOfUse, _vm.CanAskFoundUs);
 
         // The refresh icon shows exactly where a key is stored (LIC-25) — the plan's call, not the
         // page's. Collapsed, not hidden: the activity text slides left into its place, and the row's
@@ -474,24 +476,56 @@ public sealed class LicensePage : Page
 
     /// <summary>
     /// LNC-14 (b): the purchased licence's links, one wrapping row under the Activated panel's buttons.
-    /// Plain links — each opens the user's mail app, the browser or the Store, and the user finishes it
-    /// there; "Leave a review" only after enough days of use (the plan says when).
+    /// "How did you find VoiceWink?" and "Tell a friend" open dialogs; the others open the browser or
+    /// the Store; each link shows only where the feedback plan says.
     /// </summary>
     private FlowPanel BuildPurchaseLinks(LicenseFeedbackPlan feedback)
     {
         var row = new FlowPanel { HorizontalSpacing = 16, VerticalSpacing = 4 };
-        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.FoundUsText,
-            () => _vm.OpenFoundUsMailCommand.Execute(null), SupportMailTooltip));
+        if (feedback.ShowsFoundUs)
+            row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.FoundUsText, () => _ = AskFoundUsAsync()));
         row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.StarOnGitHubText,
             () => _vm.OpenGitHubCommand.Execute(null), VoiceWinkUrls.GitHubRepository));
         if (feedback.ShowsReview)
             row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.LeaveReviewText,
                 () => _vm.OpenReviewCommand.Execute(null), "Microsoft Store"));
-        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.TellAFriendText,
-            () => _vm.TellAFriendCommand.Execute(null), "Opens your email app"));
-        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.CopyLinkText,
-            () => _ = _vm.CopyShareLinkCommand.ExecuteAsync(null), VoiceWinkUrls.Marketing));
+        row.Children.Add(AppTheme.CreateActionLink(FeedbackLinks.TellAFriendText, () => _ = TellAFriendAsync()));
         return row;
+    }
+
+    // One feedback dialog at a time across page instances: a second ShowAsync while one is open THROWS (the AboutPage rule).
+    private static bool s_feedbackDialogOpen;
+
+    private async Task AskFoundUsAsync()
+    {
+        var dialog = new FoundUsDialog();
+        if (await ShowFeedbackDialogAsync(dialog) && dialog.ChosenTag is { } tag)
+            await _vm.ReportFoundUsCommand.ExecuteAsync(tag);
+    }
+
+    private Task TellAFriendAsync() =>
+        ShowFeedbackDialogAsync(new TellAFriendDialog(FeedbackLinks.ShareMessage(LicenseService.FirstRunGraceDuration), _vm.CopyTextAsync));
+
+    /// <summary>Shows a feedback dialog; false when another dialog was open or it could not be shown.</summary>
+    private async Task<bool> ShowFeedbackDialogAsync(ContentDialog dialog)
+    {
+        if (s_feedbackDialogOpen) return false;
+        s_feedbackDialogOpen = true;
+        try
+        {
+            dialog.XamlRoot = XamlRoot;
+            await dialog.ShowAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(ex, "Failed to show the {Dialog} dialog", dialog.GetType().Name);
+            return false;
+        }
+        finally
+        {
+            s_feedbackDialogOpen = false;
+        }
     }
 
     /// <summary>

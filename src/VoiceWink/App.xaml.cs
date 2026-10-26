@@ -818,6 +818,7 @@ public partial class App : Application, Services.IAppLifetime
             sp.GetRequiredService<WatchdogForegroundObserver>()));
 
         // System services (cont.)
+        services.AddSingleton<DictionaryTransfer>();
         services.AddSingleton<ImportExportService>();
 
         // API Key management
@@ -1005,6 +1006,8 @@ public partial class App : Application, Services.IAppLifetime
         services.AddSingleton<LifetimeMetricsService>();
         // LNC-14: the days-of-use count, read by LicenseViewModel ("Leave a review").
         services.AddSingleton<UsageDays>();
+        // LNC-14: the found-us answer's one-time report (privacy v8 §4).
+        services.AddSingleton<Services.Updates.FoundUsReport>();
         services.AddSingleton<CsvExportService>();
         // REL-17: sweep roots are ctor-REQUIRED (a real-location default let tests sweep
         // real user data — the DataErasureService lesson, applied here too).

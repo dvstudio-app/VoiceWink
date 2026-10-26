@@ -7,15 +7,15 @@ using Serilog;
 namespace VoiceWink.Services.Updates;
 
 /// <summary>
-/// The website build's installation report (A42 D1, owner 2026-10-19; privacy v6 §4): sent by the app,
-/// ONCE, right after the user accepts the privacy policy in first-run setup, to
-/// <c>https://updates.voicewink.app/report/&lt;channel&gt;/installer</c>. Until then the installer sent it
-/// during installation, before the user had seen the policy; the install hook now skips it
-/// (<see cref="InstallerReport.SentAfterAcceptance"/>). Not sent when the user does not accept.
+/// Every public build's installation report (A42 D1 for the website, owner 2026-10-19; A45 for the
+/// Microsoft Store, owner 2026-10-25, privacy v9 §4): sent by the app, ONCE, right after the user accepts
+/// the privacy policy in first-run setup, to <see cref="InstallerReport.BuildUri"/> — the website's
+/// <c>report/&lt;channel&gt;/installer</c> or the Store channel's frozen
+/// <c>&lt;channel&gt;/install-source/msstore/installer</c>. Until then the installer sent it during
+/// installation, before the user had seen the policy. Not sent when the user does not accept.
 ///
 /// <para><b>Not tied to the automatic-update setting</b> (D1): nothing here reads it. The user's
-/// objection right (policy §10) is the way to stop it. The Microsoft Store channel's build keeps its
-/// install-time report (<see cref="InstallerReport"/>) and never sends this one.</para>
+/// objection right (policy §10) is the way to stop it.</para>
 ///
 /// <para><b>"Once" is the caller's half:</b> <c>OnboardingPage</c> calls <see cref="SendAfterFirstAcceptance"/>
 /// only when no acceptance was recorded before (<c>LegalAcceptanceState.IsFirstAcceptance</c>) and only
@@ -33,14 +33,13 @@ internal static class WebsiteInstallReport
 {
     private static ILogger Logger => Log.ForContext(typeof(WebsiteInstallReport));
 
-    internal const string LogPrefix = "Website installation report: ";
+    internal const string LogPrefix = "Installation report: ";
 
     /// <summary>Why the report is not sent, or null when it is. No setting is read (D1).</summary>
-    internal static string? SkipReason(bool updateCheckBuilt, bool publicFeedConfigured, bool isStoreChannel, bool installed)
+    internal static string? SkipReason(bool updateCheckBuilt, bool publicFeedConfigured, bool installed)
     {
         if (!updateCheckBuilt) return "update checks not built in";
         if (!publicFeedConfigured) return "no public update feed";
-        if (isStoreChannel) return "the Microsoft Store build reports from its installer";
         if (!installed) return "not an installed copy";
         return null;
     }
@@ -70,7 +69,7 @@ internal static class WebsiteInstallReport
         string outcome;
         try
         {
-            var skip = SkipReason(inputs.UpdateCheckBuilt, inputs.PublicFeedConfigured, inputs.IsStoreChannel, installed);
+            var skip = SkipReason(inputs.UpdateCheckBuilt, inputs.PublicFeedConfigured, installed);
             if (skip is not null)
             {
                 outcome = "skipped (" + skip + ")";
@@ -79,7 +78,7 @@ internal static class WebsiteInstallReport
             {
                 using var deadline = new CancellationTokenSource(budget);
                 outcome = await InstallerReport
-                    .SendAsync(InstallerReport.BuildUri(inputs.Channel, isStoreChannel: false), handlerFactory, deadline.Token)
+                    .SendAsync(InstallerReport.BuildUri(inputs.Channel, inputs.IsStoreChannel), handlerFactory, deadline.Token)
                     .ConfigureAwait(false);
             }
         }

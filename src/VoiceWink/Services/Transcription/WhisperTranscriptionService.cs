@@ -62,6 +62,17 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
     /// the previous name only while the path is unchanged (a language reload), else clears it.</param>
     public async Task LoadModelAsync(string modelPath, string? language = null, CancellationToken ct = default, string? modelName = null)
     {
+        // TRN-49: every decode prepares here first; a refused model skips the lock a wedged shape holds, and the gate then refuses it.
+        using var userWork = _warmup.BeginWhisperUserWork();
+        await _warmup.YieldWhisperLatencyWork().WaitAsync(ct).ConfigureAwait(false);
+        var loaded = _loadedModelName;
+        if (modelName is not null && loaded is not null
+            && GpuWarmupMarker.RefusesDecode(_warmup.WhisperGateOutcome(modelName))
+            && (string.Equals(loaded, modelName, StringComparison.OrdinalIgnoreCase) || _warmup.WhisperSessionRefusesEveryModel))
+        {
+            Logger.Information("Whisper model {Model} is refused by the GPU self-test on this process - load skipped (TRN-49)", modelName);
+            return;
+        }
         await _modelLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -439,6 +450,7 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
         var model = _loadedModelName; // volatile read; never the lock (see the summary)
         if (model is null)
         {
+            await _warmup.YieldWhisperLatencyWork().WaitAsync(ct).ConfigureAwait(false); // TRN-49: an unnamed model's run too
             return null;
         }
 
@@ -480,6 +492,8 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
             }
         }
 
+        // TRN-49: after the wait, so this decode's own run yields too, and the read below sees a wedge's Inconclusive.
+        await _warmup.YieldWhisperLatencyWork().WaitAsync(ct).ConfigureAwait(false);
         var outcome = _warmup.WhisperGateOutcome(model);
         if (GpuWarmupMarker.RefusesDecode(outcome)) // Fail | Inconclusive — never Slower, whose text is right
         {
@@ -540,6 +554,7 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
         // model is read without the lock (volatile), its verdict awaited without it, and re-validated once
         // the lock is held — a concurrent load that swapped the model in between gets one more
         // gate; a second swap refuses as Unstable, which records nothing (Codex r2 F2, Kimi r2 C2).
+        using var userWork = _warmup.BeginWhisperUserWork(); // TRN-49: no long warm shape starts under this decode
         var gatedModel = await AwaitGpuSelfTestGateAsync(ct).ConfigureAwait(false);
         // Hold the model lock for the entire transcription to prevent SetLanguageAsync
         // or LoadModelAsync from disposing _processor mid-transcription.

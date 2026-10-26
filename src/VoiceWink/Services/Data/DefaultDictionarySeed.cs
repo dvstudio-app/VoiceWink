@@ -101,45 +101,20 @@ public static class DefaultDictionarySeed
         if (pendingWords.Count == 0 && pendingRules.Count == 0)
             return 0; // the common launch: everything was offered before — no database read at all
 
-        // Read what is present, decide what to add — nothing is written yet.
-        var added = 0;
+        // Read what is present, decide what to add — nothing is written yet. The rule (a user's
+        // own rule, disabled ones included, stays in charge of the spellings it names) is
+        // DictionaryMerge's, shared with a backup import.
         using var db = dbFactory.CreateDbContext();
-        var presentWords = new HashSet<string>(
-            db.VocabularyWords.Select(w => w.Word).ToList().Select(w => w.Trim()),
-            StringComparer.OrdinalIgnoreCase);
-        foreach (var word in pendingWords)
-        {
-            if (presentWords.Add(word))
-            {
-                db.VocabularyWords.Add(new VocabularyWord { Word = word });
-                added++;
-            }
-        }
-
-        // Every variant any present rule already matches — the same comma split the replacement
-        // service applies, so "covered" here means "the user has a rule for that spelling". A
-        // DISABLED rule counts too, on purpose: the service skips disabled rows, but a user who
-        // switched a rule off said "do not rewrite this", and a shipped rule for the same variant
-        // would override exactly that decision (Codex diff r1 advisory — kept as a tombstone).
-        var coveredVariants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var original in db.WordReplacements.Select(r => r.OriginalText).ToList())
-            foreach (var variant in SplitVariants(original))
-                coveredVariants.Add(variant);
-        foreach (var rule in pendingRules)
-        {
-            // Only the variants no rule of the user's own matches yet: their rule stays in
-            // charge of the spellings it names (its target may differ — "DeepGram"), and the
-            // shipped corrections they lack still arrive. Nothing left ⇒ nothing added.
-            var remaining = SplitVariants(rule.OriginalText).Where(v => coveredVariants.Add(v)).ToArray();
-            if (remaining.Length == 0)
-                continue;
-            db.WordReplacements.Add(new WordReplacement
-            {
-                OriginalText = string.Join(", ", remaining),
-                ReplacementText = rule.ReplacementText,
-            });
-            added++;
-        }
+        var plan = DictionaryMerge.Decide(
+            db.VocabularyWords.Select(w => w.Word).ToList(),
+            db.WordReplacements.Select(r => r.OriginalText).ToList(),
+            pendingWords,
+            pendingRules.Select(r => new DictionaryRule(r.OriginalText, r.ReplacementText)));
+        foreach (var word in plan.WordsToAdd)
+            db.VocabularyWords.Add(new VocabularyWord { Word = word });
+        foreach (var rule in plan.RulesToAdd)
+            db.WordReplacements.Add(new WordReplacement { OriginalText = rule.OriginalText, ReplacementText = rule.ReplacementText });
+        var added = plan.WordsToAdd.Count + plan.RulesToAdd.Count;
 
         // RECORD FIRST, rows second — the order is what makes resurrection impossible rather
         // than unlikely (Codex diff r1 Blocker). A row is only ever added AFTER its key is durably
@@ -182,9 +157,6 @@ public static class DefaultDictionarySeed
             added, pendingWords.Count + pendingRules.Count, offered.Count);
         return added;
     }
-
-    private static string[] SplitVariants(string originalText)
-        => originalText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     /// <summary>The offered record as a case-insensitive set. A missing or malformed value reads
     /// as empty (fail-contained — the worst outcome is re-offering, never a throw), and the write

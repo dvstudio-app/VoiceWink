@@ -1,10 +1,10 @@
 ---
-version: 7
-last-updated: 2026-10-23
+version: 9
+last-updated: 2026-10-25
 title: VoiceWink Privacy Policy
-changes: DV Studio now also counts model downloads, and its page beacon on voicewink.app also records clicks on the Microsoft Store and GitHub links. Neither tells DV Studio which downloads or visits are yours.
-changes-for: cd2e379eaa76
-changes-since: 9a6a93328ef5
+changes: When you answer How did you find VoiceWink? on the License page, the app sends your answer, picked from a fixed list, and links you share from the app carry a tag saying so. A copy built for the Microsoft Store now sends its installation report once you accept this policy, like a copy from our website, instead of while it installs. None of this tells DV Studio who you are.
+changes-for: e44efa94f706
+changes-since: cd2e379eaa76
 ---
 
 # VoiceWink Privacy Policy
@@ -60,7 +60,7 @@ This is the complete list of connections VoiceWink and its installer make on the
 - **Model downloads, to models.voicewink.app.** When VoiceWink needs a speech or AI model that is not yet on your PC, it downloads the model's files. Each request carries your IP address and the name of the file. For speech models only, if that server cannot deliver a file correctly, VoiceWink downloads it from Hugging Face (huggingface.co) instead. Hugging Face handles that request under its own privacy policy and its own responsibility. DV Studio counts these requests as Section 4 describes.
 - **One-time counts, to updates.voicewink.app.** A few short reports that let DV Studio count installations and free-trial starts. Section 4 explains what they can contain, when they are sent and how you can stop them.
 
-## 4. How we count downloads, installs and free trials
+## 4. How we count downloads, installs, free trials and how you found VoiceWink
 
 DV Studio counts the requests that show how often VoiceWink is downloaded, installed, updated and tried. The counts come from requests to updates.voicewink.app: update checks, downloads of the installer from our website or the Microsoft Store, and short one-time reports the installer and the app send, and model downloads from models.voicewink.app. This section sets the limits that every count stays within.
 
@@ -71,17 +71,19 @@ DV Studio counts the requests that show how often VoiceWink is downloaded, insta
 - The update channel, the name of the report or file, and the technical details of the installed copy described in Section 3.
 - What Cloudflare works out from the request: the approximate country, whether the request looks automated, and whether the network belongs to Microsoft, which checks every Microsoft Store submission.
 - The time of the request, the part of a file requested for a download, and how the server answered, such as the status and size of the response.
+- For the "How did you find VoiceWink?" report, the answer you picked from a fixed list, such as "Search engine" or "Reddit". You cannot type your own text into it.
 
 **What a count never contains.** No installation, device or account identifier, no license key, no name or email address, and no audio, transcript, dictionary, setting or API key. So DV Studio has nothing that links one count to another, or a count to you.
 
-**What the counts are for.** To count the requests and reports received per day or hour, channel and country, and how often each model is downloaded, and to estimate how much of that traffic is automated, comes from networks operated by Microsoft, or is DV Studio's own testing. The counts show requests received, not completed downloads, installations or trials.
+**What the counts are for.** To count the requests and reports received per day or hour, channel and country, and how often each model is downloaded, and to estimate how much of that traffic is automated, comes from networks operated by Microsoft, or is DV Studio's own testing, and to count how people found VoiceWink. The counts show requests received, not completed downloads, installations or trials.
 
 **When the one-time reports are sent.**
 
-- **By the installer of a copy built for the Microsoft Store, while it installs VoiceWink.** This happens before VoiceWink first starts, so before you can turn off automatic update checks. It is skipped when the installer finds earlier VoiceWink settings on your PC in which automatic update checking is off, or settings it cannot read.
-- **By a copy built for our website, once you accept this policy.** The app sends its installation report once, right after you accept this privacy policy in first-run setup. It is not sent if you do not accept.
-- A report shows which channel a copy was built for (the website's or the Microsoft Store's), not where you got it.
+- **By the app, once you accept this policy.** The app sends its installation report once, right after you accept this privacy policy in first-run setup, whether the copy was built for our website or for the Microsoft Store. It is not sent if you do not accept.
+- A report's channel shows which channel a copy was built for (the website's or the Microsoft Store's), not where you got it.
 - **By the app, after an automatic update check.** Once after a free trial starts, and once from a copy built for the Microsoft Store. These reports are never sent while automatic update checking is off, and a manual check never sends them.
+- **By the app, when you answer "How did you find VoiceWink?" on the License page.** It is sent only when you pick an answer, whatever your update settings.
+- Earlier versions built for the Microsoft Store send the installation report from the installer, while it installs VoiceWink, before VoiceWink first starts. They skip it when the installer finds earlier VoiceWink settings on your PC in which automatic update checking is off, or settings it cannot read.
 - Earlier versions of VoiceWink may decide whether to send the Microsoft Store report by looking, on your PC, for the Store's record of installing VoiceWink in Windows' event log. That record is never sent.
 - A report is meant to be sent once. A reinstallation, a failed delivery or deleted settings can send it again.
 
@@ -114,7 +116,7 @@ This covers voicewink.app and the publisher site dvstudio.app.
 - **Hosting and security.** Cloudflare serves both sites. It processes connection data (IP address, browser, requested page, time) to deliver them and to block abuse.
 - **Cookies.** Cloudflare may set a few strictly necessary security cookies. The Cookie Notice at voicewink.app/cookies lists them.
 - **Cloudflare Web Analytics** (both sites). Cookieless page statistics. It does not fingerprint visitors, and Cloudflare discards your IP address.
-- **DV Studio's page beacon** (voicewink.app only). A small script records which pages are opened and how long each is visible, clicks on the Download, Buy, Microsoft Store and GitHub links, and the approximate country. It also records the page you came from, or the tag on a link DV Studio posted (one of a fixed list naming where the link was posted, such as the Microsoft Store listing). It sets no cookie, stores no IP address and writes nothing to your device. To group one day's page views into visits, it makes a code from your IP address, your browser's name, the date and a secret value. The code changes every day, so visits on different days cannot be linked. DV Studio cannot tell which visits are yours.
+- **DV Studio's page beacon** (voicewink.app only). A small script records which pages are opened and how long each is visible, clicks on the Download, Buy, Microsoft Store and GitHub links, and the approximate country. It also records the page you came from, or the tag on a link DV Studio posted or the app lets you share (one of a fixed list naming where the link came from, such as the Microsoft Store listing or a link shared from the app). It sets no cookie, stores no IP address and writes nothing to your device. To group one day's page views into visits, it makes a code from your IP address, your browser's name, the date and a secret value. The code changes every day, so visits on different days cannot be linked. DV Studio cannot tell which visits are yours.
 - **Opting out of the beacon.** Use the switch on the Cookie Notice page, or set vw-notrack to 1 in your browser's local storage for voicewink.app. The choice lasts until your browser clears that site's data; a private window clears it when closed. A browser that blocks local storage for voicewink.app is not counted at all.
 - **Buying a license.** The Buy buttons go to a checkout run by Lemon Squeezy as merchant of record. What you enter there is governed by Lemon Squeezy's privacy policy. DV Studio then receives from Lemon Squeezy your order and license details: name, email address, country, order history and license keys. You need to give these details to buy a license. DV Studio uses them to provide and support your license, handle refunds and answer your questions. Card details stay with Lemon Squeezy and its payment provider.
 

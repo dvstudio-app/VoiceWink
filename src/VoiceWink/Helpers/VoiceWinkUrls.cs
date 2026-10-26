@@ -22,10 +22,10 @@ namespace VoiceWink.Helpers;
 /// first-party beacon reads the <c>src</c> parameter on the page it lands on and files the visit
 /// under it; the tag must be one of the beacon's closed list (dvstudio-metrics
 /// <c>beacon/src/lib.js</c>, <c>SOURCE_TAGS</c> — the app-published tags are <c>app</c>,
-/// <c>app-buy</c>, <c>app-byok</c> and <c>app-reinstall</c>; the list also carries the site's other
+/// <c>app-buy</c>, <c>app-byok</c>, <c>app-reinstall</c> and <c>app-share</c>; the list also carries the site's other
 /// channels, <c>msstore</c>, <c>hn</c>, the directories…), anything else is discarded by the site, so
 /// a new tag here is a Worker deploy there first. The tag names where the link was published, never
-/// the user; the website's Cookie Notice (v7) and Privacy Policy §6 say so. The site's <c>/buy</c>
+/// the user; the website's Cookie Notice (v8) and Privacy Policy §6 say so. The site's <c>/buy</c>
 /// redirect keeps the query string (measured 2026-09-18: <c>/buy?src=probe</c> answers
 /// <c>302 /?src=probe#pricing</c>, and the website's deploy smoke pins it). The PATHS stay the frozen
 /// contract above; the query string is not part of it. <b>Every voicewink.app link the app opens goes
@@ -38,6 +38,10 @@ internal static class VoiceWinkUrls
 {
     /// <summary>Marketing landing page.</summary>
     public const string Marketing = "https://voicewink.app/?src=app";
+
+    /// <summary>The landing page as the License page's "Tell a friend" shares it (LNC-14) — tagged
+    /// <c>app-share</c> so a visit from a shared link is told from a click inside the app.</summary>
+    public const string Share = "https://voicewink.app/?src=app-share";
 
     /// <summary>
     /// Buy-a-license CTA. Once <c>voicewink.app/buy</c> is wired up it 302s at the web

@@ -17,6 +17,15 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.120.419] - 2026-10-26
+
+- The time saved on Home now shows workdays, hours and minutes; a workday is 8 hours.
+- License page: answer "How did you find VoiceWink?" and share VoiceWink by email, WhatsApp, LinkedIn or X.
+- The privacy policy now covers your answer to "How did you find VoiceWink?"; you will be asked to accept it once.
+- Move your Dictionary to another PC: Export and Import on the Dictionary page, and in Settings → Settings backup together with your settings.
+- Dictionary replacements containing $ are now pasted exactly as typed.
+- Dictionary replacements now match words that start or end with a symbol, such as C++ or .NET.
+
 ## [1.119.418] - 2026-10-24
 
 - Fixed a freeze that could happen while a 4K generated image arrived.

@@ -1083,6 +1083,31 @@ public static class AppTheme
         },
     };
 
+    /// <summary>A plain message with an OK button. Does nothing when the page has no
+    /// <see cref="XamlRoot"/> any more (it left while a picker or an import ran), and never
+    /// throws: WinUI refuses a second open dialog on one root, and a throw here — often the
+    /// last line of an async-void click handler — would end the app or report a finished
+    /// export as failed.</summary>
+    public static async Task ShowMessageAsync(XamlRoot? xamlRoot, string title, string message)
+    {
+        if (xamlRoot is null) return;
+        try
+        {
+            await new ContentDialog
+            {
+                Title = title,
+                Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+                CloseButtonText = "OK",
+                XamlRoot = xamlRoot,
+                RequestedTheme = ElementTheme,
+            }.ShowAsync();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "Message dialog could not be shown: {Title}", title);
+        }
+    }
+
     /// <summary>
     /// Height-flexible variant: takes whatever height the ContentDialog offers and
     /// scrolls only when the content exceeds it — for FORM dialogs whose natural height

@@ -498,13 +498,16 @@ public static class AppDefaults
     /// LNC-14: how many distinct local days VoiceWink was used on (<see cref="UsageDayCount"/>, an int)
     /// and the last day counted (<see cref="UsageLastDay"/>, <c>yyyy-MM-dd</c>), written only by
     /// <c>Services.Data.UsageDays</c>; and whether the one-time Microsoft Store rating line on Home has
-    /// been shown (<see cref="StoreRatingLineShown"/>), written only by <c>StoreRatingPrompt</c>.
+    /// been shown (<see cref="StoreRatingLineShown"/>), written only by <c>StoreRatingPrompt</c>; and
+    /// whether a "How did you find VoiceWink?" answer was delivered (<see cref="FoundUsAnswered"/>),
+    /// written only by <c>Services.Updates.FoundUsReport</c>.
     /// App-managed — NOT in <see cref="Defaults"/>, so "Reset all settings" keeps them and a settings
     /// export or import never carries them.
     /// </summary>
     public const string UsageDayCount = "usageDayCount";
     public const string UsageLastDay = "usageLastDay";
     public const string StoreRatingLineShown = "storeRatingLineShown";
+    public const string FoundUsAnswered = "foundUsAnswered";
 
     // AI Enhancement
     public const string AiEnhancementEnabled = "aiEnhancementEnabled";

@@ -49,7 +49,7 @@ public interface IInstallSourceReporter
 /// <para><b>Stated limits</b> (also in the policy): a lost response makes a retry a duplicate; deleting
 /// the settings (a GDPR erasure included) deletes the record, so a further report is possible; the
 /// figure the metrics side reads is reports received per day, not installations completed that day.
-/// The installer's own report at install time is <see cref="InstallerReport"/>, a separate path.</para>
+/// The installation report sent after the first policy acceptance is <see cref="WebsiteInstallReport"/>, a separate path.</para>
 /// </summary>
 public sealed class InstallSourceReporter : IInstallSourceReporter
 {

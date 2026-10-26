@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,147 +8,58 @@ using VoiceWink.Services.Http;
 namespace VoiceWink.Services.Updates;
 
 /// <summary>
-/// The installer's report (Privacy Policy §4.5, addendum A39): ONE attempt, from Velopack's install hook,
-/// by the Store channel's build, at
-/// <c>https://updates.voicewink.app/&lt;channel&gt;/install-source/msstore/installer</c>.
+/// The installation report's address and the one request the app's reports share
+/// (<see cref="WebsiteInstallReport"/>, <see cref="FoundUsReport"/>).
 ///
-/// <para><b>The website's build no longer reports here</b> (A42 D1, owner 2026-10-19): its report
-/// (<c>https://updates.voicewink.app/report/&lt;channel&gt;/installer</c>, §4.6) is sent by the app, once,
-/// right after the user accepts the privacy policy in first-run setup — <see cref="WebsiteInstallReport"/>.
-/// The hook skips it (<see cref="SkipReason"/>) and writes its one line saying so. This type keeps the
-/// request itself (<see cref="SendAsync"/>) so both reports send exactly the same request.</para>
-///
-/// <para><b>Where it runs.</b> Inside <c>OnAfterInstallFastCallback</c> — after Velopack has placed the
-/// files and before the installation has finished, so it does not confirm that the installation
-/// succeeded; it runs before VoiceWink first starts, and therefore before first-run setup offers the
-/// automatic-check choice. Pure managed code: no WinUI, no DI container, no Serilog (none exists in the
-/// hook). It runs on EVERY execution of a public channel's Setup — a Store install, a Microsoft
-/// certification run, a reinstall; a website download only writes its skip line — and never on an
-/// update (<c>OnAfterUpdateFastCallback</c> does not call it).</para>
-///
-/// <para><b>Gates, all before any network</b> (<see cref="SkipReason"/>): update checks built in
-/// (<see cref="UpdateCheckFeature.IsEnabled"/>); a configured, public feed; the Store channel's build; and settings left by an earlier installation — read through
-/// the one pre-boot reader — that do not say automatic checks are off and are not unreadable. A first
-/// install has no settings file and sends; a file without the key sends (the shipped default is on).</para>
+/// <para><b>The installer sends nothing since privacy v9</b> (A45, owner 2026-10-25): the Store channel's
+/// build used to send its report from Velopack's install hook, before VoiceWink first started. Every public
+/// build's report is now the app's, once, right after the privacy policy is accepted. The Store channel keeps
+/// its frozen address (<c>&lt;channel&gt;/install-source/msstore/installer</c>), so the Worker and the
+/// metrics read it unchanged; the website's stays <c>report/&lt;channel&gt;/installer</c>.</para>
 ///
 /// <para><b>The request.</b> <c>GET</c>, <c>User-Agent: VoiceWink</c> (the first-check report's constant),
-/// no redirects, no cookies, connect bounded at <see cref="ConnectBudget"/>, the WHOLE attempt bounded at
-/// <see cref="Budget"/> measured from <see cref="Start"/>, headers only. Any HTTP status ends it; it is
-/// never retried. Every exception is caught — a failure to send never affects the installation.</para>
-///
-/// <para><b>The one trace.</b> Exactly one line in <c>install.log</c> (<c>PrereqInstaller.LogPublic</c>),
-/// written by <see cref="Pending.Join"/>: <c>installer report: HTTP &lt;n&gt;</c>,
-/// <c>installer report: failed (&lt;ExceptionType&gt;)</c> or <c>installer report: skipped (&lt;why&gt;)</c>
-/// — never an address. The privacy text discloses this line.</para>
+/// no redirects, no cookies, connect bounded at <see cref="ConnectBudget"/>, the whole attempt bounded by the
+/// caller's deadline, headers only. Any HTTP status ends it; it is never retried. Every exception is caught.</para>
 /// </summary>
 internal static class InstallerReport
 {
     /// <summary>Under the channel folder; the first-check report's path plus <c>/installer</c>.</summary>
     public const string ReportPath = InstallSourceReporter.ReportPath + "/installer";
 
-    /// <summary>The whole attempt, from <see cref="Start"/> to the end of <see cref="Pending.Join"/>'s wait.</summary>
+    /// <summary>The whole attempt.</summary>
     public static readonly TimeSpan Budget = TimeSpan.FromSeconds(5);
 
     /// <summary>DNS + TCP + TLS, inside <see cref="Budget"/>.</summary>
     public static readonly TimeSpan ConnectBudget = TimeSpan.FromSeconds(3);
 
-    internal const string LogPrefix = "installer report: ";
-
-    /// <summary>The outcome when the attempt had not ended by the deadline, or ended BY it.</summary>
+    /// <summary>The outcome when the attempt had not ended by the deadline.</summary>
     internal const string TimedOut = "failed (TimeoutException)";
 
-    /// <summary>The report's address: the Store channel's frozen path (the hook), or the §4.6 website path
-    /// for any other public channel (<see cref="WebsiteInstallReport"/>, sent by the app since A42 D1).</summary>
+    /// <summary>The report's address: the Store channel's frozen path, or the §4.6 path for any other public channel.</summary>
     public static Uri BuildUri(string channel, bool isStoreChannel) => isStoreChannel
         ? new($"https://updates.voicewink.app/{channel}/{ReportPath}", UriKind.Absolute)
         : InstallSourceReporter.ReportUri(channel, "installer");
-
-    /// <summary>The hook's skip reason for a website build, whose report the app sends after acceptance (A42 D1).</summary>
-    internal const string SentAfterAcceptance = "sent by the app after the privacy policy is accepted";
-
-    /// <summary>
-    /// Why the report is not sent, or null when it is. The cheap structural gates first; the settings
-    /// file is read only once they all pass (<paramref name="readAutomaticChecks"/> is not called
-    /// otherwise), so a dev, tester or website build never opens it.
-    /// </summary>
-    internal static string? SkipReason(
-        bool updateCheckBuilt,
-        bool publicFeedConfigured,
-        bool isStoreChannel,
-        Func<PreBootSetting> readAutomaticChecks)
-    {
-        if (!updateCheckBuilt) return "update checks not built in";
-        if (!publicFeedConfigured) return "no public update feed";
-        if (!isStoreChannel) return SentAfterAcceptance;
-        return readAutomaticChecks() switch
-        {
-            PreBootSetting.False => "automatic update checks are off",
-            PreBootSetting.Unreadable => "settings unreadable",
-            _ => null,
-        };
-    }
 
     /// <summary>The inputs of one attempt, so tests can drive every gate without the build's constants.</summary>
     internal sealed record Inputs(
         bool UpdateCheckBuilt,
         bool PublicFeedConfigured,
         bool IsStoreChannel,
-        string Channel,
-        string SettingsFilePath);
+        string Channel);
 
     /// <summary>This build's inputs. Passing the constants as VALUES keeps a const <c>if</c> (CS0162) out of the code.</summary>
     internal static Inputs ProductionInputs() => new(
         UpdateCheckFeature.IsEnabled,
         UpdateFeedConfig.IsConfigured && !UpdateFeedConfig.FeedIsGated,
         UpdateFeedConfig.IsStoreChannel,
-        UpdateFeedConfig.Channel,
-        AppPaths.SettingsFile);
+        UpdateFeedConfig.Channel);
 
     /// <summary>The production handler: the shared install-report socket policy, <see cref="ConnectBudget"/>.</summary>
     internal static HttpMessageHandler CreateProductionHandler() =>
         VoiceWinkHttpClients.ConfigureInstallReportHandler(new SocketsHttpHandler(), ConnectBudget);
 
-    /// <summary>The install hook's entry: starts the attempt and returns at once. Never throws.</summary>
-    public static Pending Start() =>
-        Start(ProductionInputs(), CreateProductionHandler, PrereqInstaller.LogPublic, Budget);
-
-    internal static Pending Start(Inputs inputs, Func<HttpMessageHandler> handlerFactory, Action<string> log, TimeSpan budget)
-    {
-        var started = Stopwatch.GetTimestamp();
-        var deadline = new CancellationTokenSource();
-        Task<string> outcome;
-        try
-        {
-            deadline.CancelAfter(budget);
-            outcome = Task.Run(() => RunAsync(inputs, handlerFactory, deadline.Token));
-        }
-        catch (Exception ex)
-        {
-            outcome = Task.FromResult("failed (" + ex.GetType().Name + ")");
-        }
-        return new Pending(outcome, started, budget, deadline, log);
-    }
-
-    private static async Task<string> RunAsync(Inputs inputs, Func<HttpMessageHandler> handlerFactory, CancellationToken deadline)
-    {
-        try
-        {
-            var skip = SkipReason(
-                inputs.UpdateCheckBuilt,
-                inputs.PublicFeedConfigured,
-                inputs.IsStoreChannel,
-                () => PreBootSettingReader.Read(inputs.SettingsFilePath, AppDefaults.AutomaticUpdateCheckEnabled));
-            if (skip is not null) return "skipped (" + skip + ")";
-        }
-        catch (Exception ex)
-        {
-            return "failed (" + ex.GetType().Name + ")";
-        }
-        return await SendAsync(BuildUri(inputs.Channel, inputs.IsStoreChannel), handlerFactory, deadline).ConfigureAwait(false);
-    }
-
     /// <summary>
-    /// The one request both reports make: <c>GET</c>, <c>User-Agent: VoiceWink</c>, headers only, any
+    /// The one request every report makes: <c>GET</c>, <c>User-Agent: VoiceWink</c>, headers only, any
     /// status ends it, never retried. Returns the outcome (<c>HTTP &lt;n&gt;</c>, <see cref="TimedOut"/> or
     /// <c>failed (&lt;ExceptionType&gt;)</c>), never an address. Never throws.
     /// </summary>
@@ -172,59 +82,6 @@ internal static class InstallerReport
         catch (Exception ex)
         {
             return "failed (" + ex.GetType().Name + ")";
-        }
-    }
-
-    /// <summary>A started attempt. <see cref="Join"/> waits for what is left of the budget and writes the one line.</summary>
-    internal sealed class Pending
-    {
-        private readonly Task<string> _outcome;
-        private readonly long _started;
-        private readonly TimeSpan _budget;
-        private readonly CancellationTokenSource _deadline;
-        private readonly Action<string> _log;
-
-        internal Pending(Task<string> outcome, long started, TimeSpan budget, CancellationTokenSource deadline, Action<string> log)
-        {
-            _outcome = outcome;
-            _started = started;
-            _budget = budget;
-            _deadline = deadline;
-            _log = log;
-        }
-
-        /// <summary>
-        /// Waits ONLY for what is left of the budget since <see cref="Start"/> — after the self-heal and the
-        /// runtime install that is usually nothing — then writes exactly one <c>install.log</c> line. An
-        /// attempt still running is cancelled and logged as a timeout. Never throws.
-        /// </summary>
-        public void Join()
-        {
-            string line;
-            try
-            {
-                var remaining = _budget - Stopwatch.GetElapsedTime(_started);
-                var done = _outcome.IsCompleted
-                    || (remaining > TimeSpan.Zero && _outcome.Wait(remaining));
-                if (done)
-                {
-                    line = _outcome.Result;
-                    _deadline.Dispose();
-                }
-                else
-                {
-                    _deadline.Cancel();
-                    // An attempt that completed between the wait and the cancel still reports what it got.
-                    line = _outcome.IsCompleted ? _outcome.Result : TimedOut;
-                }
-            }
-            catch (Exception ex)
-            {
-                line = "failed (" + (ex is AggregateException { InnerException: { } inner } ? inner : ex).GetType().Name + ")";
-            }
-
-            try { _log(LogPrefix + line); }
-            catch { /* the install log is best effort; the installation must not fail on it */ }
         }
     }
 }

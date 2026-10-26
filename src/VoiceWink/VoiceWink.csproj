@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.119.418</Version>
-    <AssemblyVersion>1.119.418.0</AssemblyVersion>
-    <FileVersion>1.119.418.0</FileVersion>
+    <Version>1.120.419</Version>
+    <AssemblyVersion>1.120.419.0</AssemblyVersion>
+    <FileVersion>1.120.419.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
@@ -366,8 +366,8 @@
          The fail-closed gate for the publish path is
          scripts/check-publish-payload.ps1 — it Authenticode-verifies the
          file is Microsoft-signed and within the expected size range, then
-         hard-fails (exit 1) if anything is missing. /vw-deploy and the CI
-         release workflow MUST run this script between `dotnet publish` and
+         hard-fails (exit 1) if anything is missing. The CI release
+         workflow MUST run this script between `dotnet publish` and
          `vpk pack`. scripts/fetch-winapp-runtime.ps1 populates the file
          from Microsoft's CDN (SHA256-pinnable for CI). -->
     <Content Include="..\..\installer\runtime\WindowsAppRuntimeInstall-x64.exe"

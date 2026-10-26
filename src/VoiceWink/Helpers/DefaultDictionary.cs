@@ -3,8 +3,9 @@ namespace VoiceWink.Helpers;
 /// <summary>
 /// DCT-1 (2026-09-13) — the vocabulary VoiceWink puts in every user's Dictionary before they add
 /// a word of their own: the product's own name, the providers a user configures keys for, the
-/// local models by their display names, and three replacement rules. Pure data plus one
-/// membership test; <see cref="Services.Data.DefaultDictionarySeed"/> is what writes it.
+/// local models by their display names, and three replacement rules. Pure data plus two
+/// membership tests; <see cref="Services.Data.DefaultDictionarySeed"/> is what writes it, and a
+/// backup (<see cref="Services.Data.DictionaryTransfer"/>) leaves it out.
 ///
 /// <para><b>What earns a place here.</b> A vocabulary word must be a proper noun the recognizers
 /// do NOT already spell — ordinary English ("hotkey", "push-to-talk") boosts nothing as a keyterm
@@ -82,6 +83,9 @@ public static class DefaultDictionary
     /// the offer-once record is its <see cref="ReplacementRule.ReplacementText"/>, never its
     /// variant list — adding an observed mishearing to a rule must not re-offer it to an install
     /// that deleted it (self-review lens A).</summary>
+    // shortcut: IsUnchangedDefaultRule matches against THIS list, so removing a variant or a rule
+    // makes rows older builds seeded look like the user's own and lets a backup carry them; when
+    // one is removed, keep the old form in a retired list that IsUnchangedDefaultRule also matches.
     public static readonly IReadOnlyList<ReplacementRule> Replacements = new[]
     {
         new ReplacementRule("voice wing, voicewing, voice-wing, voice wink, voicewink, voice-wink", "VoiceWink"),
@@ -103,4 +107,24 @@ public static class DefaultDictionary
     /// </summary>
     public static bool IsDefaultWord(string? word)
         => !string.IsNullOrWhiteSpace(word) && VocabularySet.Contains(word.Trim());
+
+    /// <summary>
+    /// True when a replacement row is a shipped rule as the seed wrote it: switched on, the
+    /// shipped target exactly, and only spellings that rule ships (the seed may have written a
+    /// subset — the spellings the user's own rules did not already cover). A backup leaves such
+    /// rows out, like the default words: every install seeds them itself, and carrying them would
+    /// bring back a default the user deleted on the other PC. A retargeted, extended or
+    /// switched-off default is the user's own and travels.
+    /// </summary>
+    public static bool IsUnchangedDefaultRule(string originalText, string replacementText, bool isEnabled)
+    {
+        if (!isEnabled) return false;
+        var target = replacementText.Trim(); // as the merge writes it
+        var shipped = Replacements.FirstOrDefault(r => r.ReplacementText == target);
+        if (shipped == null) return false;
+        var shippedVariants = new HashSet<string>(
+            Services.Data.DictionaryMerge.SplitVariants(shipped.OriginalText), StringComparer.OrdinalIgnoreCase);
+        var variants = Services.Data.DictionaryMerge.SplitVariants(originalText);
+        return variants.Length > 0 && variants.All(shippedVariants.Contains);
+    }
 }

@@ -50,7 +50,7 @@ public sealed class LegalAcceptanceService
     private static ILogger Logger => Log.ForContext<LegalAcceptanceService>();
 
     public const string EulaAssetPath = "Assets/Legal/eula-v5.md";
-    public const string PrivacyAssetPath = "Assets/Legal/privacy-v7.md";
+    public const string PrivacyAssetPath = "Assets/Legal/privacy-v9.md";
 
     private readonly SettingsService _settings;
 

@@ -23,22 +23,19 @@ public enum PreBootSetting
 /// <summary>
 /// The ONE reader of a boolean setting straight from <c>settings.json</c>, for code that runs before
 /// any <c>SettingsService</c> exists — the crash opt-in, the GPU toggle and the verbose-logging flag at
-/// startup, and the installer's report inside Velopack's install hook, where no service ever exists.
-/// A real <c>SettingsService</c> would log and start its own debounce timer, both undesirable there.
+/// startup. A real <c>SettingsService</c> would log and start its own debounce timer, both undesirable there.
 ///
 /// <para>It reports WHAT it found and never decides: each caller chooses the direction an absent or
 /// unreadable value fails in (<see cref="ReadBool"/>), because the right direction differs — consent
-/// fails off, a performance preference fails toward its default, and the installer's report fails
-/// toward not sending when settings exist but cannot be read.</para>
+/// fails off, and a performance preference fails toward its default.</para>
 /// </summary>
 internal static class PreBootSettingReader
 {
     public static PreBootSetting Read(string settingsFilePath, string key)
     {
         // Read first, never File.Exists: it answers false on an ACCESS error too, which would turn
-        // settings that exist but cannot be read into "absent" — for the installer's report a
-        // fail-open, since the policy says settings it cannot read stop it (SettingsService's own
-        // TryLoadPrimary avoids File.Exists for the same reason). Only a missing file or folder is absent.
+        // settings that exist but cannot be read into "absent" (SettingsService's own TryLoadPrimary
+        // avoids File.Exists for the same reason). Only a missing file or folder is absent.
         string json;
         try
         {

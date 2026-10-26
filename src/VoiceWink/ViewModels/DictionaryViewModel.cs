@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 using VoiceWink.Models.Entities;
 using VoiceWink.Services.Data;
+using VoiceWink.Services.System;
 using VoiceWink.Services.TextProcessing;
 
 namespace VoiceWink.ViewModels;
@@ -26,14 +27,34 @@ public partial class DictionaryViewModel : ObservableObject
     [ObservableProperty] private string _newReplacementOriginal = "";
     [ObservableProperty] private string _newReplacementText = "";
 
+    private readonly ImportExportService? _backup;
+
     public DictionaryViewModel(
         CustomVocabularyService vocabulary,
         IDbContextFactory<VoiceWinkDbContext> dbFactory,
-        WordReplacementService wordReplacementService)
+        WordReplacementService wordReplacementService,
+        ImportExportService? backup = null)
     {
         _vocabulary = vocabulary;
         _dbFactory = dbFactory;
         _wordReplacementService = wordReplacementService;
+        _backup = backup;
+    }
+
+    private ImportExportService Backup
+        => _backup ?? throw new InvalidOperationException("Dictionary backup isn't available in this session.");
+
+    /// <summary>Writes the Dictionary alone to a backup file.</summary>
+    public Task ExportAsync(string filePath) => Backup.ExportAsync(filePath, BackupParts.Dictionary);
+
+    /// <summary>Merges the Dictionary of any backup file in, then reloads the lists.</summary>
+    public async Task<ImportExportService.ImportResult> ImportAsync(string filePath)
+    {
+        var result = await Backup.ImportAsync(filePath, BackupParts.Dictionary);
+        // The rows are committed; a failed refresh must not report the import as failed.
+        try { await LoadAsync(); }
+        catch (Exception ex) { Logger.Warning(ex, "Dictionary lists could not be reloaded after an import"); }
+        return result;
     }
 
     [RelayCommand]

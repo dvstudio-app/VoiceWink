@@ -130,6 +130,20 @@ public sealed class DictionaryPage : Page
             settings.GetBool(AppDefaults.DictionaryEnabled, true),
             isOn => settings.SetBool(AppDefaults.DictionaryEnabled, isOn));
 
+        // ── Export / Import — moves the Dictionary to another PC. The same backup file as
+        // Settings → Settings backup; here only its Dictionary part is written or applied.
+        var transferButtons = new FlowPanel
+        {
+            HorizontalSpacing = 8,
+            VerticalSpacing = 8,
+            Margin = new Thickness(0, 0, 0, 16),
+            Children =
+            {
+                AppTheme.CreateSecondaryButton("Export", async (_, _) => await ExportDictionaryAsync()),
+                AppTheme.CreateSecondaryButton("Import", async (_, _) => await ImportDictionaryAsync()),
+            },
+        };
+
         // ── Custom Vocabulary card ────────────────────────────────────
         var vocabCard = BuildVocabularyCard();
 
@@ -150,11 +164,46 @@ public sealed class DictionaryPage : Page
         // ── Page layout ───────────────────────────────────────────────
         var pageContent = new StackPanel
         {
-            Children = { header, enableToggle, vocabCard, replacementsCard, statusBlock }
+            Children = { header, enableToggle, transferButtons, vocabCard, replacementsCard, statusBlock }
         };
 
         AppTheme.SetPageScrollContent(this, pageContent);
     }
+
+    private async Task ExportDictionaryAsync()
+    {
+        try
+        {
+            var path = await FilePickers.PickSaveFileAsync($"voicewink-dictionary-{DateTime.Now:yyyy-MM-dd}", "Backup file", ".json");
+            if (path is null) return; // user cancelled
+            await _viewModel.ExportAsync(path);
+            await ShowInfoAsync("Dictionary exported", $"Your Dictionary was exported to:\n{path}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Dictionary export failed");
+            await ShowInfoAsync("Export failed", "Sorry, the Dictionary couldn't be exported.\n\n" + ex.Message);
+        }
+    }
+
+    private async Task ImportDictionaryAsync()
+    {
+        try
+        {
+            var path = await FilePickers.PickOpenFileAsync(".json");
+            if (path is null) return; // user cancelled
+            var result = await _viewModel.ImportAsync(path);
+            await ShowInfoAsync("Dictionary imported", BackupImportSummary.Describe(result, BackupParts.Dictionary));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Dictionary import failed");
+            await ShowInfoAsync("Import failed", "Sorry, the Dictionary couldn't be imported.\n\n" + ex.Message);
+        }
+    }
+
+    private Task ShowInfoAsync(string title, string message)
+        => _isUnloaded ? Task.CompletedTask : AppTheme.ShowMessageAsync(XamlRoot, title, message);
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     //  Custom Vocabulary card

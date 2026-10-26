@@ -52,6 +52,21 @@ internal sealed class GpuSelfTestClip
         return padded;
     }
 
+    /// <summary>TRN-49: the length of Whisper's long warm shape — past whisper.cpp's 30 s window.</summary>
+    internal const int WhisperLongShapeSamples = SampleRate * 60;
+
+    /// <summary>TRN-49: the clip at every 4 s slot, so the second window has speech in it; a fresh array.</summary>
+    internal float[] TiledForWhisperLongShape()
+    {
+        const int slot = SampleRate * 4; // the clip's length ceiling
+        var tiled = new float[WhisperLongShapeSamples];
+        for (var at = 0; at + Samples.Length <= tiled.Length; at += slot)
+        {
+            Samples.CopyTo(tiled, at);
+        }
+        return tiled;
+    }
+
     /// <summary>Load the bundled clip, or explain in one short reason why there is none. Never
     /// throws: a self-test asset must never take the warm-up — let alone the app — down.</summary>
     internal static GpuSelfTestClip? TryLoad(string wavPath, string wordsPath, out string reason)

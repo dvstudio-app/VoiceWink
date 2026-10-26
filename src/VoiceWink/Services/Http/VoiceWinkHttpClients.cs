@@ -149,10 +149,9 @@ internal static class VoiceWinkHttpClients
     }
 
     /// <summary>
-    /// The socket policy of BOTH install reports (Privacy §4.5): the first-check report's named client
-    /// above and the installer's report (<c>InstallerReport</c>), which runs inside Velopack's install
-    /// hook where no DI container exists, and the website build's report after the privacy policy is
-    /// accepted (<c>WebsiteInstallReport</c>, A42 D1), which reuses it — one source, so they cannot drift. No redirects: a 3xx
+    /// The socket policy of the install reports (Privacy §4): the first-check report's named client
+    /// above and the installation report the app sends after the privacy policy is accepted
+    /// (<c>WebsiteInstallReport</c>, A42 D1 and A45), which reuses it — one source, so they cannot drift. No redirects: a 3xx
     /// must never carry the request (and the user's IP) to another host. No cookies: nothing may make
     /// a report linkable. Connect-bounded by <paramref name="connectTimeout"/>.
     /// </summary>
