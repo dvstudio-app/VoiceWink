@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Serilog;
+using VoiceWink.Helpers;
 using VoiceWink.Models;
 
 namespace VoiceWink.Services.Transcription;
@@ -921,9 +922,9 @@ public sealed class ModelDownloadManager
                 {
                     // Our mirror REFUSED the file (a 404, a 403, a body over the size pin) — a
                     // defect in what we publish, which the fallback hides from the user, so Sentry
-                    // sees it once per run (2026-10-17). Type and status only on the event: an HTTP
-                    // reason phrase is server text (SEC-2), so the full exception rides
-                    // {LocalException}, which the Sentry path redacts and the local file keeps.
+                    // sees it once per run (2026-10-17). Type and status only on the event: the full
+                    // exception rides {LocalException}, which the Sentry path redacts and the local
+                    // file keeps. An HTTP status throw no longer carries the reason phrase (SEC-5).
                     Logger.Write(Helpers.SessionErrorBudget.LevelFor(mirrorDefect),
                         "TRN-33 fallback: the mirror ({Primary}) refused the model download ({MirrorDefect}); retrying from the pinned upstream source {Fallback}. {LocalException}",
                         sources[s], mirrorDefect, sources[s + 1], ex.ToString());
@@ -1234,7 +1235,7 @@ public sealed class ModelDownloadManager
             throw new ModelSourceIOException("Server rejected the resume range; discarded the partial so the next attempt restarts.");
         }
 
-        response.EnsureSuccessStatusCode();
+        response.EnsureSuccessStatusCodeWithoutReasonPhrase(Logger, "Model download");
 
         // 206 = server honored our Range → append. 200 (server ignored Range, or no partial) =
         // full body from the start → overwrite whatever partial exists.

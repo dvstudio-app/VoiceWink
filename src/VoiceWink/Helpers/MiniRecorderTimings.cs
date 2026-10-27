@@ -47,6 +47,9 @@ internal static class MiniRecorderTimings
     /// </summary>
     public const int PipelineNoticeSeconds = 8;
 
+    /// <summary>HKY-11: the "Cancelled" pill after a recording is cancelled — a confirmation, not news.</summary>
+    public const int CancelledSeconds = 2;
+
     /// <summary>
     /// The post-finish dismiss deadline for a pill of the given tone, or <c>null</c> for NO
     /// deadline. Error (red) → <c>null</c>: never auto-dismisses (ERR-PERSIST — cleared only by an

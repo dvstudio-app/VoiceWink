@@ -154,6 +154,17 @@ public sealed class HotkeyService : IDisposable
     // recording with no armed gesture to stop it).
     private int _gestureEpoch;
 
+    // HKY-11: the hotkey held through a cancel; its repeats and release stay inert even after ResetState
+    // drops ownership. Under _gestureLock; VcUndefined = none.
+    private KeyCode _cancelledHeldKey = KeyCode.VcUndefined;
+    private long _cancelledHeldKeyLastDown;
+
+    // HKY-11: EscapeCancelGesture.LiveWord — one word so the hook never pairs live with a stale generation.
+    private long _recordingLiveWord;
+
+    // HKY-11: hook-thread-only.
+    private readonly EscapeCancelGesture _escapeGesture = new();
+
     /// <summary>
     /// True when a queued dispatch captured under the CURRENT gesture epoch — i.e. no
     /// invalidation happened between its decision and its delivery. Checked first thing by
@@ -227,6 +238,9 @@ public sealed class HotkeyService : IDisposable
     /// the only sanctioned mutation points.
     /// </summary>
     internal KeyCode ActiveHotkeyCodeForTesting => _activeHotkeyCode;
+
+    /// <summary>Test-only: the hotkey held through a cancel (HKY-11).</summary>
+    internal KeyCode CancelledHeldKeyForTesting { get { lock (_gestureLock) return _cancelledHeldKey; } }
 
     /// <summary>Test-only: live <see cref="_isHandsFreeMode"/> read.</summary>
     internal bool IsHandsFreeModeForTesting => _isHandsFreeMode;
@@ -311,6 +325,9 @@ public sealed class HotkeyService : IDisposable
 
     /// <summary>Raised on UI thread when AltGr is detected and a phantom prompt override should be cancelled.</summary>
     public event Action? CancelPromptOverride;
+
+    /// <summary>Raised on UI thread when Escape cancels the live recording (HKY-11). Arg = which gesture.</summary>
+    public event Action<string>? CancelRecordingRequested;
 
     public HotkeyService(SettingsService settings)
         : this(settings, watchdogObserver: null)
@@ -998,6 +1015,66 @@ public sealed class HotkeyService : IDisposable
         }
     }
 
+    /// <summary>HKY-11: publish whether a recording is live (Recording state). UI thread, single writer.</summary>
+    public void SetRecordingLive(bool live)
+    {
+        var word = Volatile.Read(ref _recordingLiveWord);
+        if (((word & 1) != 0) == live) return;
+        var generation = (word >> 1) + (live ? 1 : 0);
+        Volatile.Write(ref _recordingLiveWord, EscapeCancelGesture.LiveWord(generation, live));
+    }
+
+    /// <summary>HKY-11: a pill cancel — a hotkey still held must not start a new recording on its next repeat.</summary>
+    public void ArmCancelForHeldHotkey()
+    {
+        var now = Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
+        lock (_gestureLock)
+        {
+            ArmCancelLocked(now);
+        }
+    }
+
+    /// <summary>Caller MUST hold <see cref="_gestureLock"/>. Latches the held hotkey (if any) and kills the gesture.</summary>
+    private void ArmCancelLocked(long timestampMs)
+    {
+        if (_activeHotkeyCode != KeyCode.VcUndefined)
+        {
+            _cancelledHeldKey = _activeHotkeyCode;
+            _cancelledHeldKeyLastDown = timestampMs;
+        }
+        InvalidateRecordingGestureLocked();
+    }
+
+    /// <summary>HKY-11: Escape cancels a live recording — at once while the hotkey that started it is
+    /// held, else on a double tap. Returns true to swallow the key.</summary>
+    private bool HandleEscapeDown(long timestampMs)
+    {
+        long liveWord;
+        bool heldHotkey;
+        EscapeDownVerdict verdict;
+        lock (_gestureLock)
+        {
+            liveWord = Volatile.Read(ref _recordingLiveWord);
+            heldHotkey = (liveWord & 1) != 0 && _activeHotkeyCode != KeyCode.VcUndefined && _keyDownStartedRecording;
+            // Every press goes through the classifier, so an auto-repeat never cancels a recording.
+            verdict = _escapeGesture.OnEscapeDown(timestampMs, liveWord, heldHotkey);
+            if (verdict == EscapeDownVerdict.CancelAndSuppress) ArmCancelLocked(timestampMs);
+        }
+        switch (verdict)
+        {
+            case EscapeDownVerdict.SuppressOnly: return true;
+            case EscapeDownVerdict.PassThrough: return false;
+        }
+        var source = heldHotkey ? "held hotkey" : "double tap";
+        TryDispatch(() =>
+        {
+            // A queued cancel belongs only to the recording generation that classified it.
+            if (Volatile.Read(ref _recordingLiveWord) != liveWord) return;
+            CancelRecordingRequested?.Invoke(source);
+        });
+        return true;
+    }
+
     /// <summary>Caller MUST hold <see cref="_gestureLock"/>.</summary>
     private void ResetHookStateLocked()
     {
@@ -1162,6 +1239,27 @@ public sealed class HotkeyService : IDisposable
     /// </summary>
     internal bool HandleKeyDown(KeyCode keyCode, long timestampMs)
     {
+        // HKY-11: a hotkey held through a cancel owns its repeats until release. Ahead of ownership,
+        // which ResetState drops while the key is still down; repeats refresh the stamp.
+        if (keyCode != KeyCode.VcUndefined)
+        {
+            lock (_gestureLock)
+            {
+                if (keyCode == _cancelledHeldKey)
+                {
+                    if (timestampMs - _cancelledHeldKeyLastDown < EscapeCancelGesture.LostKeyUpGapMs)
+                    {
+                        _cancelledHeldKeyLastDown = timestampMs;
+                        return true;
+                    }
+                    _cancelledHeldKey = KeyCode.VcUndefined; // key-up lost: this is a fresh press
+                }
+            }
+        }
+
+        if (keyCode == KeyCode.VcEscape)
+            return HandleEscapeDown(timestampMs);
+
         // ── Gesture ownership FIRST (F4, 2026-07-14): an event for the key that owns
         // the in-flight press lifecycle belongs to the GESTURE, regardless of what the
         // key is currently bound to. A reconfiguration mid-hold (ReloadHotkeys /
@@ -1406,6 +1504,23 @@ public sealed class HotkeyService : IDisposable
     /// </summary>
     internal bool HandleKeyUp(KeyCode keyCode, long timestampMs)
     {
+        // HKY-11: Escape's up is swallowed exactly when its press was.
+        if (keyCode == KeyCode.VcEscape)
+            return _escapeGesture.OnEscapeUp();
+
+        var releasedCancelledKey = false;
+        if (keyCode != KeyCode.VcUndefined)
+        {
+            lock (_gestureLock)
+            {
+                if (keyCode == _cancelledHeldKey)
+                {
+                    _cancelledHeldKey = KeyCode.VcUndefined;
+                    releasedCancelledKey = true;
+                }
+            }
+        }
+
         // ── Gesture ownership FIRST (F4, 2026-07-14): the release of the key that owns
         // the in-flight gesture COMPLETES it, regardless of what the key is currently
         // bound to — a mid-hold reconfiguration (ReloadHotkeys / RegisterPromptHotkeys)
@@ -1494,6 +1609,9 @@ public sealed class HotkeyService : IDisposable
 
             return true; // Suppress — the press that started the gesture was suppressed too
         }
+
+        // HKY-11: its repeats were swallowed, so its up is too — even for a combo, whose idle up passes.
+        if (releasedCancelledKey) return true;
 
         var config = _config;
 

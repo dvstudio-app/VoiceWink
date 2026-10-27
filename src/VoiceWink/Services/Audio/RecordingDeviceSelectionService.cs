@@ -119,7 +119,7 @@ public sealed class RecordingDeviceSelectionService
                 () => { var d = deviceManager.GetDeviceById(id); if (d != null) observe?.Invoke(d); return d; },
                 bound, label, dependency: null, ct: ct),
             (bound, label, observe, ct) => BoundedComCall.RunBoundedAsync(
-                () => { var d = deviceManager.GetCurrentDevice(); if (d != null) observe?.Invoke(d); return d; },
+                () => { var d = deviceManager.GetSystemDefaultDevice(); if (d != null) observe?.Invoke(d); return d; },
                 bound, label, dependency: null, ct: ct),
             // AUD-16: `MMDevice.ID` is IMMDevice::GetId — a LIVE COM call into the audio service,
             // not a cached managed value. It is cheaper than the property-store open that AUD-11's

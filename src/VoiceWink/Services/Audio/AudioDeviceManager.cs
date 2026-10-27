@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using NAudio.CoreAudioApi;
 using Serilog;
 using VoiceWink.Helpers;
-using VoiceWink.Models.Enums;
 
 namespace VoiceWink.Services.Audio;
 
@@ -37,20 +36,6 @@ public sealed class AudioDeviceManager : IDisposable
     // dispatched through a long-lived enumerator can deadlock the UI message pump
     // when audio devices disconnect (e.g., Jabra headset powered off).
     private List<AudioDeviceInfo>? _availableDevices;
-    private volatile bool _devicesLoaded;
-
-    public IReadOnlyList<AudioDeviceInfo> AvailableDevices
-    {
-        get
-        {
-            EnsureDevicesLoaded();
-            return _availableDevices ?? [];
-        }
-    }
-
-    public AudioInputMode Mode { get; set; } = AudioInputMode.SystemDefault;
-
-    public event Action? DevicesChanged;
 
     public AudioDeviceManager()
     {
@@ -120,12 +105,6 @@ public sealed class AudioDeviceManager : IDisposable
         return tcs.Task.GetAwaiter().GetResult();
     }
 
-    private void EnsureDevicesLoaded()
-    {
-        if (!_devicesLoaded)
-            RefreshDevices();
-    }
-
     public void RefreshDevices()
     {
         try
@@ -161,8 +140,6 @@ public sealed class AudioDeviceManager : IDisposable
                 return result;
             });
 
-            _devicesLoaded = true;
-
             // AUD-4: the endpoint kinds ride the line that was already here, which is the whole
             // point of logging them HERE and not at recording start — classification has already
             // run during this enumeration, so it costs nothing, while a read on the resolve path
@@ -175,13 +152,11 @@ public sealed class AudioDeviceManager : IDisposable
             Logger.Information("Found {Count} audio input devices ({Kinds})",
                 _availableDevices.Count,
                 DescribeKinds(_availableDevices));
-            DevicesChanged?.Invoke();
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Failed to enumerate audio devices");
             _availableDevices = new List<AudioDeviceInfo>();
-            _devicesLoaded = true;
         }
     }
 
@@ -207,11 +182,6 @@ public sealed class AudioDeviceManager : IDisposable
     /// </summary>
     private static CaptureEndpointKind ClassifyEndpoint(MMDevice device)
         => EndpointClassificationReader.Classify(device);
-
-    /// <summary>
-    /// Returns the MMDevice to use for recording based on current mode.
-    /// </summary>
-    public MMDevice? GetCurrentDevice() => GetSystemDefaultDevice();
 
     /// <summary>
     /// AUD-1: resolve a capture device by its WASAPI endpoint ID. Returns null when the
@@ -253,9 +223,7 @@ public sealed class AudioDeviceManager : IDisposable
     /// AUD-1: off-caller-thread device enumeration for UI callers — the synchronous
     /// <see cref="RefreshDevices"/> waits on the STA worker and can block a UI thread
     /// indefinitely behind a wedged audio service. Coalesced: concurrent callers await
-    /// the SAME pass. Returns an immutable snapshot; also updates
-    /// <see cref="AvailableDevices"/> and fires <see cref="DevicesChanged"/> like the
-    /// synchronous path.
+    /// the SAME pass. Returns an immutable snapshot.
     /// </summary>
     public Task<IReadOnlyList<AudioDeviceInfo>> RefreshDevicesAsync()
     {
@@ -324,7 +292,7 @@ public sealed class AudioDeviceManager : IDisposable
     {
         _workQueue.CompleteAdding();
         _staThread.Join(timeout: TimeSpan.FromSeconds(2));
-        _workQueue.Dispose();
+        // AUD-40: the queue is not disposed — a work item stuck in COM past the join would return into a disposed collection and crash the pump thread.
     }
 }
 

@@ -1798,6 +1798,7 @@ public partial class App : Application, Services.IAppLifetime
 
         viewModel.PropertyChanged += OnMiniRecorderViewModelPropertyChanged;
         viewModel.ShowMiniRecorderError += OnMiniRecorderErrorRequested;
+        viewModel.RecordingCancelled += OnRecordingCancelled;
         viewModel.DownloadProgressUpdated += OnMiniRecorderDownloadProgressUpdated;
         viewModel.AffordanceArmed += OnAffordanceArmed;
         viewModel.OpenLicensePageRequested += OnOpenLicensePageRequested;
@@ -2141,6 +2142,11 @@ public partial class App : Application, Services.IAppLifetime
         c.RetireAffordance(kind, fallback);
     }
 
+    /// <summary>HKY-11: a cancelled recording confirms itself briefly on the pill.</summary>
+    private void OnRecordingCancelled()
+        => RunOnMiniRecorderDispatcher(() => _pillController?.PublishMessage(
+            "Cancelled", MiniRecorderTone.Warning, seconds: MiniRecorderTimings.CancelledSeconds));
+
     private void OnMiniRecorderErrorRequested(string message, MiniRecorderTone tone, PillMessageAction action)
         => RunOnMiniRecorderDispatcher(() => _pillController?.PublishMessage(message, tone, action));
 
@@ -2221,7 +2227,29 @@ public partial class App : Application, Services.IAppLifetime
     /// <summary>Corner × tap: the controller dismisses only if the handle still matches the current
     /// dismissable presentation.</summary>
     private void OnPillDismissRequested(PillHandle handle)
-        => RunOnMiniRecorderDispatcher(() => _pillController?.Dismiss(handle));
+        => RunOnMiniRecorderDispatcher(() =>
+        {
+            var c = _pillController;
+            var vm = _miniRecorderViewModel;
+            // HKY-11: on a recording pill the × cancels the recording.
+            if (c != null && vm != null && c.IsInteractiveCurrent(handle)
+                && c.Current?.Content is PillContent.Pipeline p
+                && MiniRecorderStopRouting.DismissCancelsRecording(p.State)
+                && vm.RecordingState == RecordingState.Recording)
+            {
+                Log.Information("Pill cancel (×)");
+                _hotkeyService?.ArmCancelForHeldHotkey();
+                _ = CancelFromPillAsync(vm);
+                return;
+            }
+            c?.Dismiss(handle);
+        });
+
+    private static async Task CancelFromPillAsync(MainViewModel vm)
+    {
+        try { await vm.CancelRecordingAsync(); }
+        catch (Exception ex) { Log.Error(ex, "Error handling pill cancel"); }
+    }
 
     /// <summary>Redo/retry action tap: route to the VM's recency-first redo-or-retry entry (which the
     /// pill's affordance mirrors) only if the handle still matches the current pill.</summary>
@@ -2436,6 +2464,7 @@ public partial class App : Application, Services.IAppLifetime
         {
             _miniRecorderViewModel.PropertyChanged -= OnMiniRecorderViewModelPropertyChanged;
             _miniRecorderViewModel.ShowMiniRecorderError -= OnMiniRecorderErrorRequested;
+            _miniRecorderViewModel.RecordingCancelled -= OnRecordingCancelled;
             _miniRecorderViewModel.DownloadProgressUpdated -= OnMiniRecorderDownloadProgressUpdated;
             _miniRecorderViewModel.AffordanceArmed -= OnAffordanceArmed;
             _miniRecorderViewModel.OpenLicensePageRequested -= OnOpenLicensePageRequested;
@@ -2700,6 +2729,20 @@ public partial class App : Application, Services.IAppLifetime
         _hotkeyService.CancelPromptOverride += () =>
         {
             viewModel.ClearPromptOverride();
+        };
+        _hotkeyService.CancelRecordingRequested += async source =>
+        {
+            try
+            {
+                // HKY-11: the hook judged a snapshot; a stop that already left Recording wins.
+                if (viewModel.RecordingState != RecordingState.Recording) return;
+                Log.Information("Escape cancel ({Source})", source);
+                await viewModel.CancelRecordingAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error handling Escape cancel");
+            }
         };
         viewModel.ResetHotkeyState += () => _hotkeyService.ResetState();
 
@@ -4991,11 +5034,13 @@ public partial class App : Application, Services.IAppLifetime
                 {
                     VoiceWink.Helpers.NativeInterop.AppendMenu(hMenu, Helpers.NativeInterop.MF_STRING, ID_SHOW, "Show");
                     VoiceWink.Helpers.NativeInterop.AppendMenu(hMenu, Helpers.NativeInterop.MF_STRING, ID_RECORD, "Speak");
-                    VoiceWink.Helpers.NativeInterop.AppendMenu(hMenu, Helpers.NativeInterop.MF_STRING, ID_GENERATE_IMAGE, "New image");
                     // IMG-BG: the menu is rebuilt on every right-click, so the conditional item
-                    // reads the live job state — no dynamic-menu plumbing needed.
+                    // reads the live job state — no dynamic-menu plumbing needed. IMG-11b: the job
+                    // is a single slot, so a running job offers Cancel instead of New.
                     if (_imageJobService?.IsRunning == true)
                         VoiceWink.Helpers.NativeInterop.AppendMenu(hMenu, Helpers.NativeInterop.MF_STRING, ID_CANCEL_IMAGE, "Cancel image");
+                    else
+                        VoiceWink.Helpers.NativeInterop.AppendMenu(hMenu, Helpers.NativeInterop.MF_STRING, ID_GENERATE_IMAGE, "New image");
                     // Right-click hide (2026-07-30): the restore path for a pill the user hid while a
                     // long generation/enhancement finishes. Same rebuilt-per-click liveness as above.
                     if (_pillController?.IsUserHidden == true)

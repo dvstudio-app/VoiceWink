@@ -322,7 +322,7 @@ public sealed class OpenAICompatibleClient
         {
             // LAI-1 (Grok diff r1): a user-run server answering 200 with a web page is the user's
             // configuration, not contract drift. A raw JsonException is outside every enhancement
-            // catch's Warning list, so it would file a Sentry event per dictation; this is the
+            // catch's Warning list, so it would file a Sentry event (once per run since ENH-16); this is the
             // same message and level LocalServerClient uses on the Ollama path. Cloud parsing is
             // unchanged.
             Logger.Warning("Local server reply is not JSON; Body={Body}", responseJson.TruncateForLog());

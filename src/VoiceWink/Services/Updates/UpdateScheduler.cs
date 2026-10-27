@@ -12,10 +12,11 @@ namespace VoiceWink.Services.Updates;
 /// <see cref="IUpdateScheduler"/> for the contract and <see cref="UpdateScheduleDecision"/>
 /// for the cadence rules.
 ///
-/// <para><b>Loop shape.</b> A single re-armed <c>Task.Delay</c> loop (not a
+/// <para><b>Loop shape.</b> A single re-armed delay loop (not a
 /// <c>DispatcherTimer</c>) — testable via an injected delay seam and decoupled from the
 /// WinUI dispatcher lifecycle. Each session: wait <c>InitialDelay</c> (~30s after start) →
 /// tick → then wait <c>Interval</c> (24h) → tick → … (see <see cref="UpdateScheduleDecision"/>).
+/// The production delay is <see cref="SleepInclusiveDelay"/>, so time the PC sleeps counts (UPD-16).
 /// The first check fires on <i>every</i> launch — there's no cross-restart suppression. The
 /// tick is fully wrapped so a thrown check (e.g. a 502 from the CDN) can never tear down the
 /// loop or crash a background thread.</para>
@@ -56,7 +57,7 @@ public sealed class UpdateScheduler : IUpdateScheduler, IDisposable
             updates,
             settings,
             UpdateCheckFeature.IsEnabled,
-            static (d, ct) => Task.Delay(d, ct),
+            SleepInclusiveDelay.WaitAsync,
             App.IsExclusiveMaintenanceActive,
             installSource)
     {

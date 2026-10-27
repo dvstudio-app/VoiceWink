@@ -1548,6 +1548,14 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
                     _targetLabelAllowed = true;
                     ApplyTargetAppLabel();
                     SetStopAccent(AppTheme.TextPrimary); // recording phase stays neutral
+                    // HKY-11: the corner × cancels the recording without transcribing.
+                    if (Helpers.MiniRecorderStopRouting.DismissCancelsRecording(state))
+                    {
+                        _dismissButton.Background = StopNormalBg(); // a × collapsed under the pointer keeps its hover tint
+                        _dismissButton.Visibility = Visibility.Visible;
+                        _dismissIcon.Foreground = AppTheme.Brush(AppTheme.SubtleText);
+                        AppTheme.SetIconLabel(_dismissButton, Helpers.MiniRecorderStopRouting.CancelRecordingLabel);
+                    }
                     RecordingDot.Fill = AppTheme.Brush(AppTheme.AccentRed);
                     RecordingDot.Opacity = 1.0;
                     _dotGlow.Fill = AppTheme.Brush(ColorHelper.FromArgb(50, 255, 69, 58));
@@ -1906,7 +1914,11 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             // Corner × only for a persistent (Error) message; tone-tinted like the pill.
             _dismissButton.Visibility = showDismiss ? Visibility.Visible : Visibility.Collapsed;
             if (showDismiss)
+            {
+                _dismissButton.Background = StopNormalBg();
                 _dismissIcon.Foreground = AppTheme.Brush(accent);
+                AppTheme.SetIconLabel(_dismissButton, "Dismiss"); // HKY-11: a recording pill relabels it
+            }
 
             Show(pipelineState: null);
         });
@@ -2816,7 +2828,11 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             // The corner × rides only on a persistent (Error) action pill, tone-tinted like the pill.
             _dismissButton.Visibility = showDismiss ? Visibility.Visible : Visibility.Collapsed;
             if (showDismiss)
+            {
+                _dismissButton.Background = StopNormalBg();
                 _dismissIcon.Foreground = AppTheme.Brush(accent);
+                AppTheme.SetIconLabel(_dismissButton, "Dismiss"); // HKY-11: a recording pill relabels it
+            }
             // Text takes the tone accent on ALL tones (owner 2026-07-31: green success text
             // beside amber declines and red errors — the old neutral-text Success carve-out made
             // success the one tone whose text didn't match its pill). Success keeps its softer

@@ -548,11 +548,11 @@ public sealed partial class MainWindow : Window
             _navItems.Add(item);
         }
 
-        // UI-25: the "More" group — a header button toggling the Visibility of an indented
-        // StackPanel (no Expander: root CLAUDE.md, WinUI constraint 2).
+        // UI-25: the "More" group — a header button toggling the Visibility of a
+        // StackPanel aligned with the main items (no Expander: root CLAUDE.md, WinUI constraint 2).
         _moreHeader = CreateMoreHeader();
         navStack.Children.Add(_moreHeader);
-        _moreItems = new StackPanel { Spacing = 2, Margin = new Thickness(12, 0, 0, 0) };
+        _moreItems = new StackPanel { Spacing = 2 };
         foreach (var entry in SidebarLayout.More)
         {
             var item = CreateNavItem(entry.Label, entry.Glyph, entry.Tag, entry.Tooltip);

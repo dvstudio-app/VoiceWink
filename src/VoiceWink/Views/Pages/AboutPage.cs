@@ -59,7 +59,7 @@ public sealed class AboutPage : Page
 
         var text = new TextBlock
         {
-            Text = AboutInfo.BuildText(AboutInfo.CurrentVersion),
+            Text = AboutInfo.BuildText(AboutInfo.CurrentVersion, AboutInfo.CurrentChannelTag),
             Foreground = AppTheme.Brush(AppTheme.TextSecondary),
             FontSize = 13,
             TextWrapping = TextWrapping.Wrap,

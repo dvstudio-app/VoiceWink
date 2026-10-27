@@ -17,6 +17,11 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.121.420] - 2026-10-27
+
+- Cancel a recording: press Escape while holding the hotkey, press Escape twice quickly, or click × on the recorder. Nothing is transcribed or pasted.
+- Automatic update checks and the daily license check now run about once a day, even on a PC that sleeps instead of restarting.
+
 ## [1.120.419] - 2026-10-26
 
 - The time saved on Home now shows workdays, hours and minutes; a workday is 8 hours.

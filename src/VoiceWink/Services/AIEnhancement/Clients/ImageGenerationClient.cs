@@ -131,7 +131,7 @@ public sealed class ImageGenerationClient
                 Logger.Information("Image received as URL, downloading...");
                 using var imgResponse = await _http.GetWithImageTimeoutTranslationAsync(
                     extraction.Url!, HttpCompletionOption.ResponseHeadersRead, Logger, $"model={LogValueSanitizer.IdentifierOrShape(model)}, url download", downloadCt).ConfigureAwait(false);
-                imgResponse.EnsureSuccessStatusCode();
+                imgResponse.EnsureSuccessStatusCodeWithoutReasonPhrase(Logger, "Image URL download");
 
                 // Re-validate after redirects — HttpClient follows 302s by default
                 var finalUri = imgResponse.RequestMessage?.RequestUri;

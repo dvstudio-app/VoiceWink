@@ -26,13 +26,11 @@ namespace VoiceWink.Helpers;
 /// RENDERED log lines through <c>RedactString</c>, which has no reason-phrase token, so the phrase
 /// survives into both. That is the same accepted class as <c>{Body}</c> — device-local and
 /// user-initiated — not a Sentry channel.</para>
-/// <para><b>Framework-built messages are a SEPARATE remaining channel</b> — see backlog SEC-5.
+/// <para><b>Framework-built messages were a separate channel, closed by SEC-5.</b>
 /// <c>EnsureSuccessStatusCode()</c> composes "Response status code does not indicate success: 503
-/// (&lt;phrase&gt;)" itself, which we cannot sanitise. The provider path no longer calls it
-/// (<c>EnsureSuccessOrLogAndThrowAsync</c>'s body-read-failure fallback throws this type instead), but
-/// <c>ImageGenerationClient</c>'s image-URL download and <c>ModelDownloadManager</c> still do. (The
-/// transcription key check called it too until 2026-10-10; <c>ApiKeyCheck</c> replaced it and reads
-/// the status itself.)</para>
+/// (&lt;phrase&gt;)" itself, which we cannot sanitise, so nothing calls it: the provider path throws
+/// this type, and the two non-provider downloads (<c>ImageGenerationClient</c>'s image URL,
+/// <c>ModelDownloadManager</c>) call <c>EnsureSuccessStatusCodeWithoutReasonPhrase</c>.</para>
 /// <para>Pill surfaces are already protected: they route through
 /// <c>MainViewModel.ProviderPillSafeText</c>, which never shows a status-bearing exception message.</para>
 /// Subclasses <see cref="HttpRequestException"/> with <c>StatusCode</c>

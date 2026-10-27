@@ -1,4 +1,5 @@
 using VoiceWink.Services.Support;
+using VoiceWink.Services.Updates;
 
 namespace VoiceWink.Helpers;
 
@@ -34,9 +35,17 @@ public static class AboutInfo
     public static string CurrentVersion =>
         typeof(AboutInfo).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
+    /// <summary>The About version's suffix: "dev build" with no channel baked in, "beta" on the gated tester feed, null on a public channel (keyed on the flag, since src/ names no channel).</summary>
+    public static string? ChannelTag(string channel, bool feedIsGated) =>
+        channel.Length == 0 ? "dev build" : feedIsGated ? "beta" : null;
+
+    /// <summary>The running build's <see cref="ChannelTag"/>.</summary>
+    public static string? CurrentChannelTag =>
+        ChannelTag(UpdateFeedConfig.Channel, UpdateFeedConfig.FeedIsGated);
+
     /// <summary>Build the About-card body text for a given (already-formatted) version string.</summary>
-    public static string BuildText(string version) =>
-        $"VoiceWink v{version}\n" +
+    public static string BuildText(string version, string? channelTag = null) =>
+        $"VoiceWink v{version}{(channelTag is null ? "" : $" ({channelTag})")}\n" +
         $"Published by {Publisher}\n" +
         $"{Copyright}\n" +
         Attribution;
@@ -46,8 +55,8 @@ public static class AboutInfo
 
     /// <summary>
     /// The footer both support emails end with — a blank line after the user's text (two when the
-    /// footer is the whole body, as in the suggestion mail), a separator, then the About card's own
-    /// version line — so a report or a suggestion about something a later build already does can be
+    /// footer is the whole body, as in the suggestion mail), a separator, then the About card's
+    /// version line without its channel tag — so a report or a suggestion about something a later build already does can be
     /// answered as such without opening a bundle (a report sent without logs carries no other
     /// version). CRLF, the canonical line break for a Simple MAPI note and the RFC 6068 form for a
     /// <c>mailto:</c> body, so one footer serves both transports.

@@ -18,6 +18,7 @@ public sealed class SoundFeedbackService : IDisposable
     private readonly SettingsService _settings;
     private readonly string _startSoundPath;
     private readonly string _stopSoundPath;
+    private readonly Func<IWavePlayer> _createPlayer = () => new WaveOutEvent();
     private readonly List<IDisposable> _activePlayers = new();
     private readonly object _lock = new();
     private bool _disposed;
@@ -31,11 +32,13 @@ public sealed class SoundFeedbackService : IDisposable
         _stopSoundPath = Path.Combine(baseDir, "Assets", "Sounds", "recstop.wav");
     }
 
-    internal SoundFeedbackService(SettingsService settings, string startSoundPath, string stopSoundPath)
+    internal SoundFeedbackService(SettingsService settings, string startSoundPath, string stopSoundPath,
+        Func<IWavePlayer>? createPlayer = null)
     {
         _settings = settings;
         _startSoundPath = startSoundPath;
         _stopSoundPath = stopSoundPath;
+        if (createPlayer != null) _createPlayer = createPlayer;
     }
 
     public void PlayStartSound()
@@ -56,6 +59,8 @@ public sealed class SoundFeedbackService : IDisposable
 
     private void PlaySound(string filePath)
     {
+        AudioFileReader? reader = null;
+        IWavePlayer? player = null;
         try
         {
             if (_disposed) return;
@@ -67,8 +72,8 @@ public sealed class SoundFeedbackService : IDisposable
             }
 
             // Fire-and-forget: create player, play, dispose when done
-            var reader = new AudioFileReader(filePath) { Volume = Volume };
-            var player = new WaveOutEvent();
+            reader = new AudioFileReader(filePath) { Volume = Volume };
+            player = _createPlayer();
             player.Init(reader);
 
             lock (_lock)
@@ -94,7 +99,29 @@ public sealed class SoundFeedbackService : IDisposable
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to play sound: {Path}", filePath);
+            // AUD-39: a failed Init (no output device) must not keep the sound file open.
+            lock (_lock)
+            {
+                if (player != null) _activePlayers.Remove(player);
+                if (reader != null) _activePlayers.Remove(reader);
+            }
+            DisposeQuietly(player);
+            DisposeQuietly(reader);
+            // AUD-39: fires on every beep while the cause lasts, so one Sentry event per run.
+            Logger.Write(SessionErrorBudget.LevelFor("sound-feedback:" + ex.GetType().Name), ex,
+                "Failed to play sound: {Path}", filePath);
+        }
+    }
+
+    private static void DisposeQuietly(IDisposable? disposable)
+    {
+        try
+        {
+            disposable?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug(ex, "Error disposing audio player");
         }
     }
 
@@ -106,16 +133,7 @@ public sealed class SoundFeedbackService : IDisposable
         lock (_lock)
         {
             foreach (var disposable in _activePlayers)
-            {
-                try
-                {
-                    disposable.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    Logger.Debug(ex, "Error disposing audio player");
-                }
-            }
+                DisposeQuietly(disposable);
             _activePlayers.Clear();
         }
     }

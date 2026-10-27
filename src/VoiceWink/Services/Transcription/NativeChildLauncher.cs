@@ -325,6 +325,7 @@ internal sealed class NativeChildHandle : IDisposable
 {
     private readonly NativeInterop.PROCESS_INFORMATION _process;
     private readonly IntPtr _job;
+    private readonly object _jobLifetime = new();
     private readonly SafeFileHandle _output;
     // Interlocked, not a bool: the callers serialise Dispose under their own locks today, but a
     // double close of the process/job handles is the kind of fault that survives a refactor of
@@ -397,6 +398,34 @@ internal sealed class NativeChildHandle : IDisposable
 
     /// <summary>Whether the drain has reached EOF.</summary>
     public bool OutputDrained => _outputDrained;
+
+    /// <summary>Kernel count for this owned job and its nested jobs. Null means unknown,
+    /// never an empty tree. Serialized with job-handle closure to prevent handle reuse.</summary>
+    internal uint? ActiveProcessCount
+    {
+        get
+        {
+            lock (_jobLifetime)
+            {
+                if (IsDisposed) return null;
+                var length = (uint)Marshal.SizeOf<NativeInterop.JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>();
+                return NativeInterop.QueryInformationJobObject(_job,
+                    NativeInterop.JOBOBJECTINFOCLASS.JobObjectBasicAccountingInformation,
+                    out var information, length, out var returned) && returned == length
+                    ? information.ActiveProcesses : null;
+            }
+        }
+    }
+
+    /// <summary>Failure cleanup for this launch's exact job, including nested children.
+    /// The caller must still confirm ActiveProcessCount is zero before reporting cleanup.</summary>
+    internal bool TerminateOwnedTree(uint exitCode)
+    {
+        lock (_jobLifetime)
+        {
+            return !IsDisposed && NativeInterop.TerminateJobObject(_job, exitCode);
+        }
+    }
 
     private bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
@@ -486,15 +515,18 @@ internal sealed class NativeChildHandle : IDisposable
         // drain thread is actually unblocked by CloseHandle(_job) below — KILL_ON_JOB_CLOSE
         // kills the child, its write end closes, the read returns EOF. The job close must
         // therefore never be removed from, or reordered out of, this method.
-        try
+        lock (_jobLifetime)
         {
-            _output.Dispose();
-        }
-        finally
-        {
-            NativeInterop.CloseHandle(_process.hThread);
-            NativeInterop.CloseHandle(_process.hProcess);
-            NativeInterop.CloseHandle(_job);
+            try
+            {
+                _output.Dispose();
+            }
+            finally
+            {
+                NativeInterop.CloseHandle(_process.hThread);
+                NativeInterop.CloseHandle(_process.hProcess);
+                NativeInterop.CloseHandle(_job);
+            }
         }
     }
 }

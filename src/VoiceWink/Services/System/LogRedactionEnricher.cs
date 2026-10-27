@@ -16,7 +16,7 @@ namespace VoiceWink.Services.System;
 ///      <see cref="RedactedPropertyNames"/> is replaced with <c>&lt;REDACTED&gt;</c>
 ///      regardless of value. Covers cases like <c>Log.Information("{ApiKey}", key)</c>.
 ///   2. <b>Value pattern</b> — scalar string properties are regex-scanned for
-///      known key shapes (Anthropic / OpenAI / OpenRouter / Groq / Gemini),
+///      known key shapes (Anthropic / OpenAI / OpenRouter / Groq / ElevenLabs / Gemini),
 ///      auth headers, and LemonSqueezy license key format.
 ///
 /// Note: string-concatenated log calls (<c>Log.Information("Key=" + key)</c>) bake
@@ -61,6 +61,9 @@ public sealed class LogRedactionEnricher : ILogEventEnricher
         new(@"sk-[A-Za-z0-9_-]{20,}",
             global::System.Text.RegularExpressions.RegexOptions.Compiled),
         new(@"gsk_[A-Za-z0-9]{40,}",
+            global::System.Text.RegularExpressions.RegexOptions.Compiled),
+        // SEC-8: ElevenLabs; the lookbehind keeps Task_/Disk_/Ask_ method names in rendered stack traces.
+        new(@"(?<![A-Za-z0-9])sk_[A-Za-z0-9]{20,}",
             global::System.Text.RegularExpressions.RegexOptions.Compiled),
         new(@"AIza[0-9A-Za-z_-]{35}",
             global::System.Text.RegularExpressions.RegexOptions.Compiled),

@@ -20,8 +20,10 @@ public abstract record PillLifetime
 {
     private PillLifetime() { }
 
-    /// <summary>A live source owns it (recording pipeline, download, running image job): no ×, no
-    /// expiry. It ends only when the owner withdraws the candidate.</summary>
+    /// <summary>A live source owns it (recording pipeline, download, running image job): no dismiss ×,
+    /// no expiry. It ends only when the owner withdraws the candidate. A Recording pipeline shows the
+    /// same corner × as a CANCEL (HKY-11, <c>MiniRecorderStopRouting.DismissCancelsRecording</c>), not
+    /// a dismiss.</summary>
     public sealed record WhileOwned : PillLifetime;
 
     /// <summary>Persists until the user dismisses it (corner ×) or a higher surface supersedes it.

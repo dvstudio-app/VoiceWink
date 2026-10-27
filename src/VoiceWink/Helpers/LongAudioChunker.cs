@@ -1,9 +1,6 @@
 namespace VoiceWink.Helpers;
 
 /// <summary>A half-open sample range <c>[Start, Start + Count)</c> to decode as one unit.</summary>
-/// <remarks>Named <c>DecodeChunk</c> rather than <c>AudioChunk</c> to stay clear of
-/// <c>AudioRecorderService.OnAudioChunk</c>, which is a capture-buffer event — a different concept one
-/// word away.</remarks>
 public readonly record struct DecodeChunk(int Start, int Count);
 
 /// <summary>

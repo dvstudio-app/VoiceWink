@@ -82,6 +82,17 @@ internal static class HttpResponseExtensions
         }
     }
 
+    /// <summary>SEC-5: <c>EnsureSuccessStatusCode()</c> minus the server's reason phrase in <c>Message</c>, which is logged un-redacted; the phrase goes to the redacted <c>{ReasonPhrase}</c>.</summary>
+    public static void EnsureSuccessStatusCodeWithoutReasonPhrase(this HttpResponseMessage response, ILogger logger, string request)
+    {
+        if (response.IsSuccessStatusCode) return;
+
+        logger.Warning("{Request} returned HTTP {Status}; ReasonPhrase={ReasonPhrase}",
+            request, (int)response.StatusCode, response.ReasonPhrase?.TruncateForLog());
+        throw new HttpRequestException(
+            $"Response status code does not indicate success: {(int)response.StatusCode}.", inner: null, statusCode: response.StatusCode);
+    }
+
     public static async Task EnsureSuccessOrLogAndThrowAsync(
         this HttpResponseMessage response, string providerName, ILogger logger, CancellationToken ct = default)
     {
@@ -112,7 +123,7 @@ internal static class HttpResponseExtensions
             // network reset mid-body). Throwing the typed exception instead closes that half AND
             // unifies the type, so every caller's catch filters keep working; body is null here,
             // so UserMessage is null and IsOutOfCredits false, exactly as EnsureSuccessStatusCode
-            // carried neither.
+            // carried neither. Non-provider sites use EnsureSuccessStatusCodeWithoutReasonPhrase (SEC-5).
             throw ProviderApiException.From(providerName, response, null);
         }
 

@@ -1,4 +1,5 @@
 using Serilog;
+using VoiceWink.Helpers;
 using VoiceWink.Services.Maintenance;
 
 namespace VoiceWink.Services.Licensing;
@@ -16,13 +17,14 @@ namespace VoiceWink.Services.Licensing;
 /// Auto-updates restart the app each release and shorten that in practice; that is incidental,
 /// not design.</para>
 ///
-/// <para><b>Loop shape.</b> One re-armed <c>Task.Delay</c> loop on the pool (the
+/// <para><b>Loop shape.</b> One re-armed delay loop on the pool (the
 /// <c>UpdateScheduler</c> shape, UPD-1b) — not a <c>DispatcherTimer</c>, so it is testable through
 /// the injected delay seam and decoupled from the WinUI pump. <b>The first tick is a full
 /// <see cref="Interval"/> after <see cref="Start"/>, never at start:</b> on an onboarded start the
 /// launch reconcile has just run (and a first run has just activated a key or started the trial at
 /// the wizard), so a tick at start would be the second call per launch the LIC-22 plan round
-/// removed. Every iteration waits, then ticks.</para>
+/// removed. Every iteration waits, then ticks. The production delay is
+/// <see cref="SleepInclusiveDelay"/>, so time the PC sleeps counts (UPD-16).</para>
 ///
 /// <para><b>The tick is FORCED, and that is the whole point.</b> A machine that validated at
 /// start always holds a cache younger than 24 h at its first tick, so an unforced check would
@@ -82,7 +84,7 @@ public sealed class LicenseRevalidationScheduler : IDisposable
     private int _generation;
 
     public LicenseRevalidationScheduler(LicenseService license, IMaintenanceGate gate)
-        : this(license, gate, static (d, ct) => Task.Delay(d, ct))
+        : this(license, gate, SleepInclusiveDelay.WaitAsync)
     {
     }
 

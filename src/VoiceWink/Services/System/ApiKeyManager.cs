@@ -282,7 +282,9 @@ public sealed class ApiKeyManager
         }
         catch (Exception ex)
         {
-            Logger.Error(ex, "Failed to decrypt API key for {Provider}", provider);
+            // ENH-30: every request and HasApiKey read the key, so a bad blob reports once per run, not per read.
+            Logger.Write(SessionErrorBudget.LevelFor("api-key-unreadable:" + provider + ":" + ex.GetType().Name), ex,
+                "Failed to decrypt API key for {Provider}", provider);
             return null;
         }
     }

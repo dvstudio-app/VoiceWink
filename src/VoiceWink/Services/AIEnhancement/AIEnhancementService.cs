@@ -1,5 +1,6 @@
 using System.Net.NetworkInformation;
 using Serilog;
+using Serilog.Events;
 using VoiceWink.Helpers;
 using VoiceWink.Models;
 using VoiceWink.Services.AIEnhancement.Providers;
@@ -1207,18 +1208,17 @@ public sealed class AIEnhancementService
             // Provider-shaped failures → Warning (message-only; the client sites logged
             // status+body, and the caller surfaces the failure to the user) so the Sentry
             // sub-logger (Error+) doesn't ship provider outages/DNS failures as events
-            // (VOICEWINK-8). Unexpected exceptions keep Error + stack.
+            // (VOICEWINK-8). Unexpected exceptions: Error + stack once per type per run (ENH-16).
             // ENH-15 adds InvalidApiKeyFormatException to the provider-shaped list. Without it a
             // legacy malformed key logs Error on EVERY dictation, and Error+ ships to Sentry — an
             // event per utterance until the user re-enters the key, which is the quota burn this
             // classification exists to prevent. Its message is app-authored and carries no key
-            // material, so it is safe in a log template. (The general gap — a raw FormatException
-            // from any other cause still logs Error — is carded as ENH-16.)
+            // material, so it is safe in a log template.
             if (ex is HttpRequestException or InvalidOperationException or TimeoutException
                 or Helpers.InvalidApiKeyFormatException)
                 Logger.Warning("AI Enhancement failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
             else
-                Logger.Error(ex, "AI Enhancement failed");
+                Logger.Write(UnexpectedFailureLevel(ex), ex, "AI Enhancement failed");
             throw;
         }
     }
@@ -2526,16 +2526,20 @@ public sealed class AIEnhancementService
         catch (Exception ex)
         {
             // Same split as EnhanceAsync above, InvalidApiKeyFormatException included — a redo
-            // over a legacy malformed key would otherwise log Error on BOTH sides of the rethrow
-            // (here and in MainViewModel's redo catch), i.e. two Sentry events per redo.
+            // over a legacy malformed key would otherwise log Error (here or in MainViewModel's redo
+            // catch, which share one ENH-16 budget key), i.e. a Sentry event for a user's own key.
             if (ex is HttpRequestException or InvalidOperationException or TimeoutException
                 or Helpers.InvalidApiKeyFormatException)
                 Logger.Warning("AI Enhancement (redo) failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
             else
-                Logger.Error(ex, "AI Enhancement (redo) failed");
+                Logger.Write(UnexpectedFailureLevel(ex), ex, "AI Enhancement (redo) failed");
             throw;
         }
     }
+
+    /// <summary>Error once per exception type per run, Warning after: one Sentry event per unexpected cause, not one per dictation, shared with MainViewModel's catches (ENH-16).</summary>
+    internal static LogEventLevel UnexpectedFailureLevel(Exception ex) =>
+        SessionErrorBudget.LevelFor("enhancement:" + ex.GetType().Name);
 
     /// <summary>
     /// Generate an image with a specific model override. Does not change the persisted

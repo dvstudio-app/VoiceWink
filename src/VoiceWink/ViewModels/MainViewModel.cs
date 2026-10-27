@@ -64,6 +64,11 @@ public partial class MainViewModel : ObservableObject
     // first retained for retry. This admits exactly one stop body at a time.
     private readonly Helpers.SingleFlight _stopSingleFlight = new();
 
+    // HKY-11: a cancel that found the stop's lease held while still Recording (the post-stop capture
+    // grace); the stop discards the take instead of transcribing it. UI thread only.
+    // shortcut: no automated test (no MainViewModel stop-path harness exists), add one when that harness does.
+    private bool _cancelRequestedDuringStop;
+
     [ObservableProperty]
     private RecordingState _recordingState = RecordingState.Idle;
 
@@ -99,8 +104,11 @@ public partial class MainViewModel : ObservableObject
     // RecordingGestureSync.ShouldInvalidate; every stop/abort path funnels through this
     // property, so per-call-site resets can no longer drift.
     partial void OnRecordingStateChanged(RecordingState oldValue, RecordingState newValue)
-        => RecordingGestureSync.OnTransition(oldValue, newValue,
+    {
+        RecordingGestureSync.OnTransition(oldValue, newValue,
             () => _hotkeyService.InvalidateRecordingGesture("recording pipeline transition"));
+        _hotkeyService.SetRecordingLive(newValue == RecordingState.Recording); // HKY-11 Escape cancel
+    }
 
     [ObservableProperty]
     private string _statusText = "Ready";
@@ -451,6 +459,9 @@ public partial class MainViewModel : ObservableObject
     /// <see cref="Helpers.RecordingGestureSync"/>), which narrowly invalidates the gesture.
     /// </summary>
     public event Action? ResetHotkeyState;
+
+    /// <summary>HKY-11: a live recording was cancelled; App shows the brief "Cancelled" pill.</summary>
+    public event Action? RecordingCancelled;
 
     /// <summary>
     /// Raised to show a message pill in the MiniRecorder. The tone selects BOTH the styling and the
@@ -929,6 +940,32 @@ public partial class MainViewModel : ObservableObject
     {
         if (RecordingState == RecordingState.Idle) return;
 
+        // HKY-11: a Recording cancel arbitrates with the stop through the stop's own lease, before
+        // any mutation. Held = the stop is in its capture grace and discards the take itself.
+        IDisposable? stopLease = null;
+        if (RecordingState == RecordingState.Recording)
+        {
+            stopLease = _stopSingleFlight.TryAcquire();
+            if (stopLease is null)
+            {
+                _cancelRequestedDuringStop = true;
+                Logger.Information("Cancel requested while the stop holds the recording — the stop discards it");
+                return;
+            }
+            // A warm start may still be handing the session to the recorder (the stop's AUD-6 wait).
+            if (_warmStartGate is { } warmStartGate)
+            {
+                try { await warmStartGate; }
+                catch { /* the start's own catches present the failure */ }
+            }
+            if (RecordingState != RecordingState.Recording)
+            {
+                stopLease.Dispose();
+                return;
+            }
+        }
+        using var heldStopLease = stopLease;
+
         Logger.Information("Cancelling recording (state: {State})", RecordingState);
 
         // Release the UIA-focus capture taken at recording-start. Cancel paths
@@ -956,8 +993,13 @@ public partial class MainViewModel : ObservableObject
             _stallMonitor.Detach();
             await _recorder.StopRecordingAsync();
             StopMeterTimer();
-            _ = _systemMute.UnmuteAsync();
+            // HKY-11: awaited like the stop's, so the next recording cannot start under an unmute still in flight.
+            try { await _systemMute.UnmuteAsync(); }
+            catch (Exception ex) { Logger.Warning(ex, "Unmute after a cancelled recording failed"); }
             _soundFeedback.PlayStopSound();
+            // HKY-11: only the stop consumed these; a cancelled take must not hand them to the next one.
+            _pendingPromptOverride = null;
+            DiscardRecordingPreflight();
         }
 
         // Clean up the recording file
@@ -967,23 +1009,35 @@ public partial class MainViewModel : ObservableObject
         }
         _currentRecordingPath = null;
 
+        if (RecordingState == RecordingState.Starting)
+        {
+            _activeAppModeConfig = null; // Clear App Mode override on cancel
+            ClearRedoState();
+            MarkTerminalPresentation(); // IMG-BG epoch fence — terminal presentation
+            RecordingState = RecordingState.Idle;
+            StatusText = "Cancelled";
+            // Do NOT hide MiniRecorder here.
+            // The catch block in StartRecordingAsync will show an error briefly via ShowMiniRecorderError,
+            // which auto-hides after the dismiss timer fires. That path sets IsMiniRecorderVisible = false
+            // via the ErrorDismissed event.
+            ResetHotkeyState?.Invoke();
+            return;
+        }
+
+        PresentCancelledRecording();
+    }
+
+    /// <summary>HKY-11: the end of a cancelled live recording, shared by <see cref="CancelRecordingAsync"/>
+    /// and a stop that a cancel reached during its capture grace. The caller has dealt with the WAV.</summary>
+    private void PresentCancelledRecording()
+    {
         _activeAppModeConfig = null; // Clear App Mode override on cancel
         ClearRedoState();
-        var wasStarting = RecordingState == RecordingState.Starting;
         MarkTerminalPresentation(); // IMG-BG epoch fence — terminal presentation
         RecordingState = RecordingState.Idle;
         StatusText = "Cancelled";
-
-        if (!wasStarting)
-        {
-            // Normal cancel (from Recording state): hide immediately
-            IsMiniRecorderVisible = false;
-        }
-        // If wasStarting: do NOT hide MiniRecorder here.
-        // The catch block in StartRecordingAsync will show an error briefly via ShowMiniRecorderError,
-        // which auto-hides after the dismiss timer fires. That path sets IsMiniRecorderVisible = false
-        // via the ErrorDismissed event.
-
+        IsMiniRecorderVisible = false;
+        RecordingCancelled?.Invoke();
         ResetHotkeyState?.Invoke();
     }
 
@@ -3122,12 +3176,12 @@ public partial class MainViewModel : ObservableObject
                 // Warning for the provider-shaped branch: these are environmental (outages,
                 // safety blocks, timeouts), fully handled with user-facing feedback, and the
                 // Sentry sub-logger forwards Error+ — VOICEWINK-2 was 169 events of one 520
-                // storm. Unexpected exceptions stay Error so real bugs still reach Sentry.
+                // storm. Unexpected exceptions are Error once per type per run, so real bugs still reach Sentry (ENH-16).
                 if (ex is HttpRequestException or InvalidOperationException or TimeoutException
                     or Helpers.InvalidApiKeyFormatException)
                     Logger.Warning("Redo enhancement failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
                 else
-                    Logger.Error(ex, "Redo enhancement failed");
+                    Logger.Write(AIEnhancementService.UnexpectedFailureLevel(ex), ex, "Redo enhancement failed");
 
                 // Save the failed attempt to history so the user can see it and retry.
                 // (IMG-BG: this catch serves the TEXT arm only — the image arm dispatches to
@@ -5065,6 +5119,7 @@ public partial class MainViewModel : ObservableObject
             Logger.Information("Stop already in progress — ignored");
             return;
         }
+        _cancelRequestedDuringStop = false; // HKY-11: only a cancel during THIS stop counts
 
         // Capture and clear prompt override immediately so it never leaks to the next
         // recording; a retry re-uses the override its failed attempt consumed. CLONE at
@@ -5134,6 +5189,17 @@ public partial class MainViewModel : ObservableObject
 
                 await _systemMute.UnmuteAsync();
                 _soundFeedback.PlayStopSound();
+
+                // HKY-11: a cancel arrived during the graced stop — discard before anything transcribes.
+                if (_cancelRequestedDuringStop)
+                {
+                    _cancelRequestedDuringStop = false;
+                    Logger.Information("Recording cancelled during the stop's capture grace — discarded");
+                    userCancelledPipeline = true; // the finally deletes the WAV
+                    DiscardRecordingPreflight();
+                    PresentCancelledRecording();
+                    return;
+                }
             }
 
             _transcriptionCts?.Cancel();
@@ -5966,8 +6032,10 @@ public partial class MainViewModel : ObservableObject
                         // hottest enhancement path DO reach Sentry (F16 — this was the sole
                         // outlier among the five sibling catch sites, all of which already
                         // split Warning/provider-shaped vs Error/unexpected per the
-                        // documented provider-noise policy).
-                        Logger.Error(ex, "AI enhancement failed, using unenhanced text");
+                        // documented provider-noise policy) — once per exception type per run,
+                        // shared with the service's own catch (ENH-16).
+                        Logger.Write(AIEnhancementService.UnexpectedFailureLevel(ex), ex,
+                            "AI enhancement failed, using unenhanced text");
                     enhancementFailed = true;
                     // UI-only text (never logged): the provider's structured error when
                     // available (ProviderApiException.UserMessage), else the status-only
@@ -7112,25 +7180,23 @@ public partial class MainViewModel : ObservableObject
     /// transcription mapper has said exactly this since PR #244; the image, redo and enhancement paths
     /// simply never got the same treatment and were surfacing those bodies verbatim.</para>
     /// <para>A <b>PLAIN</b> 401 gets NEITHER treatment. It is not a key verdict —
-    /// <c>ImageGenerationClient</c>'s image-URL download calls <c>EnsureSuccessStatusCode()</c>, so an
+    /// <c>ImageGenerationClient</c>'s image-URL download raises a plain <c>HttpRequestException</c>, so an
     /// expired/authorised URL raises a bare 401 while the user's key is perfectly fine, and claiming
-    /// "Invalid API key" there is the misdiagnosis PR #244 removed from the 403 arm. But its message is
-    /// not trustworthy either: <c>EnsureSuccessStatusCode()</c> embeds the <b>server-supplied</b>
-    /// HTTP reason phrase, so it is response-controlled text, not app copy (Codex diff review,
-    /// 2026-07-26 — an earlier revision of this comment wrongly called it safe). It therefore gets
-    /// neutral app copy that diagnoses nothing.</para>
+    /// "Invalid API key" there is the misdiagnosis PR #244 removed from the 403 arm. Its message is not
+    /// app copy either (until SEC-5 it embedded the <b>server-supplied</b> HTTP reason phrase — Codex
+    /// diff review, 2026-07-26). It therefore gets neutral app copy that diagnoses nothing.</para>
     /// <para><b>No status-bearing exception message reaches a pill through here at all</b> — not just
-    /// 401s. Image downloads can return any status, and a framework <c>EnsureSuccessStatusCode()</c>
-    /// message embeds the reason phrase. So the rule is: structured provider text yes (that is ENH-1's
+    /// 401s. Image downloads can return any status, and an exception message is not app copy.
+    /// So the rule is: structured provider text yes (that is ENH-1's
     /// accepted surface), exception MESSAGES no. <b>SEC-2 (2026-08-18) narrowed one clause of this:</b>
     /// <c>HttpResponseExtensions</c> no longer raises a PLAIN exception when the body read fails — it
     /// throws the typed one — and the typed message no longer embeds the phrase. The RULE is unchanged
-    /// and still load-bearing for the framework-message sites (SEC-5).</para>
+    /// and still load-bearing as a default for any status-bearing message.</para>
     /// <para><b>SEC-2 SHIPPED 2026-08-18</b> and this paragraph used to describe it as pending. The
     /// phrase is off <c>ProviderApiException.Message</c> and rides a <c>{ReasonPhrase}</c> property that
     /// the redaction allowlist DOES cover, so it reaches the local log and not Sentry breadcrumbs.
-    /// Remaining: the FRAMEWORK-built <c>EnsureSuccessStatusCode()</c> message, which we do not compose
-    /// and cannot sanitise — tracked as SEC-5.</para>
+    /// SEC-5 closed the framework half: the download sites call
+    /// <c>EnsureSuccessStatusCodeWithoutReasonPhrase</c>, whose message carries the status only.</para>
     /// <para><b>Returns UNTRUNCATED text on purpose.</b> Callers that render directly truncate;
     /// <see cref="ComposeFallbackFailureStatus"/> callers must NOT, because that method trims
     /// whitespace BEFORE budgeting and pre-truncating reintroduces the space-prefixed collapse its own
@@ -7172,12 +7238,11 @@ public partial class MainViewModel : ObservableObject
             return new ProviderPillText(pex.UserMessage!, ProviderMessageMaxCodeUnits);
 
         // 3. ANY other status-bearing failure gets app-authored copy, never `ex.Message`. The
-        //    FRAMEWORK's `EnsureSuccessStatusCode()` message embeds the SERVER-SUPPLIED HTTP
+        //    FRAMEWORK's `EnsureSuccessStatusCode()` message embedded the SERVER-SUPPLIED HTTP
         //    ReasonPhrase, so a custom provider could put arbitrary prose on the pill through it
-        //    (Codex diff review round 2, 2026-07-26; round 1 closed only the 401 case). SEC-2
-        //    (2026-08-18) removed the phrase from ProviderApiException's own message, so that half of
-        //    the original claim no longer holds — but this branch still refuses `ex.Message` for the
-        //    framework sites (SEC-5) and because app copy is better copy. Split by transience so
+        //    (Codex diff review round 2, 2026-07-26; round 1 closed only the 401 case). SEC-2 and
+        //    SEC-5 took the phrase off every message we throw, but this branch still refuses
+        //    `ex.Message`: an exception message is not app copy. Split by transience so
         //    "try again" is promised only where retrying can help, as DescribeTranscriptionFailure does.
         if (ex is HttpRequestException { StatusCode: { } status })
             return new ProviderPillText(

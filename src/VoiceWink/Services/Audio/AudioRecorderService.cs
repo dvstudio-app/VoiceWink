@@ -302,9 +302,6 @@ public sealed class AudioRecorderService : IDisposable
 
     private bool _meterSnapPending = true;
 
-    /// <summary>Called on the audio thread with raw PCM data for streaming.</summary>
-    public Action<byte[]>? OnAudioChunk { get; set; }
-
     /// <summary>Timestamp of the last DataAvailable event. Used to detect audio stalls.</summary>
     public DateTime LastDataReceivedAt { get; private set; }
 
@@ -322,7 +319,6 @@ public sealed class AudioRecorderService : IDisposable
     /// question: a successor capture makes this differ while <c>IsRecording</c> stays true.
     /// </remarks>
     public long CurrentSessionId => Interlocked.Read(ref _liveSessionId);
-    public string? CurrentFilePath => _currentFilePath;
 
     public float AveragePower
     {
@@ -863,7 +859,7 @@ public sealed class AudioRecorderService : IDisposable
 
                 // Atomic replay-then-live under the ring's append lock (plan review B3): every
                 // chunk since the cut lands in the replay XOR the live stream, exactly once.
-                // Replayed chunks run the same downstream as live ones — writer, streaming hook,
+                // Replayed chunks run the same downstream as live ones — writer and
                 // meters — so the waveform is honest even while a writer stall was being covered.
                 var attach = claim.AttachSink(chunk => OnWarmChunk(session, chunk));
                 if (attach.TrimmedByCapacity)
@@ -940,7 +936,7 @@ public sealed class AudioRecorderService : IDisposable
 
     /// <summary>
     /// Warm-mode chunk sink: identical downstream semantics to the cold path's
-    /// <see cref="OnDataAvailable"/> (writer, streaming hook, meters, stall timestamp), minus the
+    /// <see cref="OnDataAvailable"/> (writer, meters, stall timestamp), minus the
     /// conversion — the standing capture already converted. Runs on the capture thread (replay:
     /// on the attaching thread), session-guarded like every capture callback in this class.
     /// </summary>
@@ -977,7 +973,6 @@ public sealed class AudioRecorderService : IDisposable
         // the 3 s stall watchdog silent while every chunk is lost.
         LastDataReceivedAt = DateTime.UtcNow;
 
-        OnAudioChunk?.Invoke(chunk);
         UpdateMeters(chunk);
     }
 
@@ -1293,9 +1288,6 @@ public sealed class AudioRecorderService : IDisposable
                 // Writer was disposed between our null check and the write call (race with Cleanup).
                 return;
             }
-
-            // Forward raw PCM chunk for streaming
-            OnAudioChunk?.Invoke(converted);
 
             // Update audio meters
             UpdateMeters(converted);

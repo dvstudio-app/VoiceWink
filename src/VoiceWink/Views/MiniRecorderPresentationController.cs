@@ -120,11 +120,12 @@ internal sealed class MiniRecorderPresentationController : IDisposable
     // and PRESERVES the handle on in-instance updates (download %, notice text, elapsed) so a
     // pending click on the same instance stays valid. Supersession clears are applied inline.
 
-    public void PublishMessage(string text, MiniRecorderTone tone, PillMessageAction action = PillMessageAction.None)
+    /// <param name="seconds">A timed message's lifetime; null = <see cref="MiniRecorderTimings.AttentionSeconds"/>. An Error ignores it.</param>
+    public void PublishMessage(string text, MiniRecorderTone tone, PillMessageAction action = PillMessageAction.None, int? seconds = null)
     {
         var lifetime = tone == MiniRecorderTone.Error
             ? (PillLifetime)new PillLifetime.UntilDismissed()
-            : new PillLifetime.UntilUtc(_scheduler.UtcNow + TimeSpan.FromSeconds(MiniRecorderTimings.AttentionSeconds));
+            : new PillLifetime.UntilUtc(_scheduler.UtcNow + TimeSpan.FromSeconds(seconds ?? MiniRecorderTimings.AttentionSeconds));
         // A NEW message is always a new instance (two identical "Recording failed" emissions are
         // distinct — the first's pending click must be rejected).
         _message = new Slot { Handle = NextHandle(), Content = new PillContent.Message(text, tone, action), Lifetime = lifetime };

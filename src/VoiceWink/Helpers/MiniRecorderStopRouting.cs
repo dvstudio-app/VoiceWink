@@ -55,4 +55,11 @@ internal static class MiniRecorderStopRouting
             MiniRecorderStopAction.CancelImageJob => "Cancel image",
             _ => null
         };
+
+    /// <summary>HKY-11: the pill's corner × cancels the recording (no transcription) only while recording.
+    /// The window shows it from the same rule.</summary>
+    public static bool DismissCancelsRecording(RecordingState state) => state == RecordingState.Recording;
+
+    /// <summary>HKY-11: the corner ×'s tooltip and accessible name on a recording pill.</summary>
+    public const string CancelRecordingLabel = "Cancel recording";
 }
