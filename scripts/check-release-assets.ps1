@@ -86,7 +86,7 @@ if (-not (Test-Path -LiteralPath $legalDir)) {
 if ($SkipBinCheck) {
     Write-Host "[2/4] Bin-output LICENSE/notices/VAD-model check ... SKIPPED (-SkipBinCheck)" -ForegroundColor DarkGray
 } else {
-    $binDir = Join-Path $RepoRoot "src/VoiceWink/bin/x64/$Configuration/net8.0-windows10.0.22621.0"
+    $binDir = Join-Path $RepoRoot "src/VoiceWink/bin/x64/$Configuration/net10.0-windows10.0.26100.0"
     Write-Host "[2/4] Bin-output LICENSE/notices/VAD model ($binDir)" -ForegroundColor Yellow
     $binLicense = Join-Path $binDir "LICENSE"
     if (-not (Test-Path -LiteralPath $binLicense)) {
@@ -169,7 +169,12 @@ if ([string]::IsNullOrWhiteSpace($PortableZip)) {
             # onnxruntime.dll, so dropping BOTH the DLL and its notices would have bypassed the
             # legal gate entirely. Listing them here is what makes that impossible (Codex).
             'app/onnxruntime.dll',
-            'app/sherpa-onnx-c-api.dll'
+            'app/sherpa-onnx-c-api.dll',
+            # The runtime the portable app needs and VoiceWinkSetup.ps1 installs when absent.
+            'runtime/Microsoft.WindowsAppRuntime.2.msix',
+            'runtime/Microsoft.WindowsAppRuntime.Main.2.msix',
+            'runtime/Microsoft.WindowsAppRuntime.DDLM.2.msix',
+            'runtime/Microsoft.WindowsAppRuntime.Singleton.2.msix'
         )
         # ONNX Runtime's own third-party notices. onnxruntime.dll ships in the
         # portable ZIP too, and its ~67 statically-linked components' licences require their

@@ -164,7 +164,10 @@ public static class AuthenticodeSignature
     {
         try
         {
+            // TCH-1: X509CertificateLoader has no signed-file reader, so the obsolete call stays.
+#pragma warning disable SYSLIB0057
             using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
+#pragma warning restore SYSLIB0057
 
             string? commonName = null;
             // SubjectName is built from the certificate's DER bytes, so enumerating it cannot be

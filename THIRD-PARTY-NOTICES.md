@@ -6,10 +6,9 @@ VoiceWink incorporates third-party software components. Each component is the pr
 
 This file is the manifest required for compliance with the attribution clauses of the MIT, Apache-2.0, BSD-3-Clause and similar permissive licences carried by the dependencies. The full licence text of each component is included in the binary distribution next to the corresponding `.dll` (via NuGet's standard `licenses` metadata), and is also retrievable from the linked project pages.
 
-Versions last synced 2026-08-23 (full re-verification: every direct row and every listed
-transitive row matched `dotnet list package --include-transitive` exactly, and the shipped
-win-x64 `onnxruntime.dll` ProductVersion still reads 1.27.0, matching the notices file below —
-no content changes were needed).
+Versions last synced 2026-10-28 (.NET 10 and Windows App SDK 2.6: every direct row and every
+listed transitive row re-read from the restored package graph; the shipped win-x64
+`onnxruntime.dll` is unchanged and still reads 1.27.0, matching the notices file below).
 
 ---
 
@@ -19,22 +18,21 @@ no content changes were needed).
 |---|---|---|---|
 | CommunityToolkit.Mvvm | 8.4.0 | MIT | https://github.com/CommunityToolkit/dotnet |
 | H.NotifyIcon.WinUI | 2.1.0 | MIT | https://github.com/HavenDV/H.NotifyIcon |
-| Microsoft.EntityFrameworkCore.Design | 8.0.11 | MIT | https://github.com/dotnet/efcore |
-| Microsoft.EntityFrameworkCore.Sqlite | 8.0.11 | MIT | https://github.com/dotnet/efcore |
-| Microsoft.Extensions.DependencyInjection | 8.0.1 | MIT | https://github.com/dotnet/runtime |
-| Microsoft.Extensions.Http | 8.0.1 | MIT | https://github.com/dotnet/runtime |
+| Microsoft.EntityFrameworkCore.Design | 10.0.14 | MIT | https://github.com/dotnet/efcore |
+| Microsoft.EntityFrameworkCore.Sqlite | 10.0.14 | MIT | https://github.com/dotnet/efcore |
+| Microsoft.Extensions.DependencyInjection | 10.0.14 | MIT | https://github.com/dotnet/runtime |
+| Microsoft.Extensions.Http | 10.0.14 | MIT | https://github.com/dotnet/runtime |
 | Microsoft.Windows.CsWin32 | 0.3.106 | MIT | https://github.com/microsoft/CsWin32 |
-| SQLitePCLRaw.bundle_e_sqlite3 | 2.1.12 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
-| Microsoft.WindowsAppSDK | 1.6.250602001 | MIT | https://github.com/microsoft/WindowsAppSDK |
+| Microsoft.WindowsAppSDK | 2.6.4 | MIT | https://github.com/microsoft/WindowsAppSDK |
 | NAudio | 2.2.1 | MIT | https://github.com/naudio/NAudio |
 | Sentry.Serilog | 6.4.1 | MIT | https://github.com/getsentry/sentry-dotnet |
 | Serilog | 4.1.0 | Apache-2.0 | https://github.com/serilog/serilog |
 | Serilog.Sinks.Debug | 3.0.0 | Apache-2.0 | https://github.com/serilog/serilog-sinks-debug |
 | Serilog.Sinks.File | 6.0.0 | Apache-2.0 | https://github.com/serilog/serilog-sinks-file |
 | SharpHook | 5.3.8 | MIT | https://github.com/TolikPylypchuk/SharpHook |
-| System.Drawing.Common | 8.0.11 | MIT | https://github.com/dotnet/runtime |
-| System.Management | 8.0.0 | MIT | https://github.com/dotnet/runtime |
-| System.Security.Cryptography.ProtectedData | 8.0.0 | MIT | https://github.com/dotnet/runtime |
+| System.Drawing.Common | 10.0.14 | MIT | https://github.com/dotnet/runtime |
+| System.Management | 10.0.14 | MIT | https://github.com/dotnet/runtime |
+| System.Security.Cryptography.ProtectedData | 10.0.14 | MIT | https://github.com/dotnet/runtime |
 | Velopack | 0.0.1298 | MIT | https://github.com/velopack/velopack |
 | Whisper.net | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
 | Whisper.net.Runtime | 1.9.1 | MIT | https://github.com/sandrohanea/whisper.net |
@@ -872,20 +870,22 @@ actually redistributed.
 | H.GeneratedIcons.System.Drawing | 2.1.0 | MIT | https://github.com/HavenDV/H.GeneratedIcons |
 | H.NotifyIcon | 2.1.0 | MIT | https://github.com/HavenDV/H.NotifyIcon |
 | Humanizer.Core | 2.14.1 | MIT | https://github.com/Humanizr/Humanizer |
-| Microsoft.Bcl.AsyncInterfaces | 6.0.0 | MIT | https://github.com/dotnet/runtime |
-| Microsoft.CodeAnalysis.\* | 4.5.0 | MIT | https://github.com/dotnet/roslyn |
-| Microsoft.Data.Sqlite.Core | 8.0.11 | MIT | https://github.com/dotnet/efcore |
-| Microsoft.EntityFrameworkCore | 8.0.11 | MIT | https://github.com/dotnet/efcore |
-| Microsoft.EntityFrameworkCore.\* | 8.0.11 | MIT | https://github.com/dotnet/efcore |
-| Microsoft.Extensions.\* | 8.0.x / 10.0.0 | MIT | https://github.com/dotnet/runtime |
-| Microsoft.NETCore.Platforms | 3.1.0 | MIT | https://github.com/dotnet/runtime |
-| Microsoft.Web.WebView2 | 1.0.2651.64 | Proprietary — see Microsoft Software License Terms | https://aka.ms/webview2 |
-| Microsoft.Win32.Registry | 4.7.0 | MIT | https://github.com/dotnet/runtime |
-| Microsoft.Win32.SystemEvents | 8.0.0 | MIT | https://github.com/dotnet/runtime |
+| Microsoft.CodeAnalysis.\* | 5.0.0 | MIT | https://github.com/dotnet/roslyn |
+| Microsoft.Data.Sqlite.Core | 10.0.14 | MIT | https://github.com/dotnet/efcore |
+| Microsoft.EntityFrameworkCore | 10.0.14 | MIT | https://github.com/dotnet/efcore |
+| Microsoft.EntityFrameworkCore.\* | 10.0.14 | MIT | https://github.com/dotnet/efcore |
+| Microsoft.Extensions.AI.Abstractions | 10.2.0 | MIT | https://github.com/dotnet/extensions |
+| Microsoft.Extensions.\* (all others) | 10.0.14 | MIT | https://github.com/dotnet/runtime |
+| Microsoft.Web.WebView2 | 1.0.3719.77 | Proprietary — see Microsoft Software License Terms | https://aka.ms/webview2 |
+| Microsoft.Win32.SystemEvents | 10.0.14 | MIT | https://github.com/dotnet/runtime |
 | Microsoft.Windows.SDK.\* | various | MIT (where applicable) | https://github.com/microsoft/win32metadata |
-| Mono.TextTemplating | 2.2.1 | MIT | https://github.com/mono/t4 |
+| Microsoft.WindowsAppSDK.\* (Base/DWrite/Foundation/InteractiveExperiences/Runtime/Search/Widgets/WinUI) | 2.6.4 | MIT | https://github.com/microsoft/WindowsAppSDK |
+| Mono.TextTemplating | 3.0.0 | MIT | https://github.com/mono/t4 |
 | NAudio.\* (Asio/Core/Midi/Wasapi/WinForms/WinMM) | 2.2.1 | MIT | https://github.com/naudio/NAudio |
 | NuGet.Versioning | 6.14.0 | Apache-2.0 | https://github.com/NuGet/NuGet.Client |
+| SQLitePCLRaw.\* (bundle_e_sqlite3/core/lib.e_sqlite3/provider.e_sqlite3) | 2.1.13 | Apache-2.0 | https://github.com/ericsink/SQLitePCL.raw |
+| System.Composition.\* | 9.0.0 | MIT | https://github.com/dotnet/runtime |
+| System.Numerics.Tensors | 9.0.0 | MIT | https://github.com/dotnet/runtime |
 
 > **Note:** the list above is a representative subset; the complete transitive set is reproducible via `dotnet list package --include-transitive --format json`. SPDX identifiers above are derived from each package's NuGet `<license>` metadata.
 

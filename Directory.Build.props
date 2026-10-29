@@ -12,6 +12,11 @@
     <AppxMSBuildToolsPath>$(MSBuildThisFileDirectory)build\stubs\</AppxMSBuildToolsPath>
   </PropertyGroup>
 
+  <!-- Trimming/AOT advisories the 2.x CsWinRT and C# 14 surfaced; nothing here publishes trimmed or AOT. -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CsWinRT1032;MVVMTK0045</NoWarn>
+  </PropertyGroup>
+
   <!--
     VAD-disable response lever. Committed default TRUE — the Silero VAD
     no-speech gate is on in every ordinary build, and it stays that way.

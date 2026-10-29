@@ -32,9 +32,9 @@ if (-not (Test-Path $appFolder)) {
     exit 1
 }
 
-# -- Step 1: Ensure .NET 8 Desktop Runtime (user-level, no admin) ---------
+# -- Step 1: Ensure .NET 10 Desktop Runtime (user-level, no admin) ---------
 
-Write-Host "[1/6] Checking .NET 8 Desktop Runtime..."
+Write-Host "[1/6] Checking .NET 10 Desktop Runtime..."
 $dotnetDir = Join-Path $env:LOCALAPPDATA "VoiceWink\dotnet"
 $systemDotnet = Get-Command dotnet -ErrorAction SilentlyContinue
 $hasDotnet = $false
@@ -42,11 +42,11 @@ $hasDotnet = $false
 # Check system dotnet first
 $systemHasRuntime = $false
 if ($systemDotnet) {
-    $runtimeMatch = & dotnet --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 8\."
+    $runtimeMatch = & dotnet --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 10\."
     if ($runtimeMatch) {
         $hasDotnet = $true
         $systemHasRuntime = $true
-        Write-Host "   .NET 8 Desktop Runtime: OK (system)" -ForegroundColor Green
+        Write-Host "   .NET 10 Desktop Runtime: OK (system)" -ForegroundColor Green
     }
 }
 
@@ -54,17 +54,17 @@ if ($systemDotnet) {
 if (-not $hasDotnet) {
     $localDotnet = Join-Path $dotnetDir "dotnet.exe"
     if (Test-Path $localDotnet) {
-        $runtimeMatch = & $localDotnet --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 8\."
+        $runtimeMatch = & $localDotnet --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 10\."
         if ($runtimeMatch) {
             $hasDotnet = $true
-            Write-Host "   .NET 8 Desktop Runtime: OK (user-level)" -ForegroundColor Green
+            Write-Host "   .NET 10 Desktop Runtime: OK (user-level)" -ForegroundColor Green
         }
     }
 }
 
 # Install .NET runtime
 if (-not $hasDotnet) {
-    Write-Host "   .NET 8 Desktop Runtime: not found" -ForegroundColor Yellow
+    Write-Host "   .NET 10 Desktop Runtime: not found" -ForegroundColor Yellow
     # Per-run randomized directory: the fallback strategy below verifies Authenticode and then
     # elevates the downloaded installer (-Verb RunAs). A fixed, predictable path would let a
     # co-resident same-user process pre-watch it and swap the binary between the signature
@@ -76,19 +76,19 @@ if (-not $hasDotnet) {
 
     # --- Attempt 1: Direct ZIP extraction (user-level, no admin) ---
     # Most reliable approach: just download and extract binaries, no script execution needed.
-    Write-Host "   Installing .NET 8 Desktop Runtime (user-level, no admin needed)..." -ForegroundColor Yellow
+    Write-Host "   Installing .NET 10 Desktop Runtime (user-level, no admin needed)..." -ForegroundColor Yellow
     $userInstallOk = $false
     New-Item -ItemType Directory -Path $dotnetDir -Force | Out-Null
 
     try {
-        $zipUrl = "https://aka.ms/dotnet/8.0/dotnet-runtime-win-x64.zip"
-        $desktopZipUrl = "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip"
+        $zipUrl = "https://aka.ms/dotnet/10.0/dotnet-runtime-win-x64.zip"
+        $desktopZipUrl = "https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.zip"
         $runtimeZip = Join-Path $tempDir "dotnet-runtime.zip"
         $desktopZip = Join-Path $tempDir "dotnet-desktop.zip"
 
-        Write-Host "   Downloading .NET 8 base runtime (~30 MB)..." -ForegroundColor DarkGray
+        Write-Host "   Downloading .NET 10 base runtime (~30 MB)..." -ForegroundColor DarkGray
         Invoke-WebRequest -Uri $zipUrl -OutFile $runtimeZip -UseBasicParsing
-        Write-Host "   Downloading .NET 8 Desktop runtime (~60 MB)..." -ForegroundColor DarkGray
+        Write-Host "   Downloading .NET 10 Desktop runtime (~60 MB)..." -ForegroundColor DarkGray
         Invoke-WebRequest -Uri $desktopZipUrl -OutFile $desktopZip -UseBasicParsing
 
         if ((Test-Path $runtimeZip) -and (Test-Path $desktopZip)) {
@@ -121,10 +121,10 @@ if (-not $hasDotnet) {
                     throw "dotnet.exe Authenticode verification failed"
                 }
                 Write-Host "   dotnet.exe Authenticode: Valid (Microsoft Corporation)." -ForegroundColor DarkGray
-                $runtimeCheck = & $localDotnetExe --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 8\."
+                $runtimeCheck = & $localDotnetExe --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 10\."
                 if ($runtimeCheck) {
                     $userInstallOk = $true
-                    Write-Host "   .NET 8 Desktop Runtime: installed to $dotnetDir" -ForegroundColor Green
+                    Write-Host "   .NET 10 Desktop Runtime: installed to $dotnetDir" -ForegroundColor Green
                 } else {
                     Write-Host "   ZIP extracted but Desktop Runtime not detected." -ForegroundColor Yellow
                 }
@@ -162,7 +162,7 @@ if (-not $hasDotnet) {
             # security software blocking downloaded scripts in the current session.
             $escapedScript = $installScript -replace "'", "''"
             $escapedDir = $dotnetDir -replace "'", "''"
-            $psCommand = "`$ProgressPreference = 'SilentlyContinue'; & '$escapedScript' -Runtime windowsdesktop -Channel 8.0 -InstallDir '$escapedDir' -NoPath"
+            $psCommand = "`$ProgressPreference = 'SilentlyContinue'; & '$escapedScript' -Runtime windowsdesktop -Channel 10.0 -InstallDir '$escapedDir' -NoPath"
             $installOutput = & powershell.exe -ExecutionPolicy Bypass -NoProfile -Command $psCommand 2>&1
             foreach ($line in $installOutput) {
                 $msg = "$line"
@@ -175,12 +175,12 @@ if (-not $hasDotnet) {
 
             $localDotnetExe = Join-Path $dotnetDir "dotnet.exe"
             if (Test-Path $localDotnetExe) {
-                $runtimeCheck = & $localDotnetExe --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 8\."
+                $runtimeCheck = & $localDotnetExe --list-runtimes 2>$null | Select-String "Microsoft.WindowsDesktop.App 10\."
                 if ($runtimeCheck) {
                     $userInstallOk = $true
-                    Write-Host "   .NET 8 Desktop Runtime: installed to $dotnetDir" -ForegroundColor Green
+                    Write-Host "   .NET 10 Desktop Runtime: installed to $dotnetDir" -ForegroundColor Green
                 } else {
-                    Write-Host "   dotnet.exe found but Desktop Runtime 8.x not detected." -ForegroundColor Yellow
+                    Write-Host "   dotnet.exe found but Desktop Runtime 10.x not detected." -ForegroundColor Yellow
                     $allRuntimes = & $localDotnetExe --list-runtimes 2>$null
                     if ($allRuntimes) {
                         Write-Host "   Installed runtimes:" -ForegroundColor DarkGray
@@ -201,9 +201,9 @@ if (-not $hasDotnet) {
         Write-Host "   User-level installs did not succeed." -ForegroundColor Yellow
         Write-Host "   Falling back to system installer (requires admin/UAC)..." -ForegroundColor Yellow
         try {
-            $dotnetUrl = "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe"
-            $dotnetInstaller = Join-Path $tempDir "dotnet-desktop-runtime-8.0.exe"
-            Write-Host "   Downloading .NET 8 Desktop Runtime installer..." -ForegroundColor Yellow
+            $dotnetUrl = "https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe"
+            $dotnetInstaller = Join-Path $tempDir "dotnet-desktop-runtime-10.0.exe"
+            Write-Host "   Downloading .NET 10 Desktop Runtime installer..." -ForegroundColor Yellow
             Invoke-WebRequest -Uri $dotnetUrl -OutFile $dotnetInstaller -UseBasicParsing
             # Verify Authenticode BEFORE elevating — this is the ONLY strategy that runs a
             # downloaded artifact as admin (-Verb RunAs), so a tampered aka.ms redirect/MITM here
@@ -274,7 +274,7 @@ finally {
                 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
                 $env:Path = "$machinePath;$userPath"
                 $systemHasRuntime = $true
-                Write-Host "   .NET 8 Desktop Runtime: installed (system-wide)" -ForegroundColor Green
+                Write-Host "   .NET 10 Desktop Runtime: installed (system-wide)" -ForegroundColor Green
             } else {
                 Write-Host "   Installer exited with code $($proc.ExitCode)." -ForegroundColor Yellow
             }
@@ -286,12 +286,12 @@ finally {
     # --- Final check ---
     if (-not $userInstallOk -and -not $systemHasRuntime) {
         Write-Host ""
-        Write-Host "   WARNING: .NET 8 Desktop Runtime could not be installed automatically." -ForegroundColor Red
+        Write-Host "   WARNING: .NET 10 Desktop Runtime could not be installed automatically." -ForegroundColor Red
         Write-Host "   VoiceWink will not work without it." -ForegroundColor Red
         Write-Host ""
         Write-Host "   Please install it manually from:" -ForegroundColor Yellow
-        Write-Host "   https://dotnet.microsoft.com/download/dotnet/8.0" -ForegroundColor Yellow
-        Write-Host "   Download: '.NET Desktop Runtime 8.x (x64)'" -ForegroundColor Yellow
+        Write-Host "   https://dotnet.microsoft.com/download/dotnet/10.0" -ForegroundColor Yellow
+        Write-Host "   Download: '.NET Desktop Runtime 10.x (x64)'" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "Press Enter to continue..." -NoNewline; $null = Read-Host
     }
@@ -320,19 +320,19 @@ if ($systemHasRuntime) {
 # -- Step 2: Ensure Windows App SDK Runtime --------------------------------
 
 Write-Host "[2/6] Checking Windows App SDK Runtime..."
-# The app requires four Windows App SDK 1.6 packages. Check each individually --
+# The app requires four Windows App SDK 2.6 packages. Check each individually --
 # a broad wildcard can match leftover packages from partial uninstalls or other versions.
-$minVersion = [Version]"6000.519.329.0"
+# Minimums are the bundled MSIX identities; the shared Singleton carries its own 8002.x line.
 $requiredPkgs = @(
-    @{ Label = "Framework";  Pattern = "Microsoft.WindowsAppRuntime.1.6" },
-    @{ Label = "Main";       Pattern = "*WinAppRuntime.Main.1.6*" },
-    @{ Label = "DDLM";       Pattern = "*WinAppRuntime.DDLM.6000*" },
-    @{ Label = "Singleton";  Pattern = "*WinAppRuntime.Singleton*" }
+    @{ Label = "Framework";  Pattern = "Microsoft.WindowsAppRuntime.2";       Min = [Version]"2.6.4.0" },
+    @{ Label = "Main";       Pattern = "*WinAppRuntime.Main.2";               Min = [Version]"2.6.4.0" },
+    @{ Label = "DDLM";       Pattern = "*WinAppRuntime.DDLM.2.*";             Min = [Version]"2.6.4.0" },
+    @{ Label = "Singleton";  Pattern = "*WinAppRuntime.Singleton";            Min = [Version]"8002.6.4.0" }
 )
 $allPresent = $true
 foreach ($req in $requiredPkgs) {
     $pkg = Get-AppxPackage $req.Pattern -ErrorAction SilentlyContinue |
-        Where-Object { [Version]$_.Version -ge $minVersion } |
+        Where-Object { [Version]$_.Version -ge $req.Min } |
         Select-Object -First 1
     if ($pkg) {
         Write-Host "   $($req.Label): OK (v$($pkg.Version))" -ForegroundColor Green
@@ -342,7 +342,7 @@ foreach ($req in $requiredPkgs) {
     }
 }
 if ($allPresent) {
-    Write-Host "   Windows App SDK Runtime 1.6: OK" -ForegroundColor Green
+    Write-Host "   Windows App SDK Runtime 2.6: OK" -ForegroundColor Green
 } else {
     $runtimeDir = Join-Path $SourceDir "runtime"
     if (Test-Path $runtimeDir) {
@@ -372,22 +372,22 @@ if ($allPresent) {
             $verifyOk = $true
             foreach ($req in $requiredPkgs) {
                 $vpkg = Get-AppxPackage $req.Pattern -ErrorAction SilentlyContinue |
-                    Where-Object { [Version]$_.Version -ge $minVersion } |
+                    Where-Object { [Version]$_.Version -ge $req.Min } |
                     Select-Object -First 1
                 if (-not $vpkg) { $verifyOk = $false }
             }
             if ($verifyOk) {
-                Write-Host "   Windows App SDK Runtime 1.6: OK" -ForegroundColor Green
+                Write-Host "   Windows App SDK Runtime 2.6: OK" -ForegroundColor Green
             } else {
                 Write-Host ""
                 Write-Host "   WARNING: Some Windows App SDK Runtime packages are still missing." -ForegroundColor Red
                 Write-Host "   VoiceWink may not start without them." -ForegroundColor Red
-                Write-Host "   Try installing manually: https://aka.ms/windowsappsdk/1.6/latest/windowsappruntimeinstall-x64.exe" -ForegroundColor Yellow
+                Write-Host "   Try installing manually: https://aka.ms/windowsappsdk/2.6/2.6.4/windowsappruntimeinstall-x64.exe" -ForegroundColor Yellow
             }
         }
     } else {
         Write-Host "   WARNING: Windows App SDK Runtime not found and no runtime packages bundled." -ForegroundColor Yellow
-        Write-Host "   VoiceWink may not start. Download from: https://aka.ms/windowsappsdk/1.6/latest/windowsappruntimeinstall-x64.exe" -ForegroundColor Yellow
+        Write-Host "   VoiceWink may not start. Download from: https://aka.ms/windowsappsdk/2.6/2.6.4/windowsappruntimeinstall-x64.exe" -ForegroundColor Yellow
     }
 }
 
@@ -687,18 +687,18 @@ Write-Host ""
 Write-Host "VoiceWink has been uninstalled." -ForegroundColor Green
 Write-Host ""
 
-# Offer to remove Windows App SDK 1.6 Runtime (only the version VoiceWink installs)
-# Only remove 1.6-specific packages. The Singleton is shared across SDK versions
-# (1.6, 1.7, 1.8 all use it) -- removing it could break other apps.
+# Offer to remove the Windows App SDK 2.x Runtime (only the version line VoiceWink installs)
+# Only remove 2.x-specific packages. The Singleton is shared across SDK versions
+# (1.x and 2.x all use it) -- removing it could break other apps.
 $winAppPkgs = @((
-    @(Get-AppxPackage "Microsoft.WindowsAppRuntime.1.6" -ErrorAction SilentlyContinue) +
-    @(Get-AppxPackage "*WinAppRuntime.Main.1.6*" -ErrorAction SilentlyContinue) +
-    @(Get-AppxPackage "*WinAppRuntime.DDLM.6000*" -ErrorAction SilentlyContinue)
+    @(Get-AppxPackage "Microsoft.WindowsAppRuntime.2" -ErrorAction SilentlyContinue) +
+    @(Get-AppxPackage "*WinAppRuntime.Main.2" -ErrorAction SilentlyContinue) +
+    @(Get-AppxPackage "*WinAppRuntime.DDLM.2.*" -ErrorAction SilentlyContinue)
 ) | Sort-Object -Property PackageFullName -Unique)
 if ($winAppPkgs.Count -gt 0) {
-    Write-Host "   The Windows App SDK 1.6 Runtime is still installed (shared framework)." -ForegroundColor DarkGray
+    Write-Host "   The Windows App SDK 2.x Runtime is still installed (shared framework)." -ForegroundColor DarkGray
     Write-Host "   Other apps may depend on it." -ForegroundColor DarkGray
-    $removeRuntime = Read-Host "   Remove Windows App SDK 1.6 Runtime? (y/N)"
+    $removeRuntime = Read-Host "   Remove Windows App SDK 2.x Runtime? (y/N)"
     if ($removeRuntime -eq "y" -or $removeRuntime -eq "Y") {
         foreach ($pkg in $winAppPkgs) {
             try {

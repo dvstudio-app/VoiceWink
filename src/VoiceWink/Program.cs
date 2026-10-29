@@ -21,13 +21,13 @@ using VoiceWink.Services.System;
 /// </summary>
 public static class Program
 {
-    // WindowsAppSDK 1.6.250602001 runtime minimum (Runtime.Version from the
+    // WindowsAppSDK 2.6.4 runtime minimum (Runtime.Version from the
     // restored package's WindowsAppSDK-VersionInfo.json), matching the pinned
-    // package reference + installer/portable/VoiceWinkSetup.ps1's $minVersion.
-    private const uint WAR_MAJOR_MINOR_VERSION = 0x00010006; // 1.6
+    // package reference + the Framework row's Min in installer/portable/VoiceWinkSetup.ps1.
+    private const uint WAR_MAJOR_MINOR_VERSION = 0x00020006; // 2.6
     private const string WAR_VERSION_TAG = "";
     private static readonly global::Microsoft.Windows.ApplicationModel.DynamicDependency.PackageVersion WAR_MIN_VERSION
-        = new(6000, 519, 329, 0);
+        = new(2, 6, 4, 0);
 
     [global::System.STAThread]
     public static void Main(string[] args)
@@ -91,10 +91,9 @@ public static class Program
                        // Has its own try/catch and never throws, same contract as the cleanup above.
                        UninstallRunningInstanceStop.StopVelopackOwnedInstances();
                    })
-                   // Re-armed for the 1.6.250602001 bump (backlog TCH-3): machines
-                   // updating from an older VoiceWink may hold a runtime below the
-                   // raised WAR_MIN_VERSION, so the update hook re-runs the bundled
-                   // installer. Microsoft's installer no-ops fast when the runtime
+                   // TCH-1: machines updating from a 1.x-runtime VoiceWink hold no
+                   // runtime of the 2.x family WAR_MAJOR_MINOR_VERSION names, so the
+                   // update hook re-runs the bundled installer. Microsoft's installer no-ops fast when the runtime
                    // is already at target. NOTE: OnAfterUpdate's hard kill is 15s
                    // (Velopack 0.0.1298 XML docs — the 30s ceiling applies to the
                    // install/uninstall hooks, NOT this one), so the 13_000 ms wait

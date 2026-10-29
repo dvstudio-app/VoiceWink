@@ -1,7 +1,7 @@
 # VoiceWink
 
 Voice-to-text for Windows 11 — press a hotkey, speak, and the transcribed text is pasted
-at your cursor. Built with .NET 8 + WinUI 3 by DV Studio, inspired by
+at your cursor. Built with .NET 10 + WinUI 3 by DV Studio, inspired by
 [VoiceInk](https://github.com/Beingpax/VoiceInk) (macOS).
 
 Product information and downloads: <https://voicewink.app/?src=gh>
@@ -33,7 +33,7 @@ Copyright © 2025–2026 Dieter Verlaeckt / DV Studio.
 
 ## Building from source
 
-Requirements: Windows 11, a .NET 8 SDK (any `8.0.x` satisfies the pin in `global.json`).
+Requirements: Windows 11, a .NET 10 SDK (any `10.0.x` satisfies the pin in `global.json`).
 
 The supported install-from-source route is the two commands below, in order (the second
 requires Git Bash and PowerShell 7; its release-asset checks read the first one's build

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <RootNamespace>VoiceWink</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -10,9 +10,9 @@
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.121.420</Version>
-    <AssemblyVersion>1.121.420.0</AssemblyVersion>
-    <FileVersion>1.121.420.0</FileVersion>
+    <Version>1.122.421</Version>
+    <AssemblyVersion>1.122.421.0</AssemblyVersion>
+    <FileVersion>1.122.421.0</FileVersion>
     <Company>DV Studio</Company>
     <Authors>Dieter Verlaeckt</Authors>
     <Product>VoiceWink</Product>
@@ -38,7 +38,7 @@
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <ApplicationIcon>Assets\appicon.ico</ApplicationIcon>
     <WindowsPackageType>None</WindowsPackageType>
-    <WindowsSdkPackageVersion>10.0.22621.45</WindowsSdkPackageVersion>
+    <WindowsSdkPackageVersion>10.0.26100.87</WindowsSdkPackageVersion>
     <PublishAot>false</PublishAot>
 
     <!-- Build-path neutrality (2026-09-15): the shipped DLL must not name the machine that built
@@ -80,7 +80,7 @@
          2. WindowsAppSdkBootstrapInitialize=false: disables the WinAppSDK
             module initializer that would otherwise auto-fire at JIT-load
             time of `VoiceWink.dll`, BEFORE `Program.Main` runs. On a clean
-            VM without `Microsoft.WindowsAppRuntime.1.6` installed, the
+            VM without `Microsoft.WindowsAppRuntime.2` installed, the
             auto-init's `MddBootstrapInitialize2` call would crash the
             process before our Velopack hook could install the runtime.
             We call `Bootstrap.TryInitialize` ourselves in `Program.Main`
@@ -208,25 +208,24 @@
 
   <ItemGroup>
     <!-- WinUI 3 -->
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250602001" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.4" />
+    <!-- Unused AI/WinML components; WinML's onnxruntime.dll otherwise displaces sherpa's. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.AI" Version="2.6.4" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.ML" Version="2.6.4" ExcludeAssets="all" />
+    <PackageReference Include="Microsoft.Windows.AI.MachineLearning" Version="2.4.89" ExcludeAssets="all" />
 
     <!-- MVVM -->
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 
     <!-- Dependency Injection -->
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
 
     <!-- HttpClient factory (retry handler + handler pool lifetime) -->
-    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.14" />
 
     <!-- Database -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.11" />
-    <!-- Direct pin: EF Core 8.0.x floors SQLitePCLRaw at 2.1.6, whose bundled SQLite
-         is vulnerable (GHSA-2m69-gcr7-jv3q / CVE-2025-6965, fixed in SQLite 3.50.2).
-         2.1.12 bundles SQLite 3.53.3. Do not remove as "redundant" — without it NuGet
-         resolves the vulnerable transitive floor. -->
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
@@ -245,7 +244,7 @@
     <PackageReference Include="Velopack" Version="0.0.1298" />
 
     <!-- Image processing (clipboard DIB conversion for image paste) -->
-    <PackageReference Include="System.Drawing.Common" Version="8.0.11" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.14" />
 
     <!-- Audio -->
     <PackageReference Include="NAudio" Version="2.2.1" />
@@ -298,10 +297,10 @@
     <PackageReference Include="Serilog.Sinks.Debug" Version="3.0.0" />
 
     <!-- DPAPI for API key encryption -->
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
 
     <!-- WMI for SMBIOS UUID read in hardware fingerprint -->
-    <PackageReference Include="System.Management" Version="8.0.0" />
+    <PackageReference Include="System.Management" Version="10.0.14" />
 
     <!-- P/Invoke Generation -->
     <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.106">
@@ -357,12 +356,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
 
-    <!-- WindowsAppRuntimeInstall-x64.exe (~61 MB) — the bootstrap payload that
+    <!-- WindowsAppRuntimeInstall-x64.exe (~119 MB) — the bootstrap payload that
          Helpers/PrereqInstaller.cs spawns on clean machines without
-         Microsoft.WindowsAppRuntime 1.6 pre-installed. Conditional include
+         Microsoft.WindowsAppRuntime 2.6 pre-installed. Conditional include
          keeps the dev-loop fast: local Debug builds don't need the binary,
          and local Release builds emit a warning (not error) so iterative work
-         isn't blocked on a 61 MB download.
+         isn't blocked on a 119 MB download.
          The fail-closed gate for the publish path is
          scripts/check-publish-payload.ps1 — it Authenticode-verifies the
          file is Microsoft-signed and within the expected size range, then
@@ -386,7 +385,7 @@
          the VC++ "Redistributable Files" list; see installer/signing/README.md and
          docs/plans/2026-06-02-1939-vcredist-applocal-bundle/50-decision.md).
 
-         Unlike WindowsAppRuntimeInstall-x64.exe (61 MB, gitignored + fetched per
+         Unlike WindowsAppRuntimeInstall-x64.exe (119 MB, gitignored + fetched per
          build), these are tiny and COMMITTED — every build/CI machine copies them
          with no extraction toolchain. scripts/fetch-vcredist.ps1 (WiX v5 + msiexec)
          is a maintainer-only refresh tool. The <Link> targets runtimes\win-x64\ so

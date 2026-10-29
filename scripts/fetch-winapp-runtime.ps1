@@ -1,7 +1,7 @@
-# Fetches the Microsoft.WindowsAppRuntime 1.6 bootstrap installer
-# (WindowsAppRuntimeInstall-x64.exe, ~61 MB) into installer/runtime/ so that
+# Fetches the Microsoft.WindowsAppRuntime bootstrap installer
+# (WindowsAppRuntimeInstall-x64.exe) into installer/runtime/ so that
 # the publish step copies it into the build output. Helpers/PrereqInstaller.cs
-# spawns this file on clean machines without WinAppRuntime 1.6 pre-installed;
+# spawns this file on clean machines without the runtime pre-installed;
 # without it, the very first AudioTranscribe click crashes
 # Microsoft.UI.Xaml.dll with a stowed exception.
 #
@@ -26,7 +26,7 @@
 # a version bump mints a new pin from the downloaded bytes, and the gate
 # guarantees those bytes are a genuine Microsoft-signed binary — it cannot
 # prove WHICH servicing build the CDN served (the installer's version
-# resource carries only "1.6"). Version identity rests on the versioned
+# resource carries only major.minor). Version identity rests on the versioned
 # aka.ms URL, the paired csproj restore of the same build, and the
 # release-time checks in scripts/check-publish-payload.ps1.
 #
@@ -37,14 +37,14 @@
 #
 # Why this lives outside the csproj as a script rather than as an MSBuild
 # Download target:
-#   - 61 MB shouldn't slow every dotnet restore.
+#   - A ~119 MB download shouldn't slow every dotnet restore.
 #   - The hash verification is policy that benefits from explicit invocation.
 #   - The file is binary and gitignored; an MSBuild download would have to
 #     deal with concurrent-build locks, partial downloads, etc.
 
 [CmdletBinding()]
 param(
-    [string]$Version = "1.6.250602001",
+    [string]$Version = "2.6.4",
     [string]$ExpectedSha256 = "",
     [switch]$Force,
     [switch]$Repin
@@ -124,7 +124,8 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 # Microsoft documents the per-version download URL pattern at
 # https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/downloads.
 # The aka.ms/windowsappsdk redirector resolves to the actual CDN URL.
-$url = "https://aka.ms/windowsappsdk/1.6/$Version/windowsappruntimeinstall-x64.exe"
+if ($Version -notmatch '^(\d+\.\d+)\.\d+$') { throw "-Version must be major.minor.patch (got '$Version')." }
+$url = "https://aka.ms/windowsappsdk/$($Matches[1])/$Version/windowsappruntimeinstall-x64.exe"
 Write-Host "Downloading WindowsAppRuntime $Version from $url ..."
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()

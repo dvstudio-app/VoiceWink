@@ -3,10 +3,10 @@ namespace VoiceWink.Helpers;
 /// <summary>
 /// Orchestrates the bundled <c>WindowsAppRuntimeInstall-x64.exe</c> child
 /// process so VoiceWink can run on a clean Windows install (no
-/// <c>Microsoft.WindowsAppRuntime.1.6</c> pre-installed). Called from three
+/// <c>Microsoft.WindowsAppRuntime.2</c> pre-installed). Called from three
 /// sites: Velopack's <c>OnAfterInstallFastCallback</c> (install path),
-/// Velopack's <c>OnAfterUpdateFastCallback</c> (update path — re-armed by the
-/// TCH-3 servicing bump so updated machines meet the raised runtime minimum),
+/// Velopack's <c>OnAfterUpdateFastCallback</c> (update path — so machines updating
+/// from a 1.x-runtime build get the 2.x runtime, TCH-1),
 /// and <c>Program.Main</c> stage 3 (normal-launch guard if Bootstrap detection
 /// fails for any reason).
 ///
@@ -15,7 +15,7 @@ namespace VoiceWink.Helpers;
 /// <list type="bullet">
 /// <item>Cross-process serialization via the named mutex
 ///   <c>Global\VoiceWink-WinAppRuntime-Install</c> so two install paths
-///   running on the same machine cannot both spawn the 61 MB installer.</item>
+///   running on the same machine cannot both spawn the 119 MB installer.</item>
 /// <item>PID sentinel at <c>%LOCALAPPDATA%\VoiceWinkApp\install.pid</c> for
 ///   child-lifetime tracking across processes that bypass the mutex (e.g.
 ///   a stage-3 caller after the mutex-holder timed out).</item>
@@ -469,12 +469,11 @@ internal static class PrereqInstaller
     /// </summary>
     public static void ShowFatalRuntimeMissingDialog(int hresult)
     {
-        var msg = "VoiceWink requires the Microsoft Windows App Runtime 1.6, and the automatic " +
-                  $"per-user install failed (HRESULT 0x{hresult:X8}). On a managed/work device this " +
-                  "usually means your organisation's policy blocks app (MSIX) installs. Ask your IT " +
-                  "administrator to install or enable the Windows App Runtime 1.6 (x64). If you have " +
-                  "the rights yourself, you can instead run WindowsAppRuntimeInstall-x64.exe from " +
-                  "https://aka.ms/windowsappsdk/1.6/latest/ — then relaunch VoiceWink.";
+        var msg = "VoiceWink needs the Microsoft Windows App Runtime 2.6 (x64), and installing it " +
+                  $"automatically failed (HRESULT 0x{hresult:X8}). On a work device, policy may block " +
+                  "app (MSIX) installs: ask your IT administrator to install it. Or install it from " +
+                  "https://aka.ms/windowsappsdk/2.6/2.6.4/windowsappruntimeinstall-x64.exe, then " +
+                  "restart VoiceWink.";
         try
         {
             MessageBoxW(global::System.IntPtr.Zero, msg,

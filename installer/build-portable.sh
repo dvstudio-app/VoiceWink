@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build VoiceWink portable installer (no signing required)
 # Produces a .zip with VoiceWinkSetup.ps1 + app files
-# Requires: .NET 8 SDK
+# Requires: .NET 10 SDK
 # Usage: build-portable.sh [--config Debug|Release]   (default: Release, case-insensitive)
 set -e
 
@@ -78,7 +78,7 @@ is_windows_dotnet() {
 resolve_dotnet() {
     # Prefer the user-profile dotnet if it has the SDK pinned by global.json —
     # the global dotnet.exe only sees SDKs under its own root, so when a build
-    # machine has (say) 8.0.420 globally and 8.0.419 at user-profile, only the
+    # machine has (say) 10.0.403 globally and 10.0.402 at user-profile, only the
     # user-profile binary can resolve the pin. Mirrors scripts/check-vw-toolchain.ps1.
     local user_dotnet="$HOME/.dotnet/dotnet.exe"
     if [ -x "$user_dotnet" ] && [ -f "$ROOT_DIR/global.json" ]; then
@@ -155,7 +155,7 @@ to_windows_path() {
 
 resolve_nuget_home() {
     local local_home="$HOME/.nuget/packages"
-    local local_msix_dir="$local_home/microsoft.windowsappsdk/$WINAPPSDK_VER/tools/Msix/win10-x64"
+    local local_msix_dir="$local_home/microsoft.windowsappsdk.runtime/$WINAPPSDK_VER/tools/MSIX/win10-x64"
     if [ -d "$local_msix_dir" ]; then
         printf '%s\n' "$local_home"
         return 0
@@ -171,7 +171,7 @@ resolve_nuget_home() {
         local wsl_home
         wsl_home=$(wslpath -u "$windows_home")
         local windows_packages="$wsl_home/.nuget/packages"
-        local windows_msix_dir="$windows_packages/microsoft.windowsappsdk/$WINAPPSDK_VER/tools/Msix/win10-x64"
+        local windows_msix_dir="$windows_packages/microsoft.windowsappsdk.runtime/$WINAPPSDK_VER/tools/MSIX/win10-x64"
         if [ -d "$windows_msix_dir" ]; then
             printf '%s\n' "$windows_packages"
             return 0
@@ -286,20 +286,25 @@ done
 
 # Windows App SDK MSIX packages (needed on machines without the runtime)
 # Version must match PackageReference in src/VoiceWink/VoiceWink.csproj
-WINAPPSDK_VER=$(sed -n 's/.*Microsoft.WindowsAppSDK.*Version="\([^"]*\)".*/\1/p' "$PROJECT")
-if [ -z "$WINAPPSDK_VER" ]; then
-    WINAPPSDK_VER="1.6.250602001"
-    echo "   WARNING: Could not read WindowsAppSDK version from csproj, using fallback $WINAPPSDK_VER"
+# Since 2.x the MSIX files ship in the Runtime component package, versioned with the metapackage.
+WINAPPSDK_VER=$(sed -n 's/.*Include="Microsoft\.WindowsAppSDK" Version="\([^"]*\)".*/\1/p' "$PROJECT")
+if [ -z "$WINAPPSDK_VER" ] || [ "$(printf '%s\n' "$WINAPPSDK_VER" | wc -l)" -ne 1 ]; then
+    echo "ERROR: could not read exactly one Microsoft.WindowsAppSDK version from $PROJECT" >&2
+    exit 1
 fi
 NUGET_HOME=$(resolve_nuget_home)
-MSIX_DIR="$NUGET_HOME/microsoft.windowsappsdk/$WINAPPSDK_VER/tools/Msix/win10-x64"
-if [ -d "$MSIX_DIR" ]; then
-    mkdir -p "$STAGE_DIR/runtime"
-    cp "$MSIX_DIR"/*.msix "$STAGE_DIR/runtime/"
-    echo "   Bundled Windows App SDK MSIX packages"
-else
-    echo "   WARNING: Windows App SDK MSIX packages not found at $MSIX_DIR"
-fi
+MSIX_DIR="$NUGET_HOME/microsoft.windowsappsdk.runtime/$WINAPPSDK_VER/tools/MSIX/win10-x64"
+mkdir -p "$STAGE_DIR/runtime"
+for msix in Microsoft.WindowsAppRuntime.2.msix Microsoft.WindowsAppRuntime.Main.2.msix \
+            Microsoft.WindowsAppRuntime.DDLM.2.msix Microsoft.WindowsAppRuntime.Singleton.2.msix; do
+    if [ ! -f "$MSIX_DIR/$msix" ]; then
+        echo "ERROR: Windows App SDK runtime package $msix not found in $MSIX_DIR" >&2
+        echo "       The portable ZIP cannot start on a machine without the runtime; run a restore first." >&2
+        exit 1
+    fi
+    cp "$MSIX_DIR/$msix" "$STAGE_DIR/runtime/"
+done
+echo "   Bundled Windows App SDK $WINAPPSDK_VER runtime MSIX packages"
 
 # App-local VC++ runtime gate — prove the four MSVC DLLs (vcruntime140 /
 # vcruntime140_1 / msvcp140 / vcomp140) shipped beside whisper.dll in the staged
