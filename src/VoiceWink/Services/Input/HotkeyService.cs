@@ -326,6 +326,9 @@ public sealed class HotkeyService : IDisposable
     /// <summary>Raised on UI thread when AltGr is detected and a phantom prompt override should be cancelled.</summary>
     public event Action? CancelPromptOverride;
 
+    /// <summary>Raised on the hook thread each time the global hook is installed (HKY-9). Handlers must not block.</summary>
+    internal event Action? HookEnabled;
+
     /// <summary>Raised on UI thread when Escape cancels the live recording (HKY-11). Arg = which gesture.</summary>
     public event Action<string>? CancelRecordingRequested;
 
@@ -781,6 +784,7 @@ public sealed class HotkeyService : IDisposable
         hook.MouseMoved += OnMouseEvent;
         hook.MouseDragged += OnMouseEvent;
         hook.MouseWheel += OnMouseWheel;
+        hook.HookEnabled += OnHookEnabled;
         _hook = hook;
 
         // Observe the hook task — if the hook thread dies (native crash, Windows removed the
@@ -907,6 +911,7 @@ public sealed class HotkeyService : IDisposable
             _hook.MouseMoved -= OnMouseEvent;
             _hook.MouseDragged -= OnMouseEvent;
             _hook.MouseWheel -= OnMouseWheel;
+            _hook.HookEnabled -= OnHookEnabled;
             try { _hook.Dispose(); } catch { /* already dead */ }
             _hook = null;
         }
@@ -1775,6 +1780,13 @@ public sealed class HotkeyService : IDisposable
         }
     }
 
+    // HKY-9: lets HotkeyEventTrace re-install itself ahead of this hook in the chain.
+    private void OnHookEnabled(object? sender, HookEventArgs e)
+    {
+        try { HookEnabled?.Invoke(); }
+        catch (Exception ex) { Logger.Error(ex, "HookEnabled subscriber failed"); }
+    }
+
     private void OnMouseEvent(object? sender, MouseHookEventArgs e)
     {
         EnsureHookThreadPriorityBoosted();
@@ -1908,6 +1920,7 @@ public sealed class HotkeyService : IDisposable
             _hook.MouseMoved -= OnMouseEvent;
             _hook.MouseDragged -= OnMouseEvent;
             _hook.MouseWheel -= OnMouseWheel;
+            _hook.HookEnabled -= OnHookEnabled;
             _hook.Dispose();
             _hook = null;
             Logger.Information("Global hotkey hook disposed");

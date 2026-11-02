@@ -496,6 +496,18 @@ public static class WhisperBackendLog
         var effective = RuntimeOptions.LoadedLibrary ?? (order is { Count: > 0 } ? order[0] : null);
         return effective == RuntimeLibrary.Vulkan ? LocalCompute.Gpu : LocalCompute.Cpu;
     }
+
+    /// <summary>UI-13: true only when Whisper cannot leave the CPU in this process — unlike
+    /// <see cref="ResolvedCompute"/>, an unpinned order or a Vulkan entry reads false (not known).</summary>
+    internal static bool CpuForSession()
+        => CpuForSession(RuntimeOptions.LoadedLibrary, RuntimeOptions.RuntimeLibraryOrder);
+
+    /// <summary>UI-13: the decision against stated facts — the seam the tests drive.</summary>
+    internal static bool CpuForSession(RuntimeLibrary? loaded, IReadOnlyList<RuntimeLibrary>? order)
+        => loaded is { } library ? IsCpuLibrary(library) : order is { Count: > 0 } && order.All(IsCpuLibrary);
+
+    private static bool IsCpuLibrary(RuntimeLibrary library)
+        => library is RuntimeLibrary.Cpu or RuntimeLibrary.CpuNoAvx;
 }
 
 /// <summary>What <see cref="WhisperBackendLog.PinLoadOrder"/> found — <see cref="Pinned"/> is the

@@ -162,7 +162,9 @@ public sealed class LegalAcceptanceService
 
         try
         {
-            _settings.FlushOrThrow();
+            // LIC-36: a suppressed flush wrote nothing, so the acceptance did not land.
+            if (!_settings.TryFlushOrThrow())
+                throw new global::System.IO.IOException("Settings persistence is suppressed; the acceptance was not written.");
         }
         catch (Exception ex)
         {

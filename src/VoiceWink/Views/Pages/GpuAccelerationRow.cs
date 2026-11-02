@@ -48,20 +48,30 @@ internal static class GpuAccelerationRow
         write(isOn);
         afterWrite?.Invoke();
         if (!changed || restart is null) return;
+        if (!RestartApplies(isOn, LocalComputeSnapshot.Current))
+        {
+            Logger.Information("GPU acceleration turned off with every local engine already on the CPU — no restart offered");
+            return;
+        }
         _ = OfferRestartAsync(restart, isOn, xamlRoot());
     }
 
+    /// <summary>UI-13: turning GPU off has nothing to restart only when every engine is already locked
+    /// to the CPU; turning it on, or any engine not known to be, still offers.</summary>
+    internal static bool RestartApplies(bool isOn, LocalComputeSnapshot compute)
+        => isOn || !compute.EveryEngineCpuForSession;
+
     /// <summary>
     /// Opens the "Restart now / Later" dialog. The setting is already written when this runs; the
-    /// dialog only decides WHEN it applies. Fail-soft: a second ContentDialog already open throws,
-    /// and that must not surface.
+    /// dialog only decides WHEN it applies. Skipped while another dialog holds the window's slot
+    /// (UI-5b); fail-soft otherwise.
     /// </summary>
     private static async Task OfferRestartAsync(AppRestartService restart, bool isOn, XamlRoot? xamlRoot)
     {
         try
         {
             var dialog = new RestartToApplyDialog(restart, isOn) { XamlRoot = xamlRoot };
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "GPU acceleration restart offer");
         }
         catch (Exception ex)
         {

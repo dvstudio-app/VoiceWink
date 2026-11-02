@@ -11,9 +11,8 @@ namespace VoiceWink.Services.AIEnhancement.Clients;
 /// OpenAI rides /images/generations (no references) or /images/edits (references);
 /// OpenRouter rides its unified Image API (<c>POST {base}/images</c>) for EVERY call since
 /// 2026-07-31 — new OpenRouter image models are added exclusively to that API.
-/// Supports gpt-image-1 / 1-mini / 1.5 / 2 / 2.5 and compatible APIs. DALL-E 2/3 support was
-/// removed once OpenAI scheduled them for deprecation — old persisted DALL-E selections
-/// are blocked at <see cref="AIEnhancementService.GenerateImageAsync"/> with a clear error.
+/// Supports gpt-image-1-mini / 1.5 / 2 / 2.5 and compatible APIs. A persisted selection of a
+/// shut-down model (DALL-E, gpt-image-1) gets the provider's own error.
 ///
 /// Inputs are the user's three independent choices: aspect ratio, size tier, and quality
 /// (detail). On the OpenAI routes the client synthesises the <c>size</c> parameter from

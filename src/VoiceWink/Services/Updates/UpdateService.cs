@@ -497,7 +497,8 @@ public sealed class UpdateService : IUpdateService
             try
             {
                 _settings.SetBool(AppDefaults.ShowWindowAfterUpdateRestart, true);
-                _settings.FlushOrThrow();
+                if (!_settings.TryFlushOrThrow()) // LIC-36: suppressed means nothing was written
+                    Logger.Warning("Could not persist the visible-restart flag (settings persistence is suppressed); the relaunch may start minimized");
             }
             catch (Exception ex)
             {

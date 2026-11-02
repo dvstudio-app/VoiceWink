@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Serilog;
@@ -285,7 +286,7 @@ public sealed class LicensePage : Page
             or nameof(LicenseViewModel.LastValidatedUtc)
             or nameof(LicenseViewModel.TrialTimeRemaining)
             or nameof(LicenseViewModel.AttemptMessage)
-            or nameof(LicenseViewModel.SeatNotice)
+            or nameof(LicenseViewModel.SeatNotices)
             or nameof(LicenseViewModel.DeviceCountLabel)
             // LIC-30: ActivateAsync assigns Status BEFORE RefreshLocalState sets InstanceLine, so the
             // Status-driven rebuild would render the panel without the label; this entry corrects it.
@@ -493,9 +494,6 @@ public sealed class LicensePage : Page
         return row;
     }
 
-    // One feedback dialog at a time across page instances: a second ShowAsync while one is open THROWS (the AboutPage rule).
-    private static bool s_feedbackDialogOpen;
-
     private async Task AskFoundUsAsync()
     {
         var dialog = new FoundUsDialog();
@@ -509,8 +507,8 @@ public sealed class LicensePage : Page
     /// <summary>Shows a feedback dialog; false when another dialog was open or it could not be shown.</summary>
     private async Task<bool> ShowFeedbackDialogAsync(ContentDialog dialog)
     {
-        if (s_feedbackDialogOpen) return false;
-        s_feedbackDialogOpen = true;
+        using var slot = DialogLease.MainWindow.TryAcquire(dialog.GetType().Name);
+        if (slot is null) return false;
         try
         {
             dialog.XamlRoot = XamlRoot;
@@ -521,10 +519,6 @@ public sealed class LicensePage : Page
         {
             Logger.Warning(ex, "Failed to show the {Dialog} dialog", dialog.GetType().Name);
             return false;
-        }
-        finally
-        {
-            s_feedbackDialogOpen = false;
         }
     }
 
@@ -865,20 +859,22 @@ public sealed class LicensePage : Page
     }
 
     /// <summary>
-    /// Append the seat notice, then the attempt message, to <paramref name="panel"/> when set (LIC-19).
-    /// The seat notice renders on EVERY panel — a warning the user cannot see is no warning — while
-    /// the attempt message only ever exists for the panel it describes, because the VM clears it
-    /// before any panel-plan input changes.
+    /// Append the seat warnings, then the attempt message, to <paramref name="panel"/> when set (LIC-19).
+    /// The seat warnings render on EVERY panel — a warning the user cannot see is no warning — each with
+    /// its own Dismiss (LIC-9); the attempt message only ever exists for the panel it describes.
     /// </summary>
     private void AppendErrorBannerIfAny(StackPanel panel)
     {
-        if (!string.IsNullOrEmpty(_vm.SeatNotice))
-            panel.Children.Add(ErrorBanner(_vm.SeatNotice));
+        foreach (var incident in _vm.SeatNotices)
+        {
+            var id = incident.Id;
+            panel.Children.Add(ErrorBanner(incident.Message, () => _vm.DismissSeatNotice(id)));
+        }
         if (!string.IsNullOrEmpty(_vm.AttemptMessage))
             panel.Children.Add(ErrorBanner(_vm.AttemptMessage));
     }
 
-    private UIElement ErrorBanner(string message)
+    private UIElement ErrorBanner(string message, Action? onDismiss = null)
     {
         // The TEXT is WarningText, the BORDER the amber accent (LIC-20): the accent at 12 px measures
         // 1.97:1 on the light page, while a 1 px amber line reads fine. The banners stay amber by
@@ -891,6 +887,27 @@ public sealed class LicensePage : Page
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
         };
+        UIElement child = textBlock;
+        if (onDismiss != null)
+        {
+            var dismiss = AppTheme.CreateCompactButton("Dismiss", onClick: (_, _) => onDismiss());
+            // Several banners can show at once, so the spoken name says which warning (LIC-9).
+            AutomationProperties.SetName(dismiss, $"Dismiss warning: {message}");
+            dismiss.VerticalAlignment = VerticalAlignment.Top;
+            dismiss.Margin = new Thickness(8, 0, 0, 0);
+            var row = new Grid
+            {
+                ColumnDefinitions =
+                {
+                    new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) },
+                    new ColumnDefinition { Width = GridLength.Auto },
+                },
+            };
+            Grid.SetColumn(dismiss, 1);
+            row.Children.Add(textBlock);
+            row.Children.Add(dismiss);
+            child = row;
+        }
         return new Border
         {
             Background = AppTheme.Brush(AppTheme.CardBg),
@@ -898,7 +915,7 @@ public sealed class LicensePage : Page
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(10, 8, 10, 8),
-            Child = textBlock,
+            Child = child,
         };
     }
 

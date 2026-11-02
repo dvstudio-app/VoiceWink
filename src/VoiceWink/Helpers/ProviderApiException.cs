@@ -52,7 +52,7 @@ internal sealed class ProviderApiException : HttpRequestException
     /// cannot ride <c>{ErrorMessage}</c> into Sentry breadcrumbs. Log it ONLY as a
     /// <c>{ReasonPhrase}</c> property — that name is in
     /// <c>LogRedactionEnricher.RedactedPropertyNames</c>, so the local file sink keeps it and the
-    /// Sentry sub-logger replaces it. Never <c>{@}</c>-destructure it: the enricher does not recurse.
+    /// Sentry sub-logger replaces it, whatever its shape; keep it out of a collection all the same (REL-33).
     /// <para><b>Rarely null, and NOT null on HTTP/2 as one would expect.</b>
     /// <c>HttpResponseMessage.ReasonPhrase</c>'s getter falls back to the canonical description for
     /// the status code when the wire carried none, so an HTTP/2 500 yields the .NET-local constant

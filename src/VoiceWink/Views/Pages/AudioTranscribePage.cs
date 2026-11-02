@@ -553,8 +553,8 @@ public sealed class AudioTranscribePage : Page
         string? wavPath = null;
         try
         {
-            // Convert to WAV. The token IS threaded (AUD-9) — the decode itself is uninterruptible,
-            // but the normalization after it observes cancellation, and a cancelled call deletes its
+            // Convert to WAV. The token IS threaded (AUD-9): the decode checks it every second of
+            // output (TRN-80), the normalization after it too, and a cancelled call deletes its
             // conversion rather than stranding it in the recordings root.
             wavPath = await _processor.ConvertToWavAsync(filePath, ct);
 
@@ -588,7 +588,7 @@ public sealed class AudioTranscribePage : Page
                         XamlRoot = this.XamlRoot,
                         RequestedTheme = AppTheme.ElementTheme
                     };
-                    if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+                    if (await DialogLease.MainWindow.ShowAsync(dialog, "File may be too large") != ContentDialogResult.Primary)
                     {
                         _statusText!.Text = "";
                         return;
@@ -632,8 +632,9 @@ public sealed class AudioTranscribePage : Page
                     // New outcome (Parakeet 1/3): a selected model no runtime serves. Deliberately
                     // does not interpolate the stored name — settings import validates that field
                     // only as a string, so it can carry control or bidi characters, and this is a
-                    // page the user reads to decide what to do next.
-                    _statusText.Text = "That transcription model isn't available. Pick one on the Models page.";
+                    // page the user reads to decide what to do next. ONB-6: the shared message.
+                    Logger.Warning("Audio file transcription failed, selected speech model unknown");
+                    _statusText.Text = Helpers.UnusableModelSelection.PillMessage;
                     return;
                 }
                 if (outcome == PrepareOutcome.Unavailable)
@@ -798,10 +799,10 @@ public sealed class AudioTranscribePage : Page
             // fallback stops diagnosing instead.
             //
             // `wavPath` is assigned ONLY by a COMPLETED ConvertToWavAsync, so null here means the
-            // failure happened while READING the file — an unsupported extension, a corrupt or
-            // truncated source, a decoder that could not open it. That is the one case the old
-            // sentence was always right about, so it keeps a file-shaped message. Everything past
-            // the conversion is a transcription failure and takes the pipeline's own copy.
+            // conversion did not complete — almost always the READ of the file (a failed write of the
+            // converted copy, e.g. a full disk, lands here too), so it gets a file-shaped message. Everything
+            // past the conversion is a transcription failure and takes the pipeline's own copy.
+            // TRN-71: the read message names no cause — a moved file, a denied open or an offline cloud file land here as well as a bad one.
             //
             // DescribeTranscriptionFailure is the repo's SINGLE definition of that copy — pure,
             // internal, and test-pinned (MainViewModelGateTests), including the SEC-1 rule that a
@@ -810,7 +811,7 @@ public sealed class AudioTranscribePage : Page
             // is what would drift. Deliberately NOT extracted out of MainViewModel — that move is a
             // refactor this card does not need, and the method is already pure and internal.
             _statusText.Text = wavPath is null
-                ? "Couldn't read this audio file — check the format and try again."
+                ? "Couldn't read this audio file."
                 : ViewModels.MainViewModel.DescribeTranscriptionFailure(ex);
         }
         finally
@@ -877,6 +878,10 @@ public sealed class AudioTranscribePage : Page
                 // Its cause-bearing event was sent once per session by ParakeetUnavailableReporter.
                 Logger.Warning("Audio file transcription failed, speech engine unavailable: {Cause}",
                     unavailable.Cause?.ToString() ?? "unknown");
+                break;
+            case Services.Transcription.UnknownTranscriptionModelException:
+                // ONB-6: a stored setting the user fixes on Models, not a defect of ours.
+                Logger.Warning("Audio file transcription failed, selected speech model unknown");
                 break;
             case global::System.Net.Http.HttpRequestException or TimeoutException:
                 Logger.Warning("Audio file transcription failed: {ErrorType}: {ErrorMessage}",

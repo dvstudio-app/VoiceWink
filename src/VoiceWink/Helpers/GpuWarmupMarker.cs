@@ -141,6 +141,9 @@ internal sealed class GpuWarmupMarker
     /// queued — so the two instances never write concurrently; the lock stays per instance.</summary>
     private readonly object _writeLock = new();
 
+    /// <summary>TRN-66: a Whisper CPU pin the file did not take; honoured by <see cref="ReadVerdict"/>, guarded by <see cref="_writeLock"/>.</summary>
+    private GpuSelfTestRecord? _pendingWhisperPin;
+
     /// <summary>The wait before retry <c>n</c> (1-based) of a transient fault (see the class doc;
     /// <see cref="TransientFileRetry"/>). A test seam: production sleeps; a test uses it to release
     /// a lock it holds, which makes the retry path deterministic. A file that stays unreadable but
@@ -232,7 +235,7 @@ internal sealed class GpuWarmupMarker
         var key = ValidModelName(model);
         if (key is null) return RecordVerdict(GpuSelfTestEngine.Whisper, outcome, gpuName);
         var name = ValidName(gpuName);
-        return Write(s =>
+        return WriteHoldingWhisperPin(outcome, name, () => Write(s =>
         {
             s.WhisperTested ??= new List<TestedEntry>();
             s.WhisperTested.RemoveAll(e => string.Equals(ValidModelName(e.Model), key, StringComparison.Ordinal));
@@ -254,8 +257,45 @@ internal sealed class GpuWarmupMarker
                 s.WhisperVerdict = outcome.ToString();
                 s.WhisperGpuName = name;
             }
-        });
+        }));
     }
+
+    /// <summary>TRN-66: the Whisper pin to hand a restarted successor — one the file does not hold.</summary>
+    internal GpuSelfTestRecord? PendingWhisperPin
+    {
+        get { lock (_writeLock) { return _pendingWhisperPin; } }
+    }
+
+    /// <summary>TRN-66: adopt the pin a restarting predecessor could not save, and try once to make it durable.</summary>
+    // shortcut: a Fail made durable here is never sent to Sentry as an Error (REL-30), upgrade if field reports go missing
+    public void AdoptCarriedWhisperPin(GpuSelfTestRecord? carried)
+    {
+        if (carried is not { } pin || PinRank(pin.Outcome) == 0) return;
+        if (PinRank(ReadVerdict(GpuSelfTestEngine.Whisper).Outcome) >= PinRank(pin.Outcome)) return;
+        lock (_writeLock)
+        {
+            _pendingWhisperPin = Stronger(_pendingWhisperPin, pin);
+            Write(static _ => { });
+        }
+    }
+
+    /// <summary>TRN-66: write and hold under one lock, so a re-arm cannot land between a failed write and its hold.</summary>
+    private bool WriteHoldingWhisperPin(GpuSelfTestOutcome outcome, string? name, Func<bool> write)
+    {
+        lock (_writeLock)
+        {
+            var landed = write();
+            if (!landed && PinsCpu(outcome)) _pendingWhisperPin = Stronger(_pendingWhisperPin, new GpuSelfTestRecord(outcome, name));
+            return landed;
+        }
+    }
+
+    /// <summary>TRN-66: the no-downgrade order <see cref="RecordWhisperVerdict"/> keeps: 2 refuses a decode, 1 is Slower, 0 pins nothing.</summary>
+    private static int PinRank(GpuSelfTestOutcome outcome)
+        => RefusesDecode(outcome) ? 2 : PinsCpu(outcome) ? 1 : 0;
+
+    private static GpuSelfTestRecord? Stronger(GpuSelfTestRecord? held, GpuSelfTestRecord candidate)
+        => held is { } h && PinRank(h.Outcome) >= PinRank(candidate.Outcome) ? h : candidate;
 
     public bool ParakeetNeedsWarmup() => !Read().ParakeetWarmed;
 
@@ -266,10 +306,14 @@ internal sealed class GpuWarmupMarker
     /// <summary>The persisted self-test record for one engine, validated (see the class doc).</summary>
     public GpuSelfTestRecord ReadVerdict(GpuSelfTestEngine engine)
     {
+        var pending = PendingWhisperPin; // TRN-66: before Read(), so a fold landing in between is still seen
         var s = Read();
-        return engine == GpuSelfTestEngine.Whisper
-            ? new GpuSelfTestRecord(ParseOutcome(s.WhisperVerdict), ValidName(s.WhisperGpuName))
-            : new GpuSelfTestRecord(ParseOutcome(s.ParakeetVerdict), ValidName(s.ParakeetGpuName));
+        if (engine != GpuSelfTestEngine.Whisper)
+        {
+            return new GpuSelfTestRecord(ParseOutcome(s.ParakeetVerdict), ValidName(s.ParakeetGpuName));
+        }
+        var persisted = new GpuSelfTestRecord(ParseOutcome(s.WhisperVerdict), ValidName(s.WhisperGpuName));
+        return pending is { } p && PinRank(p.Outcome) > PinRank(persisted.Outcome) ? p : persisted;
     }
 
     /// <summary>Record a self-test outcome. A FAIL also clears the engine's warmed flag in the
@@ -293,7 +337,7 @@ internal sealed class GpuWarmupMarker
         // pin guard stops every run under one — and Parakeet's CPU-pinned child yields no GPU
         // evidence, so it never records at all. Stated rather than guarded: a second guard whose
         // input is unreachable is a claim nothing tests.
-        return Write(s =>
+        bool WriteVerdict() => Write(s =>
         {
             if (engine == GpuSelfTestEngine.Whisper)
             {
@@ -308,18 +352,33 @@ internal sealed class GpuWarmupMarker
                 if (PinsCpu(outcome)) s.ParakeetWarmed = false;
             }
         });
+        return engine == GpuSelfTestEngine.Whisper ? WriteHoldingWhisperPin(outcome, name, WriteVerdict) : WriteVerdict();
     }
 
     /// <summary>Forget one engine's verdict, GPU name AND warmed flag — atomically, so the next
     /// launch runs the self-test again instead of skipping it on a stale warmed flag.</summary>
-    public void Rearm(GpuSelfTestEngine engine) => Write(s => Clear(s, engine));
+    public void Rearm(GpuSelfTestEngine engine)
+    {
+        lock (_writeLock)
+        {
+            if (engine == GpuSelfTestEngine.Whisper) _pendingWhisperPin = null; // TRN-66: even if the write fails
+            Write(s => Clear(s, engine));
+        }
+    }
 
     /// <summary>The toggle's re-arm: both engines, one write.</summary>
-    public void RearmAll() => Write(s =>
+    public void RearmAll()
     {
-        Clear(s, GpuSelfTestEngine.Whisper);
-        Clear(s, GpuSelfTestEngine.Parakeet);
-    });
+        lock (_writeLock)
+        {
+            _pendingWhisperPin = null; // TRN-66: even if the write fails
+            Write(s =>
+            {
+                Clear(s, GpuSelfTestEngine.Whisper);
+                Clear(s, GpuSelfTestEngine.Parakeet);
+            });
+        }
+    }
 
     private static void Clear(State s, GpuSelfTestEngine engine)
     {
@@ -338,7 +397,16 @@ internal sealed class GpuWarmupMarker
         }
     }
 
-    private static GpuSelfTestOutcome ParseOutcome(string? persisted)
+    /// <summary>TRN-66: write the held pin into <paramref name="s"/> unless the file already pins at least as strongly.</summary>
+    private void FoldPendingWhisperPin(State s)
+    {
+        if (_pendingWhisperPin is not { } pin || PinRank(ParseOutcome(s.WhisperVerdict)) >= PinRank(pin.Outcome)) return;
+        s.WhisperVerdict = pin.Outcome.ToString();
+        s.WhisperGpuName = pin.GpuName;
+        s.WhisperWarmed = false;
+    }
+
+    internal static GpuSelfTestOutcome ParseOutcome(string? persisted)
         => persisted is not null
            && Enum.TryParse<GpuSelfTestOutcome>(persisted, ignoreCase: false, out var parsed)
            && Enum.IsDefined(parsed)
@@ -480,11 +548,13 @@ internal sealed class GpuWarmupMarker
                     // (Current returned Fresh) has already discarded everything the signature protected.
                     if (_driverSignature is not null) state.DriverSignature = _driverSignature;
                     mutate(state);
+                    FoldPendingWhisperPin(state);
                     // Write-then-move so a kill mid-write cannot leave a torn file that discards a
                     // previously recorded flag (torn JSON reads as "nothing warmed, no verdict").
                     var tmp = _path + ".tmp";
                     File.WriteAllText(tmp, global::System.Text.Json.JsonSerializer.Serialize(state));
                     File.Move(tmp, _path, overwrite: true);
+                    _pendingWhisperPin = null; // TRN-66: folded into the file just written
                     return true;
                 });
             }

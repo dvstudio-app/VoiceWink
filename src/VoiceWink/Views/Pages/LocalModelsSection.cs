@@ -361,7 +361,7 @@ internal static class LocalModelsSection
                 XamlRoot = delete.XamlRoot,
                 RequestedTheme = AppTheme.ElementTheme,
             };
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+            if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete built-in model") != ContentDialogResult.Primary)
             {
                 return;
             }

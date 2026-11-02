@@ -249,6 +249,25 @@ public sealed class AudioDeviceManager : IDisposable
         }
     }
 
+    /// <summary>AUD-20: a snapshot from a pass started after this call, so a device change is never answered by an older pass.</summary>
+    public Task<IReadOnlyList<AudioDeviceInfo>> RefreshDevicesFreshAsync()
+    {
+        Task? inFlight;
+        lock (_refreshGate) inFlight = _refreshInFlight;
+        return AfterInFlightAsync(inFlight, RefreshDevicesAsync);
+    }
+
+    /// <summary>AUD-20: waits out <paramref name="inFlight"/> (its fault ignored), then starts.</summary>
+    internal static async Task<T> AfterInFlightAsync<T>(Task? inFlight, Func<Task<T>> start)
+    {
+        if (inFlight is not null)
+        {
+            try { await inFlight.ConfigureAwait(false); }
+            catch (Exception ex) { Logger.Debug(ex, "Earlier device refresh failed; starting a fresh one"); }
+        }
+        return await start().ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Returns the system default capture device.
     ///

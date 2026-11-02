@@ -835,7 +835,7 @@ internal sealed class GpuWarmup
         }
         YieldGpuProbe(userWork: false, always: true);   // speech GPU work started: the AI engine's measurement gives way
         // UI-12: "Checking…" BEGINS with the run — a page built before this load queued the test
-        // would otherwise show "will be checked when VoiceWink restarts" for the whole run.
+        // would otherwise show "hasn't been checked … yet" for the whole run.
         NotifyChanged();
         return verdict?.Task;
     }
@@ -1276,6 +1276,10 @@ internal sealed class GpuWarmup
             }
         }
     }
+
+    /// <summary>TRN-66: the Whisper CPU pin the marker could not save, for the restart handoff; null when the file holds it.</summary>
+    internal string? WhisperPinToCarry
+        => _config?.Marker.PendingWhisperPin is { } pin ? RestartHandoff.FormatWhisperPin(pin, RestartHandoff.CurrentCarryKey()) : null;
 
     /// <summary>TRN-49: this session's own refusing pin, which refuses every Whisper model.</summary>
     internal bool WhisperSessionRefusesEveryModel

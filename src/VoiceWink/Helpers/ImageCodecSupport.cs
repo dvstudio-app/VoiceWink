@@ -25,22 +25,16 @@ namespace VoiceWink.Helpers;
 /// </list>
 /// <para>So the only honest test is the operation itself, run once against a tiny embedded sample.</para>
 ///
-/// <para>Cached: the installed codec set does not change within a process run, and this is consulted
-/// while building a file picker and while deciding which references are usable.</para>
+/// <para>Cached once a probe completes (or keeps faulting), since the codec set is fixed per process — IMG-12.</para>
 /// </summary>
 internal static class ImageCodecSupport
 {
-    private static bool? _avif;
-    private static readonly object Gate = new();
+    /// <summary>The session's one AVIF probe.</summary>
+    internal static readonly ProbeLatch Avif = new(ProbeAvifAsync);
 
     /// <summary>True when this machine can decode AVIF pixels, proven by decoding a sample.</summary>
-    internal static bool CanDecodeAvif
-    {
-        get
-        {
-            lock (Gate) { return _avif ??= ProbeAvif(); }
-        }
-    }
+    // Decoding a 507-byte image is a few milliseconds; 5 s is headroom for a cold codec load.
+    internal static bool CanDecodeAvif => Avif.Read(TimeSpan.FromSeconds(5));
 
     /// <summary>
     /// A 64x48 AVIF with an alpha channel (507 bytes). Embedded rather than read from disk so the
@@ -63,54 +57,100 @@ internal static class ImageCodecSupport
         "OmF1eGlsaWFyeTphbHBoYQAAAAAeaXBtYQAAAAAAAAACAAEEAQKDBAACBAEFhgcAAABVbWRhdBIACgYYFX+9hUAyExQADDEAwz9K" +
         "PMCaC3KSe2VelcASAAoGGBV/vYEIMiIUAAMMMMQAtINbH+A3NPWtc/mJqVpExKvdb3I/qrTwNjcm";
 
-    private static bool ProbeAvif()
+    /// <summary>Decodes the embedded sample to pixels; throws on a machine without the codec.</summary>
+    internal static async Task<bool> ProbeAvifAsync()
     {
-        try
+        var bytes = Convert.FromBase64String(AvifProbeSampleBase64);
+        using var stream = new InMemoryRandomAccessStream();
+        await stream.WriteAsync(bytes.AsBuffer());
+        stream.Seek(0);
+        var decoder = await BitmapDecoder.CreateAsync(stream);
+        // The operation that actually matters — construction alone proves nothing.
+        using var bitmap = await decoder.GetSoftwareBitmapAsync(
+            BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight);
+        return bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0;
+    }
+
+    /// <summary>IMG-12: caches a probe's answer only once it COMPLETED; any other read fails closed for that read alone.</summary>
+    internal sealed class ProbeLatch
+    {
+        // A codec-less machine faults on every probe, so repeated faults become the answer.
+        // shortcut: three transient faults also refuse AVIF until restart, upgrade if the faults log shows a capable machine hitting the cap.
+        // shortcut: a probe that never returns is never restarted, upgrade if a wedged codec is ever seen in the field.
+        internal const int MaxFaults = 3;
+
+        private readonly Func<Task<bool>> _probe;
+        private readonly object _gate = new();
+        private Task<bool>? _current;
+        private bool? _known;
+        private int _faults;
+        private bool _timedOut;
+
+        internal ProbeLatch(Func<Task<bool>> probe) => _probe = probe;
+
+        /// <summary>True once the answer is cached for the session.</summary>
+        internal bool IsSettled { get { lock (_gate) return _known.HasValue; } }
+
+        /// <summary>Why the last read could not answer; tests surface it, since no log sink runs there.</summary>
+        internal string? LastFailure { get { lock (_gate) return _lastFailure; } }
+        private string? _lastFailure;
+
+        internal bool Read(TimeSpan wait)
         {
-            // Task.Run is LOAD-BEARING, not tidiness. Callers include UI-thread code building a file
-            // picker, and blocking a dispatcher thread on a WinRT IAsyncOperation whose
-            // continuations want that same thread is the classic sync-over-async deadlock. Hopping
-            // to the thread pool first means the awaits resume on a pool thread and the blocking
-            // wait is safe. (Observed live: the picker silently omitted .avif because the probe
-            // never completed on the UI thread.)
-            // BOUNDED. Task.Run removes the deadlock, but a blocking wait with no deadline still
-            // freezes whatever called us — Browse, or a History row — if a codec wedges. The catch
-            // below cannot fail closed on an operation that simply never returns, so the timeout is
-            // what makes "fail closed" true rather than aspirational. Decoding a 507-byte image is
-            // a few milliseconds; 5 s is pure headroom for a cold codec load.
-            var probe = Task.Run(ProbeAsync);
-            if (!probe.Wait(TimeSpan.FromSeconds(5)))
+            lock (_gate)
             {
-                Serilog.Log.ForContext(typeof(ImageCodecSupport))
-                    .Warning("AVIF decode probe timed out; treating AVIF as unsupported");
-                return false; // cached by the caller — one slow probe must not be paid repeatedly
+                if (_known is bool known) return known;
+
+                // Task.Run is LOAD-BEARING, not tidiness. Callers include UI-thread code building a
+                // file picker, and blocking a dispatcher thread on a WinRT IAsyncOperation whose
+                // continuations want that same thread is the classic sync-over-async deadlock.
+                // Hopping to the thread pool first means the awaits resume on a pool thread and the
+                // blocking wait is safe. (Observed live: the picker silently omitted .avif because
+                // the probe never completed on the UI thread.)
+                var started = _current is null;
+                _current ??= Task.Run(_probe);
+
+                // BOUNDED, and paid once per session: a wedged codec would otherwise freeze Browse or a History row on every read.
+                if (!HasEnded(_current, started && !_timedOut ? wait : TimeSpan.Zero))
+                {
+                    if (started && !_timedOut)
+                    {
+                        _timedOut = true;
+                        _lastFailure = $"timed out after {wait.TotalSeconds:0.###} s";
+                        Log.Warning("AVIF decode probe timed out; AVIF unavailable until it completes");
+                    }
+                    return false;
+                }
+
+                if (_current.IsCompletedSuccessfully)
+                {
+                    _known = _current.Result;
+                    Log.Information("AVIF decode probe: {Supported}", _known.Value ? "supported" : "unsupported");
+                    return _known.Value;
+                }
+
+                var ex = _current.Exception?.GetBaseException();
+                _lastFailure = ex is null ? "cancelled" : $"{ex.GetType().Name}: {ex.Message}";
+                _current = null;
+                if (++_faults >= MaxFaults)
+                {
+                    _known = false;
+                    Log.Warning(ex, "AVIF decode probe failed {Faults} times; treating AVIF as unsupported", _faults);
+                }
+                else
+                {
+                    Log.Warning(ex, "AVIF decode probe failed ({Faults} of {MaxFaults}); will ask again", _faults, MaxFaults);
+                }
+                return false;
             }
-
-            var result = probe.GetAwaiter().GetResult();
-            Serilog.Log.ForContext(typeof(ImageCodecSupport))
-                .Information("AVIF decode probe: {Supported}", result ? "supported" : "unsupported");
-            return result;
-        }
-        catch (Exception ex)
-        {
-            // Fail CLOSED: if we cannot tell, do not advertise the format. Offering something we
-            // cannot read is worse than not offering it.
-            Serilog.Log.ForContext(typeof(ImageCodecSupport))
-                .Warning(ex, "AVIF decode probe failed; treating AVIF as unsupported");
-            return false;
         }
 
-        static async Task<bool> ProbeAsync()
+        private static bool HasEnded(Task task, TimeSpan wait)
         {
-            var bytes = Convert.FromBase64String(AvifProbeSampleBase64);
-            using var stream = new InMemoryRandomAccessStream();
-            await stream.WriteAsync(bytes.AsBuffer());
-            stream.Seek(0);
-            var decoder = await BitmapDecoder.CreateAsync(stream);
-            // The operation that actually matters — construction alone proves nothing.
-            using var bitmap = await decoder.GetSoftwareBitmapAsync(
-                BitmapPixelFormat.Bgra8, BitmapAlphaMode.Straight);
-            return bitmap.PixelWidth > 0 && bitmap.PixelHeight > 0;
+            try { return task.Wait(wait); }
+            catch (AggregateException) { return true; }
         }
+
+        private static Serilog.ILogger Log => Serilog.Log.ForContext(typeof(ImageCodecSupport));
     }
 }

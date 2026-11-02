@@ -390,8 +390,12 @@ public partial class UpdateViewModel : ObservableObject
         // SetBool below is a harmless same-value re-write. The hooks' post-Apply notify stays,
         // covering the fail-off direction (a failed opt-IN forces the value off, which must also
         // withdraw a running apply's mandate).
-        _settings.SetBool(key, requested);
-        _installer?.NotifyPreferencesChanged();
+        // REL-19: only an opt-out is published early; an opt-in reads ON only once Apply has cleared the opt-out record.
+        if (!requested)
+        {
+            _settings.SetBool(key, requested);
+            _installer?.NotifyPreferencesChanged();
+        }
 
         var result = DiagnosticsConsent.Apply(_settings, key, requested);
         if (result.Persisted)

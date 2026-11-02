@@ -89,25 +89,7 @@ public sealed class RestartToApplyDialog : ContentDialog
     /// replacement names the restart as the cure. <c>RestartToApplyDialogTests</c> pins the
     /// PROPERTIES, not the prose — this copy had no test at all before it drifted.</para>
     ///
-    /// <para><b>It names no destination, and that is the whole of Codex's r1+r2 Blocker.</b> Two
-    /// drafts claimed one — "the restart moves it to the processor, where it runs correctly", then
-    /// "Restart to move it to the processor" — and both are promises this code cannot keep.
-    /// <c>GpuWarmupMarker.Write</c> is best-effort and returns false on failure;
-    /// <c>GpuWarmup.RecordWhisperVerdict</c> deliberately keeps the pin in memory anyway (right: a
-    /// session that has proved the GPU wrong must not keep decoding on it because a file would not
-    /// write), and only the log LEVEL consumes that durability bool (REL-30). So on an unwritable
-    /// marker the next start reads no pin, <c>App</c> re-enables Vulkan, and the user restarts into
-    /// this same dialog. The second draft was defended here as "purpose, not outcome"; that
-    /// distinction does not survive contact with a reader, for whom "restart to move it to the
-    /// processor" simply says the restart moves it there.</para>
-    ///
-    /// <para>"Restart VoiceWink to try Whisper again" is true in BOTH worlds — the try succeeds on
-    /// the processor, or it fails and says so again — which is the most this sentence can honestly
-    /// carry while the durability gap stands. That gap is [[TRN-66]], and its fix (carry the pin to
-    /// the successor the way <c>RestartHandoff</c> carries the predecessor pid) is what would earn
-    /// the destination back. Dropping it also retires a second overclaim: on Inconclusive nothing
-    /// was ever proved wrong about the GPU, so joining finding to fix in one causal clause said
-    /// more than the check knew.</para></summary>
+    /// <para>TRN-66: names the processor because "Restart now" carries a pin the marker could not save; a manual relaunch on an unwritable marker still re-tests.</para></summary>
     internal static string GpuSelfTestBody(GpuSelfTestRefusedException refusal)
     {
         var gpu = refusal.GpuName ?? GpuToggleAvailability.UnnamedGpu;
@@ -119,9 +101,9 @@ public sealed class RestartToApplyDialog : ContentDialog
         var finding = refusal.Kind == GpuSelfTestRefusedException.Reason.Fail
             ? $"The GPU check found that Whisper produces wrong text on this PC's {gpu}."
             : $"The GPU check for Whisper did not finish on this PC's {gpu}.";
-        return finding + " Whisper won't transcribe again this session. Restart VoiceWink to try " +
-               "Whisper again. Later is fine: Parakeet and cloud models keep working, and your " +
-               "recording is kept for a retry.";
+        return finding + " Whisper won't transcribe again this session. Restart VoiceWink to run " +
+               "Whisper on the processor. Later is fine: Parakeet and cloud models keep working, and " +
+               "your recording is kept for a retry.";
     }
 
     private void OnRestartNow(ContentDialog sender, ContentDialogButtonClickEventArgs args)

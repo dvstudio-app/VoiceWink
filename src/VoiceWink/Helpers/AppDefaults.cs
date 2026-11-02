@@ -405,8 +405,7 @@ public static class AppDefaults
     /// observed" (used by <c>ClearLocalLicenseState</c> and the <c>GetInt</c> default
     /// when the key is absent); the read side in <c>LicenseService.GetActivationCounts</c>
     /// maps any stored value <c>&lt; 0</c> back to <c>null</c> so future encoding drift
-    /// doesn't mis-classify. A stored 0 is a real "LS said zero" contract violation,
-    /// not a sentinel — it round-trips as <c>0</c> and surfaces as such in the UI.
+    /// doesn't mis-classify. Written together with the usage by <c>PersistActivationCounts</c> (LIC-17).
     /// </summary>
     public const string LicenseActivationLimit = "licenseActivationLimit";
     /// <summary>

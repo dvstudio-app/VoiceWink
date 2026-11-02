@@ -417,8 +417,9 @@ public sealed class HomePage : Page
     private void OnTrialTick(object? sender, object e) => RefreshTrialLine();
 
     /// <summary>
-    /// LNC-11: three reads (the status read observes the trial window's last-seen, as every status
-    /// read does), one pure decision, one render. Fail-soft — a settings read that throws
+    /// LNC-11: one snapshot read (LIC-14 — status, remaining and ended from one clock sample; it
+    /// observes the trial window's last-seen, as every status read does), one pure decision, one
+    /// render. Fail-soft — a settings read that throws
     /// hides the line rather than the page (the recording gate makes the same read and fails
     /// CLOSED there, because that one is a gate; this is a label).
     /// </summary>
@@ -427,10 +428,8 @@ public sealed class HomePage : Page
         HomeTrialLine line;
         try
         {
-            line = HomeTrialLine.Resolve(
-                _license.GetCachedStatus(),
-                _license.GetTrialTimeRemaining(),
-                _license.HasFirstRunGraceEnded());
+            var (status, remaining, ended) = _license.GetCachedSnapshot();
+            line = HomeTrialLine.Resolve(status, remaining, ended);
         }
         catch (Exception ex)
         {

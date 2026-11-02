@@ -273,6 +273,7 @@ public sealed class DataErasureService
         var failures = new List<string>();
         foreach (var target in BuildTargets(_rootDir))
             DeleteTarget(target, failures);
+        DeleteConsentTombstoneIfSettingsGone(_rootDir, failures);
 
         // REL-17: report bundles written by pre-Reports-dir builds live in %TEMP% — erase
         // them through the SAME failure-counting path (an erasure must never silently
@@ -429,6 +430,32 @@ public sealed class DataErasureService
         {
             Logger.Warning(ex, "Failed to delete a data target during erasure");
             failures.Add(Path.GetFileName(path));
+        }
+    }
+
+    /// <summary>REL-19: the consent opt-out record goes last, only once every settings file it overrides is confirmed gone.</summary>
+    internal static void DeleteConsentTombstoneIfSettingsGone(string root, List<string> failures)
+    {
+        string[] settingsFiles = ["settings.json", "settings.json.bak", "settings.json.corrupt"];
+        if (!settingsFiles.All(name => IsConfirmedAbsent(Path.Combine(root, name)))) return;
+        DeleteTarget(ConsentTombstone.PathFor(Path.Combine(root, "settings.json")), failures);
+    }
+
+    // Only the two not-found exceptions mean absent (the DeleteTarget rule).
+    private static bool IsConfirmedAbsent(string path)
+    {
+        try
+        {
+            File.GetAttributes(path);
+            return false;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

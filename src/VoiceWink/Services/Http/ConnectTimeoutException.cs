@@ -21,7 +21,7 @@ namespace VoiceWink.Services.Http;
 /// <see cref="HttpRequestException"/> — retry fails CLOSED.</para>
 ///
 /// <para>It derives from <see cref="HttpRequestException"/> so existing behaviour is unchanged:
-/// <c>RetryingHandler</c> still retries it on the ai/images pipelines, and every catch site and
+/// <c>RetryingHandler</c> still retries it on the ai/images pipelines (licensing disables retries per request), and every catch site and
 /// user-facing message that keys on <see cref="HttpRequestException"/> keeps working. The
 /// message is deliberately identical to the plain translation, so no copy moves.</para>
 /// </summary>

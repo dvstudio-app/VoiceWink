@@ -227,7 +227,7 @@ public sealed class ModelsPage : Page
             Margin = new Thickness(0, 0, 0, 8),
         };
         content.Children.Add(_gpuAdvisory);
-        // UI-12: the neutral status line ("Checking…" / "will be checked when VoiceWink restarts")
+        // UI-12: the neutral status line ("Checking…" / "hasn't been checked … yet")
         // — secondary text, never amber: it is progress, not a problem.
         _gpuStatus = new TextBlock
         {
@@ -261,7 +261,7 @@ public sealed class ModelsPage : Page
             // model's own — the positive tick must never speak for a model nobody judged.
             GpuWarmup.Instance.ReadSelfTestSummary(runtime == LocalRuntimeKind.Whisper ? _viewModel.SelectedModelName : null) ?? default,
             runtime,
-            // UI-12: "will be checked when VoiceWink restarts" is promised only for a model that
+            // UI-12: "hasn't been checked … yet" is shown only for a model that
             // is on disk — a fresh install with nothing downloaded never preloads, and a missing
             // GGUF never warms (Codex diff r2). The row's flag is the same one the Download /
             // Select buttons render from.
@@ -609,10 +609,15 @@ public sealed class ModelsPage : Page
                 }
                 else
                 {
+                    // ONB-6: neither a local row nor a cloud model — recording refuses this
+                    // selection, so name the model this PC should use instead.
                     if (_activeModelName != null)
                         _activeModelName.Text = "No model selected";
                     if (_activeModelSize != null)
-                        _activeModelSize.Text = "";
+                        _activeModelSize.Text = UnusableModelSelection.RecommendationLine(
+                            _viewModel.Models.FirstOrDefault(m => ModelDiskReconciliation.IsSameModel(m.Name, DefaultLocalModel.ParakeetName))
+                                is { UnavailableReason.Length: 0 },
+                            _viewModel.SelectedLanguage);
                 }
             }
 
@@ -808,7 +813,7 @@ public sealed class ModelsPage : Page
                         RequestedTheme = AppTheme.ElementTheme
                     };
 
-                    if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                    if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete model") == ContentDialogResult.Primary)
                     {
                         // TRN-37 (Kimi plan round B1 + self-review lens 2, Blocker): the FULL
                         // sibling pattern — disable BEFORE awaiting, then await the async

@@ -572,13 +572,12 @@ public static class PromptTraceLog
                   .Append(Environment.NewLine);
             body(sb);
 
-            global::System.IO.Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, $"{RedactedFilePrefix}{DateTime.Now:yyyyMMdd}.log");
             var entry =
                 $"───── {DateTime.Now:HH:mm:ss.fff} · {header} ─────{Environment.NewLine}" +
                 $"{sb}{Environment.NewLine}{Environment.NewLine}";
             lock (Gate)
-                File.AppendAllText(path, entry);
+                AppendVerified(dir, path, entry);
         }
         catch
         {
@@ -594,12 +593,43 @@ public static class PromptTraceLog
         var dir = Directory;
         if (string.IsNullOrEmpty(dir))
             return;
-        global::System.IO.Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, $"prompts-{DateTime.Now:yyyyMMdd}.log");
         var entry =
             $"───── {DateTime.Now:HH:mm:ss.fff} · {kind} ─────{Environment.NewLine}" +
             $"{content}{Environment.NewLine}{Environment.NewLine}";
         lock (Gate)
-            File.AppendAllText(path, entry);
+            AppendVerified(dir, path, entry);
+    }
+
+    private static int _redirectRefusalLogged;
+
+    // REL-19: write only to a file that resolves directly in Logs; a redirected Logs or trace file drops the entry and creates nothing in its target.
+    private static void AppendVerified(string dir, string path, string entry)
+    {
+        global::System.IO.Directory.CreateDirectory(dir);
+        if (!VerifiedFileAccess.DirectoryResolvesDirectly(dir) || IsReparsePoint(path))
+        {
+            LogRedirectRefusal();
+            return;
+        }
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+        if (!VerifiedFileAccess.ResolvesDirectlyIn(VerifiedFileAccess.TryGetFinalPath(stream.SafeFileHandle), dir))
+        {
+            LogRedirectRefusal();
+            return;
+        }
+        stream.Write(new global::System.Text.UTF8Encoding(false).GetBytes(entry));
+    }
+
+    private static bool IsReparsePoint(string path)
+    {
+        try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return false; }
+    }
+
+    private static void LogRedirectRefusal()
+    {
+        if (Interlocked.Exchange(ref _redirectRefusalLogged, 1) == 0)
+            Serilog.Log.ForContext(typeof(PromptTraceLog)).Warning("Prompt trace not written: the Logs folder or a trace file is redirected outside the app's data");
     }
 }

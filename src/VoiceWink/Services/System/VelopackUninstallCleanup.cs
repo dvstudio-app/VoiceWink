@@ -8,9 +8,11 @@ namespace VoiceWink.Services.System;
 /// <c>OnBeforeUninstallFastCallback</c> in <see cref="VoiceWink.Program.Main"/>.
 ///
 /// <para><b>Problem this solves.</b> When a user uninstalls VoiceWink via
-/// <c>Update.exe --uninstall</c>, Velopack removes
-/// <c>%LOCALAPPDATA%\VoiceWinkApp\</c> entirely — the install root, the
-/// binary, and (post-fix) <c>install.log</c>. Before this helper landed,
+/// <c>Update.exe --uninstall</c>, Velopack 0.0.1298 empties
+/// <c>%LOCALAPPDATA%\VoiceWinkApp\</c> (the binary and <c>install.log</c>
+/// included) but leaves the folder itself with <c>.dead</c>, <c>Velopack.log</c>
+/// and sometimes <c>Update.exe</c>; <see cref="InstallRootJanitor"/> removes
+/// that husk (INS-2). Before this helper landed,
 /// the HKCU\Run\VoiceWink registry value was left behind, still pointing
 /// at the now-missing apphost. At the user's next login Windows tried to
 /// launch the missing exe, which fails silently or with a brief shell

@@ -84,11 +84,10 @@ public partial class App : Application, Services.IAppLifetime
     // Removed. A real pre-association needs the window ON the target monitor —
     // DWMWA_CLOAK parking is the candidate follow-up (backlog PERF entry).
     private H.NotifyIcon.TaskbarIcon? _trayIcon;
-    // True only after SetupTrayIcon completes ForceCreate() successfully (LGL-1 / Codex
-    // round-2 diff-review challenge). Distinguishes "tray icon was constructed" from
-    // "tray icon is actually visible in the system tray and can restore the window."
-    // Used by the close, minimize, and start-minimized hide paths.
-    private bool _trayIconReady;
+    // UI-26: cancelled at cleanup so no retry adds the icon after it is disposed.
+    private readonly CancellationTokenSource _trayIconRetryCancel = new();
+    // UI-26: read live, because a retry or Explorer's TaskbarCreated can add the icon mid-session.
+    private bool TrayIconReady => _trayIcon?.IsCreated == true;
     // DCT-1: what InitializeDatabase learned, for the Dictionary seed that runs after it — the
     // factory it already resolved (no second service-locator lookup for the same singleton;
     // AGENTS.md) and whether InitializeDatabaseCore CREATED the database this launch (a fresh
@@ -197,8 +196,10 @@ public partial class App : Application, Services.IAppLifetime
             // The {Model} identifier gate, on the root so the file sink sees it too — the Sentry
             // sub-logger below is the wrong scope for it (ModelIdEnricherTests pins the placement).
             .Enrich.With<Services.System.ModelIdEnricher>()
-            .WriteTo.Debug()
-            .WriteTo.File(
+            .WriteTo.Debug();
+        // REL-19: no file sink through a redirected Logs folder; the hooks guard every open and retention delete.
+        if (Helpers.VerifiedLogFileHooks.AllowsFileSink(logDir))
+            cfg = cfg.WriteTo.File(
                 Path.Combine(logDir, "voicewink-.log"),
                 rollingInterval: RollingInterval.Day,
                 // 14, not 7 (owner decision 2026-08-20, for PST-14). This is a FILE COUNT, and
@@ -219,7 +220,8 @@ public partial class App : Application, Services.IAppLifetime
                 // and worth re-checking if that list is ever revised. Erasure covers this log
                 // either way (DataErasureService closes the sink and deletes the Logs directory).
                 retainedFileCountLimit: 14,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
+                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}",
+                hooks: new Helpers.VerifiedLogFileHooks());
         // Read once, so the flag the Error budgets consult describes exactly the logger built here.
         // It is PUBLISHED by each caller only after Log.Logger holds this logger (Codex verify r1):
         // set here, a report racing the gap would be counted against the old, closed logger.
@@ -250,17 +252,19 @@ public partial class App : Application, Services.IAppLifetime
         Helpers.SentrySinkState.Attached = false;
         Log.CloseAndFlush();
 
-        if (Directory.Exists(LogDirectory))
+        // REL-19: never walk a redirected Logs folder, and delete only files that resolve inside it.
+        if (!Helpers.VerifiedFileAccess.IsReparsePointOrUnreadable(LogDirectory))
         {
             foreach (var file in Directory.GetFiles(LogDirectory, "*.log"))
             {
-                try { File.Delete(file); }
+                try { if (Helpers.VerifiedFileAccess.IsVerifiedUnder(file, LogDirectory)) File.Delete(file); }
                 catch { /* best effort */ }
             }
         }
 
         Log.Logger = BuildLoggerConfiguration().CreateLogger();
         PublishSentrySinkState();
+        Helpers.VerifiedLogFileHooks.ReportRefusal();
     }
 
     /// <summary>
@@ -279,6 +283,7 @@ public partial class App : Application, Services.IAppLifetime
         Log.CloseAndFlush();
         Log.Logger = BuildLoggerConfiguration().CreateLogger();
         PublishSentrySinkState();
+        Helpers.VerifiedLogFileHooks.ReportRefusal();
     }
 
     public App()
@@ -345,6 +350,7 @@ public partial class App : Application, Services.IAppLifetime
         Helpers.LogLevelControl.Apply(Helpers.VerboseLoggingReader.Read(DefaultSettingsPath));
         Log.Logger = BuildLoggerConfiguration().CreateLogger();
         PublishSentrySinkState();
+        Helpers.VerifiedLogFileHooks.ReportRefusal();
 
         // INS-4: registered AFTER the logger is configured, deliberately. A Listen failure logs a
         // Warning, and above this line Serilog's default sink is silent — so the one diagnostic
@@ -454,6 +460,7 @@ public partial class App : Application, Services.IAppLifetime
         // change there, so this instance reads the fresh state).
         var marker = new GpuWarmupMarker(
             GpuWarmupMarker.DefaultPath, GpuWarmupMarker.CurrentAppVersion(), GpuWarmupMarker.CurrentDriverSignature());
+        marker.AdoptCarriedWhisperPin(Helpers.RestartHandoff.CarriedWhisperPin); // TRN-66: no-op when the pre-boot instance saved it
 
         // TRN-50: the golden clip the warm decodes judge. Loaded ONCE, lazily, on the first warm-up
         // that asks (a 120 KB read off the startup path); absent → one Information line and every
@@ -521,8 +528,13 @@ public partial class App : Application, Services.IAppLifetime
             // reference. Read as two properties they were two live reads, and a child swap between
             // them paired Gpu with a null name — the page then fell back to the persisted warm-up
             // adapter and named it live.
-            var parakeetEvidence = Services!.GetService<ParakeetServerProcess>()?.GetLiveGpuEvidence()
-                ?? (IsGpu: false, Name: (string?)null);
+            var parakeet = Services!.GetService<ParakeetServerProcess>();
+            var parakeetEvidence = parakeet?.GetLiveGpuEvidence() ?? (IsGpu: false, Name: (string?)null);
+            // UI-13: the session latches only ever move toward CPU, so a true reading cannot go stale.
+            var everyEngineCpu = Helpers.LocalComputeSnapshot.EveryEngineCpu(
+                Helpers.WhisperBackendLog.CpuForSession(),
+                parakeet?.LaunchMode,
+                Services!.GetService<global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine>()?.RunsOnProcessor);
             return new Helpers.LocalComputeSnapshot(
             Whisper: Helpers.WhisperBackendLog.ResolvedCompute(),
             // TRN-64 PR 2 (Codex diff r1 Blocker): the child's OWN device evidence, not its launch
@@ -538,7 +550,8 @@ public partial class App : Application, Services.IAppLifetime
             // on, and the resident child's own resolved row — never the warm-up child's persisted name
             // alone (the two children pick independently since TRN-68).
             WhisperGpuName: Helpers.WhisperBackendLog.ObservedGpuName,
-            ParakeetGpuName: parakeetEvidence.Name);
+            ParakeetGpuName: parakeetEvidence.Name,
+            EveryEngineCpuForSession: everyEngineCpu);
         });
 
         // 2026-10-03: this PC's measured speech-model speeds, and the one check that measures each
@@ -617,6 +630,8 @@ public partial class App : Application, Services.IAppLifetime
                 "Display driver changed since the GPU self-test last ran (now {DriverSignature}) - the stored self-test results no longer apply; each engine re-tests when GPU acceleration lets it (TRN-63)",
                 GpuWarmupMarker.CurrentDriverSignature());
         }
+        // TRN-66: a pin a restarting predecessor could not save rides the handoff; adopt it first.
+        selfTestMarker.AdoptCarriedWhisperPin(Helpers.RestartHandoff.CarriedWhisperPin);
         var whisperSelfTest = selfTestMarker.ReadVerdict(Helpers.GpuSelfTestEngine.Whisper);
         var parakeetSelfTest = selfTestMarker.ReadVerdict(Helpers.GpuSelfTestEngine.Parakeet);
         // TRN-64: the predicate is PinsCpu — Fail, Inconclusive (a self-test that never finished on
@@ -665,6 +680,7 @@ public partial class App : Application, Services.IAppLifetime
         services.AddSingleton<SettingsService>();
         services.AddSingleton<Services.Legal.LegalAcceptanceService>();
         services.AddSingleton<DebugHeartbeat>();
+        services.AddSingleton<Services.Input.HotkeyEventTrace>();
         services.AddSingleton<PasteDeliveryVerifier>();
         // Factory (not AddSingleton<ClipboardService>()) because the verifier seam is on
         // an INTERNAL constructor — PasteDeliveryVerifier is internal, so it cannot ride
@@ -721,7 +737,8 @@ public partial class App : Application, Services.IAppLifetime
             sp.GetRequiredService<Services.Maintenance.IMaintenanceGate>(),
             sp.GetRequiredService<Services.IAppLifetime>(),
             sp.GetRequiredService<Helpers.LauncherDiscovery>(),
-            () => sp.GetRequiredService<Services.Updates.IUpdateService>().IsApplyInFlight));
+            () => sp.GetRequiredService<Services.Updates.IUpdateService>().IsApplyInFlight,
+            () => GpuWarmup.Instance.WhisperPinToCarry));
 
         // Maintenance status sources — each constructor calls gate.Register and
         // holds the disposable for app lifetime. Routed through
@@ -1278,7 +1295,7 @@ public partial class App : Application, Services.IAppLifetime
                 // so during onboarding or a stale-acceptance modal the tray icon doesn't
                 // exist yet — closing would otherwise strand the app hidden with no way to
                 // restore the window.
-                if (!_isQuitting && _trayIconReady)
+                if (!_isQuitting && TrayIconReady)
                 {
                     e.Handled = true;
                     var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow);
@@ -1288,7 +1305,7 @@ public partial class App : Application, Services.IAppLifetime
                 }
 
                 Log.Information("Main window closed (tray ready: {TrayReady}, quitting: {Quitting})",
-                    _trayIconReady, _isQuitting);
+                    TrayIconReady, _isQuitting);
                 Cleanup();
                 Environment.Exit(0);
             };
@@ -1368,9 +1385,15 @@ public partial class App : Application, Services.IAppLifetime
                         // No prompt-title suffix for image generation: the image description is
                         // already shown in the dialog body, and an image redo can fall back to the
                         // active TEXT prompt ("Improve Transcription"), meaningless here.
-                        return await ShowEnhancementOptionsDialogAsync(
-                            root, isImageGeneration: true, pickerContext, "Generate Image", "Generate", ct);
+                        // UI-5: waits while an About-page dialog holds the window's one dialog slot.
+                        using (await Helpers.DialogLease.MainWindow.AcquireAsync(ct))
+                            return await ShowEnhancementOptionsDialogAsync(
+                                root, isImageGeneration: true, pickerContext, "Generate Image", "Generate", ct);
                     }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    return null; // Stop pressed while waiting for the dialog slot — the cancel path
                 }
                 catch (Exception ex)
                 {
@@ -1410,7 +1433,8 @@ public partial class App : Application, Services.IAppLifetime
                         {
                             XamlRoot = root.XamlRoot,
                         };
-                        await dialog.ShowAsync();
+                        using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
+                            await dialog.ShowAsync();
                         ReleasePickerForeground();
                         return true;
                     }
@@ -1466,7 +1490,8 @@ public partial class App : Application, Services.IAppLifetime
                         {
                             XamlRoot = root.XamlRoot,
                         };
-                        result = await dialog.ShowAsync();
+                        using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
+                            result = await dialog.ShowAsync();
                         // Released here rather than only in the finally so the foreground goes back
                         // the moment the dialog closes.
                         ReleasePickerForeground();
@@ -1532,8 +1557,9 @@ public partial class App : Application, Services.IAppLifetime
                         var primaryText = isImageGeneration && capturedContext.IsNewGeneration
                             ? "Generate"
                             : "Run";
-                        selection = await ShowEnhancementOptionsDialogAsync(
-                            root, isImageGeneration, capturedContext, title, primaryText);
+                        using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
+                            selection = await ShowEnhancementOptionsDialogAsync(
+                                root, isImageGeneration, capturedContext, title, primaryText);
                     }
                     ReleasePickerForeground();
 
@@ -1668,7 +1694,7 @@ public partial class App : Application, Services.IAppLifetime
                 // LGL-1 / Codex round-2: also gate on tray-icon readiness — a
                 // tray-create failure mid-StartGatedRuntimeServices must not
                 // strand the user with no way back to the window.
-                if (startMinimized && _trayIconReady)
+                if (startMinimized && TrayIconReady)
                 {
                     var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow);
                     Helpers.NativeInterop.ShowWindow(hwnd, Helpers.NativeInterop.SW_HIDE);
@@ -2267,10 +2293,10 @@ public partial class App : Application, Services.IAppLifetime
     private void OnPillHideRequested(PillHandle handle)
         => RunOnMiniRecorderDispatcher(() =>
         {
-            if (!PillHidePolicy.ShouldAcceptHide(_trayIconReady, _isQuitting))
+            if (!PillHidePolicy.ShouldAcceptHide(TrayIconReady, _isQuitting))
             {
                 Log.Debug("MiniRecorder pill hide refused (tray ready: {TrayReady}, quitting: {Quitting})",
-                    _trayIconReady, _isQuitting);
+                    TrayIconReady, _isQuitting);
                 return;
             }
             if (_pillController?.HideCurrent(handle) == true)
@@ -2621,6 +2647,10 @@ public partial class App : Application, Services.IAppLifetime
             if (_isQuitting) return;
             if (_mainWindow?.Content is not FrameworkElement root || root.XamlRoot is null) return;
 
+            // UI-5: a picker already up defers the dialog to the next launch — the marker is not advanced.
+            using var slot = Helpers.DialogLease.MainWindow.TryAcquire("Post-update What's new");
+            if (slot is null) return;
+
             var dialog = new Views.Dialogs.WhatsNewDialog(entries, $"VoiceWink was updated to v{current}.")
             {
                 XamlRoot = root.XamlRoot,
@@ -2835,6 +2865,8 @@ public partial class App : Application, Services.IAppLifetime
 
         // Start debug heartbeat (only runs when verbose logging is enabled in Settings)
         Services.GetRequiredService<DebugHeartbeat>().Start(_mainWindow.DispatcherQueue);
+        // HKY-9: before the hook starts, so its first HookEnabled re-installs the trace ahead of it.
+        Services.GetRequiredService<Services.Input.HotkeyEventTrace>().Start();
 
         _ = _hotkeyService.StartAsync(_mainWindow.DispatcherQueue).ContinueWith(t =>
         {
@@ -3066,13 +3098,13 @@ public partial class App : Application, Services.IAppLifetime
                 {
                     // Explicit flow: confirmed Minimized → read the live "Minimize to Tray"
                     // preference → require BOTH the user's opt-in AND a ready tray icon. The
-                    // _trayIconReady operand is MANDATORY (LGL-1 / Codex round-2): during
+                    // TrayIconReady operand is MANDATORY (LGL-1 / Codex round-2): during
                     // onboarding or a stale-acceptance modal the tray icon isn't registered yet,
                     // so hiding would strand the window with no way to restore it — leave it
                     // minimized to the taskbar. When the preference is OFF, minimize also stays a
                     // normal taskbar minimize (owner request 2026-07-22).
                     var minimizeToTray = settings.GetBool(AppDefaults.MinimizeToTray, true);
-                    if (!Helpers.WindowMinimizePolicy.ShouldHideToTray(_trayIconReady, minimizeToTray))
+                    if (!Helpers.WindowMinimizePolicy.ShouldHideToTray(TrayIconReady, minimizeToTray))
                         return;
 
                     Helpers.NativeInterop.ShowWindow(hwnd, Helpers.NativeInterop.SW_HIDE);
@@ -5109,26 +5141,19 @@ public partial class App : Application, Services.IAppLifetime
                 }
             });
 
-            // ForceCreate registers the icon with the Windows shell notification area.
-            // Without this call the icon never appears in the system tray.
-            _trayIcon.ForceCreate();
-            // Only flip "ready" AFTER ForceCreate succeeds — otherwise a thrown
-            // ForceCreate would leave _trayIcon non-null pointing at an icon that
-            // was never registered, and hide-to-tray would strand the app.
-            _trayIconReady = true;
-
-            Log.Information("System tray icon set up");
+            // UI-26: a refused add keeps the icon, so a retry or H.NotifyIcon's TaskbarCreated handler adds it later.
+            var icon = _trayIcon;
+            // UI-26: false, because the library's default sets Efficiency Mode and IDLE priority, which the app opts out of.
+            _ = TrayIconRegistration.RegisterAsync(
+                () => icon.ForceCreate(enablesEfficiencyMode: false), Task.Delay, _trayIconRetryCancel.Token);
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to set up tray icon");
-            // Tray creation failed — discard the half-built icon so the readiness
-            // check stays definitively false. The app continues without a tray
-            // icon; the user can close the window via Alt+F4 or the title bar X
-            // (which now exits cleanly because _trayIconReady is false).
+            // Building the icon failed — discard it so the readiness check stays false. The app
+            // continues without a tray icon; closing the window exits cleanly.
             try { _trayIcon?.Dispose(); } catch { /* best-effort */ }
             _trayIcon = null;
-            _trayIconReady = false;
         }
     }
 
@@ -5300,6 +5325,7 @@ public partial class App : Application, Services.IAppLifetime
         // on a disposed LicenseService would only log, but the loop must not outlive the app.
         _licenseRevalidation?.Stop();
         _hotkeyService?.Dispose();
+        _trayIconRetryCancel.Cancel();
         _trayIcon?.Dispose();
 
         // TRN-49: stop the GPU warm-up before the engines it warms are torn down — a warm

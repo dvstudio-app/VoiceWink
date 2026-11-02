@@ -12,32 +12,29 @@ namespace VoiceWink.Services.System;
 /// path (REL-3) happens at bundle time via <see cref="RedactString"/>.
 ///
 /// Redaction happens at two levels:
-///   1. <b>Property name</b> — any scalar property whose name is in
+///   1. <b>Property name</b> — any property whose name is in
 ///      <see cref="RedactedPropertyNames"/> is replaced with <c>&lt;REDACTED&gt;</c>
-///      regardless of value. Covers cases like <c>Log.Information("{ApiKey}", key)</c>.
-///   2. <b>Value pattern</b> — scalar string properties are regex-scanned for
+///      regardless of value or shape. Covers cases like <c>Log.Information("{ApiKey}", key)</c>.
+///   2. <b>Value pattern</b> — every string in the value is regex-scanned for
 ///      known key shapes (Anthropic / OpenAI / OpenRouter / Groq / ElevenLabs / Gemini),
-///      auth headers, and LemonSqueezy license key format.
+///      auth headers, and LemonSqueezy license key format. Since REL-33 that includes the
+///      elements of a collection, the fields of a <c>{@}</c> object (the name layer applies to
+///      them too), the keys and values of a map, and <c>Uri</c>/<c>Guid</c> scalars.
 ///
 /// Note: string-concatenated log calls (<c>Log.Information("Key=" + key)</c>) bake
 /// the secret into the message template, which Serilog treats as immutable. The
 /// project-wide audit sweep (REL-2) flags those call sites — do NOT rely on the
 /// enricher alone. Use structured logging (<c>{PropertyName}</c>).
 ///
-/// <b>Known limitation — non-scalar property values.</b> Values arriving as
-/// <see cref="StructureValue"/> / <see cref="SequenceValue"/> / <see cref="DictionaryValue"/>
-/// are <i>not</i> recursed into: the value arm below matches only
-/// <see cref="ScalarValue"/> holding a <see cref="string"/>.
-/// <b>A <c>{@}</c> audit is NOT a sufficient regression check for this</b>, and saying so is the
-/// correction — an ordinary <c>{Values}</c> collection property becomes a
-/// <see cref="SequenceValue"/> with no destructuring operator anywhere, so the grep that used to
-/// justify this paragraph ("zero <c>{@}</c> sites") was answering a narrower question than the one
-/// that matters (REL-31 self-review). The NAME layer still covers any allowlisted property
-/// whatever its value shape, which is what keeps the gap benign: the exposure needs a
-/// NON-sensitive name carrying user data in a collection at Error or above, and no such site
-/// exists today. Tracked as REL-33, whose fix is recursion here — but note that alone does not
-/// protect the REL-3 support zip or the LGL-2 GDPR export, which scrub already-RENDERED lines
-/// where the collection has been formatted into text; those need an emit-time contract (Codex).
+/// <b>Collections and objects reach two different kinds of surface (REL-33).</b> On the Sentry
+/// path this enricher walks every value shape, because <c>Sentry.Serilog</c> copies the property
+/// tree into event <c>Extra</c> — and a bare <c>{Values}</c> collection is a
+/// <see cref="SequenceValue"/> with no <c>{@}</c> anywhere. The REL-3 support zip and the LGL-2
+/// GDPR export never see this enricher: they scrub RENDERED lines, where a collection is just
+/// text and gets the same patterns as a string, but where no NAME survives. So user data in a
+/// collection or object follows the same emit-time contract as a string (SEC-3/SEC-4): joined
+/// into a distinctive token's value, LAST, through <c>LogValueSanitizer.SingleLine</c> — never
+/// logged as a bare <c>{Values}</c> collection or a <c>{@Obj}</c> destructure.
 ///
 /// The consent audit log (<c>consent.log</c>) is written directly with
 /// <c>File.AppendAllLines</c> and bypasses Serilog — so GDPR-defensible acceptance
@@ -397,8 +394,8 @@ public sealed class LogRedactionEnricher : ILogEventEnricher
         // can return arbitrary prose in it. Redacted by NAME rather than by allowlisting
         // {ErrorMessage}, which would blind all 21 of its emit sites (7 source files) to close one
         // channel -- nearly all of them ordinary local exceptions worth keeping in Sentry.
-        // Never {@}-destructure a property of this name: this enricher does not recurse (see the
-        // known-limitation note above), so a nested value would pass through unscrubbed.
+        // A {@}-destructured value under this name is dropped whole like a string (the name layer
+        // ignores shape); the rendered-line surfaces still need it kept out of a collection (REL-33).
         "reasonphrase",
         "cf-access-client-id", "cf-access-client-secret",
         "cfaccessclientid", "cfaccessclientsecret",
@@ -412,26 +409,103 @@ public sealed class LogRedactionEnricher : ILogEventEnricher
 
         foreach (var kvp in logEvent.Properties)
         {
-            LogEventProperty? replacement = null;
+            var redacted = RedactedPropertyNames.Contains(kvp.Key)
+                ? new ScalarValue(RedactedMarker)
+                : RedactValue(kvp.Value);
 
-            if (RedactedPropertyNames.Contains(kvp.Key))
-            {
-                replacement = new LogEventProperty(kvp.Key, new ScalarValue(RedactedMarker));
-            }
-            else if (kvp.Value is ScalarValue sv && sv.Value is string s && !string.IsNullOrEmpty(s))
-            {
-                var redacted = RedactString(s);
-                if (!ReferenceEquals(redacted, s))
-                    replacement = new LogEventProperty(kvp.Key, new ScalarValue(redacted));
-            }
-
-            if (replacement != null)
-                (replacements ??= new List<LogEventProperty>()).Add(replacement);
+            if (!ReferenceEquals(redacted, kvp.Value))
+                (replacements ??= new List<LogEventProperty>()).Add(new LogEventProperty(kvp.Key, redacted));
         }
 
         if (replacements != null)
             foreach (var r in replacements)
                 logEvent.AddOrUpdateProperty(r);
+    }
+
+    /// <summary>REL-33: the value layer over every shape; same instance when clean, and never throws (a throwing enricher lets the event out unenriched).</summary>
+    private static LogEventPropertyValue RedactValue(LogEventPropertyValue value)
+    {
+        switch (value)
+        {
+            case ScalarValue sv:
+                return RedactScalar(sv);
+
+            case SequenceValue seq:
+            {
+                LogEventPropertyValue[]? changed = null;
+                for (var i = 0; i < seq.Elements.Count; i++)
+                {
+                    var r = RedactValue(seq.Elements[i]);
+                    if (!ReferenceEquals(r, seq.Elements[i]))
+                        (changed ??= seq.Elements.ToArray())[i] = r;
+                }
+                return changed == null ? value : new SequenceValue(changed);
+            }
+
+            case StructureValue st:
+            {
+                LogEventProperty[]? changed = null;
+                for (var i = 0; i < st.Properties.Count; i++)
+                {
+                    var p = st.Properties[i];
+                    var r = RedactedPropertyNames.Contains(p.Name) ? new ScalarValue(RedactedMarker) : RedactValue(p.Value);
+                    if (!ReferenceEquals(r, p.Value))
+                        (changed ??= st.Properties.ToArray())[i] = new LogEventProperty(p.Name, r);
+                }
+                return changed == null ? value : new StructureValue(changed, st.TypeTag);
+            }
+
+            case DictionaryValue dict:
+            {
+                var entries = new List<KeyValuePair<ScalarValue, LogEventPropertyValue>>(dict.Elements.Count);
+                var keys = new HashSet<ScalarValue>();
+                var anyChanged = false;
+                foreach (var (key, element) in dict.Elements)
+                {
+                    var k = RedactScalar(key);
+                    var v = key.Value is string name && RedactedPropertyNames.Contains(name)
+                        ? new ScalarValue(RedactedMarker)
+                        : RedactValue(element);
+                    // DictionaryValue throws on a duplicate key, so a scrub collision drops the whole map.
+                    if (!keys.Add(k))
+                        return new ScalarValue(RedactedMarker);
+                    anyChanged |= !ReferenceEquals(k, key) || !ReferenceEquals(v, element);
+                    entries.Add(new KeyValuePair<ScalarValue, LogEventPropertyValue>(k, v));
+                }
+                return anyChanged ? new DictionaryValue(entries) : value;
+            }
+
+            default:
+                // Serilog produces only the four shapes above; an unknown one is not inspectable.
+                return new ScalarValue(RedactedMarker);
+        }
+    }
+
+    private static ScalarValue RedactScalar(ScalarValue sv)
+    {
+        string text;
+        switch (sv.Value)
+        {
+            case null:
+                return sv;
+            case string s:
+                text = s;
+                break;
+            // Serilog keeps these raw; their text can carry a query string or match the UUID pattern.
+            case Guid:
+            // A Uri subclass may override ToString, so only the framework type is turned into text.
+            case Uri when sv.Value.GetType() == typeof(Uri):
+                text = sv.Value.ToString()!;
+                break;
+            case Enum or decimal or DateTime or DateTimeOffset or TimeSpan or DateOnly or TimeOnly:
+                return sv;
+            default:
+                // Primitives cannot carry a pattern; any other type would run code we do not own to become text.
+                return sv.Value.GetType().IsPrimitive ? sv : new ScalarValue(RedactedMarker);
+        }
+
+        var redacted = RedactString(text);
+        return ReferenceEquals(redacted, text) ? sv : new ScalarValue(redacted);
     }
 
     /// <summary>

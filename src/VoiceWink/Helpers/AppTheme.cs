@@ -1084,23 +1084,23 @@ public static class AppTheme
     };
 
     /// <summary>A plain message with an OK button. Does nothing when the page has no
-    /// <see cref="XamlRoot"/> any more (it left while a picker or an import ran), and never
-    /// throws: WinUI refuses a second open dialog on one root, and a throw here — often the
-    /// last line of an async-void click handler — would end the app or report a finished
-    /// export as failed.</summary>
+    /// <see cref="XamlRoot"/> any more (it left while a picker or an import ran) or while another
+    /// dialog holds the window's slot (UI-5b), and never throws: a throw here — often the last
+    /// line of an async-void click handler — would end the app or report a finished export as
+    /// failed.</summary>
     public static async Task ShowMessageAsync(XamlRoot? xamlRoot, string title, string message)
     {
         if (xamlRoot is null) return;
         try
         {
-            await new ContentDialog
+            await DialogLease.MainWindow.ShowAsync(new ContentDialog
             {
                 Title = title,
                 Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
                 CloseButtonText = "OK",
                 XamlRoot = xamlRoot,
                 RequestedTheme = ElementTheme,
-            }.ShowAsync();
+            }, title);
         }
         catch (Exception ex)
         {

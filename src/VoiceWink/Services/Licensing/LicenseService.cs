@@ -102,6 +102,9 @@ public sealed class LicenseService
     // targeted the OLD key, and erasing the new key's local state would sign the user
     // out of a license the server still considers active (Codex diff round 3).
     private int _stateEpoch;
+
+    /// <summary>Advances on every durable activation; a view records it to prove it is current (LIC-9).</summary>
+    internal int ActivationEpoch => Volatile.Read(ref _stateEpoch);
     // Non-zero while the stored key's blob is failing to decrypt and that failure has been
     // reported (LIC-31): 1 = reported with the Sentry sink detached, 2 = reported with it attached.
     // Interlocked: GetStoredLicenseKey runs concurrently from the hotkey gate, the page ticks and
@@ -500,8 +503,7 @@ public sealed class LicenseService
             if (ok)
             {
                 SetLastValidatedUtc(now);
-                if (limit.HasValue) _settings.SetInt(AppDefaults.LicenseActivationLimit, limit.Value);
-                if (usage.HasValue) _settings.SetInt(AppDefaults.LicenseActivationUsage, usage.Value);
+                PersistActivationCounts(limit, usage, newContract: false);
                 // Server now says the license is valid — clear any previously-persisted
                 // "disabled" flag. Without this, a transient LS incident that briefly
                 // returned status:disabled would sticky-lock the user on DisabledReadOnly
@@ -591,7 +593,8 @@ public sealed class LicenseService
     /// Exchange a license key for an activated instance on this machine. On success,
     /// persists the key (DPAPI-encrypted), instance id, fingerprint, and timestamp.
     /// </summary>
-    public async Task<LicenseActivationResult> ActivateAsync(string licenseKey, CancellationToken ct = default)
+    /// <param name="expectedActivationEpoch">The caller's view's <see cref="ActivationEpoch"/>; a newer one refuses with <c>StaleView</c> before any request (LIC-9).</param>
+    public async Task<LicenseActivationResult> ActivateAsync(string licenseKey, CancellationToken ct = default, int? expectedActivationEpoch = null)
     {
         if (string.IsNullOrWhiteSpace(licenseKey))
             return new LicenseActivationResult(false, "License key is required.", LicenseStatus.Unlicensed);
@@ -612,6 +615,13 @@ public sealed class LicenseService
             return new LicenseActivationResult(false,
                 "An activation is already in progress on this device. Wait for it to finish before trying again.",
                 GetCachedStatus());
+        }
+
+        // Inside the flight, so a view drawn before the last commit cannot post a second seat (LIC-9).
+        if (expectedActivationEpoch.HasValue && expectedActivationEpoch.Value != ActivationEpoch)
+        {
+            Logger.Information("License activation refused: the view predates a newer activation");
+            return new LicenseActivationResult(false, null, GetCachedStatus(), StaleView: true);
         }
 
         var trimmedKey = licenseKey.Trim();
@@ -663,7 +673,7 @@ public sealed class LicenseService
             {
                 // ONLY 4xx is a clean refusal — a rejected request creates no instance. 5xx may
                 // have created one and then failed to answer, and anything else non-success
-                // (3xx that survived redirect handling, 1xx) tells us nothing about what the
+                // (any 3xx, since the client follows no redirects (LIC-34), or 1xx) tells us nothing about what the
                 // server did, so both are ambiguous.
                 var isClientRefusal = (int)resp.StatusCode >= 400 && (int)resp.StatusCode < 500;
                 if (!isClientRefusal)
@@ -695,7 +705,8 @@ public sealed class LicenseService
                 var httpError = errText ?? $"Activation failed (HTTP {(int)resp.StatusCode}).";
                 Logger.Information("License activation refused: {Error}", httpError);
                 return new LicenseActivationResult(false, httpError, LicenseStatus.Invalid,
-                    httpError.Contains(ActivationLimitErrorMarker, StringComparison.OrdinalIgnoreCase));
+                    httpError.Contains(ActivationLimitErrorMarker, StringComparison.OrdinalIgnoreCase),
+                    ErrorFromServer: errText is not null);
             }
 
             // 2xx from here. ResponseHeadersRead moves the content read outside
@@ -762,13 +773,15 @@ public sealed class LicenseService
             // A 2xx that explicitly says activated:false — LS's other refusal shape.
             if (!activatedFlag.Value)
             {
-                var err = root.TryGetProperty("error", out var eEl) && eEl.ValueKind == JsonValueKind.String
+                var serverError = root.TryGetProperty("error", out var eEl) && eEl.ValueKind == JsonValueKind.String;
+                var err = serverError
                     ? eEl.GetString()
                     : $"Activation failed (HTTP {(int)resp.StatusCode}).";
                 Logger.Information("License activation refused: {Error}", err);
                 var limitReached = err != null
                     && err.Contains(ActivationLimitErrorMarker, StringComparison.OrdinalIgnoreCase);
-                return new LicenseActivationResult(false, err, LicenseStatus.Invalid, limitReached);
+                return new LicenseActivationResult(false, err, LicenseStatus.Invalid, limitReached,
+                    ErrorFromServer: serverError);
             }
 
             var identity = ParseLicenseIdentity(root);
@@ -940,12 +953,8 @@ public sealed class LicenseService
                     _settings.SetString(AppDefaults.LicenseValidationRefusedUtc, "");
                     _settings.SetString(AppDefaults.LicenseBindingProofDigest,
                         bindingVerdict == LicenseBindingVerdict.Match ? _identityManifest.PolicyDigest : "");
-                    // Only overwrite counts when LS actually returned them. A response that omits
-                    // these fields (non-standard LS product shape, future API change) should leave
-                    // any prior cached values intact rather than zeroing the display until the
-                    // next CheckAsync reconciles. Symmetric with the guard in CheckAsync above.
-                    if (limit.HasValue) _settings.SetInt(AppDefaults.LicenseActivationLimit, limit.Value);
-                    if (usage.HasValue) _settings.SetInt(AppDefaults.LicenseActivationUsage, usage.Value);
+                    // A new key is a new contract: counts come from THIS response only, never a previous key's (LIC-17).
+                    PersistActivationCounts(limit, usage, newContract: true);
 
                     // expires_at reset rule (LIC-4): a new key is a new contract — persist the
                     // expiry the server asserts for THIS key, and clear any leftover from a
@@ -968,16 +977,8 @@ public sealed class LicenseService
                     // writes → flush is one atomic commit. Lock ordering is _stateWriteLock →
                     // _saveIoLock; SettingsService never calls back into LicenseService, so no
                     // inverse acquisition exists.
-                    _settings.FlushOrThrow();
-
-                    // FlushOrThrow returns SILENTLY when persistence is suppressed (the
-                    // data-erasure quiesce, which a failed erasure pass can leave engaged for
-                    // the rest of the session). Reporting success off it would consume an LS
-                    // seat, tell the user they're activated, and lose the state at restart —
-                    // so treat it as the persist failure it is and let the rollback +
-                    // compensating release below run (Codex round 13; the same hole was fixed
-                    // for deactivation in round 12 and this side was missed).
-                    if (_settings.IsPersistenceSuppressed)
+                    // Asked inside the flush's lock: a suppression after the move must not release a seat already on disk (LIC-9).
+                    if (!_settings.TryFlushOrThrow())
                         throw new InvalidOperationException(
                             "Settings persistence is suppressed, so the activation could not be saved.");
 
@@ -1038,9 +1039,6 @@ public sealed class LicenseService
             Logger.Information("License activated (instance: {Instance}, usage: {Usage}/{Limit}, expires: {Expires})",
                 instanceId, usage ?? 0, limit ?? 0,
                 expiry.Kind == KeyExpiryKind.Value ? expiry.Value.ToString("O") : "never");
-            // A licence is now durably activated on this device: any earlier seat warning is
-            // resolved as far as the user is concerned.
-            ClearSeatNotice();
             return new LicenseActivationResult(true, null, statusAfterPersist);
         }
         // Post-send failure taxonomy (Codex diff review round 5). LemonSqueezy's activate is
@@ -1192,7 +1190,8 @@ public sealed class LicenseService
     /// when the user picks "Start free trial" (onboarding or the License page). Idempotent —
     /// repeated calls do not extend the window.
     /// </summary>
-    public void StartFirstRunGrace()
+    /// <returns><see cref="TrialStartOutcome.PersistenceFailed"/> when no store the next launch reads took the start (LIC-12).</returns>
+    public TrialStartOutcome StartFirstRunGrace()
     {
         // The window's own lock, never _stateWriteLock (LIC-21 PR A): the trial start left
         // LicenseStateStringKeys and both clear sites, so the activation persist block and its
@@ -1202,8 +1201,10 @@ public sealed class LicenseService
         // means a window exists, Active or Ended — an Ended one is never reset; a corrupt settings
         // stamp reads as never started everywhere, so a real start overwrites it (the same polarity
         // as every reader, self-review lens A 2026-09-03).
-        if (_trialWindow.Start(_clock()))
+        var outcome = _trialWindow.Start(_clock());
+        if (outcome == TrialStartOutcome.Started)
             Services.Updates.InstallSourceReporter.MarkTrialStartDue(_settings);
+        return outcome;
     }
 
     /// <summary>Returns a masked version of the stored key, e.g. <c>XXXX-****-****-ABCD</c>.</summary>
@@ -1254,14 +1255,24 @@ public sealed class LicenseService
     /// is skipped: when the cache is stale (&gt;24h) we fall directly through to the
     /// OfflineGrace / GraceExpired decision rather than trying to talk to the server.</para>
     /// </summary>
-    public LicenseStatus GetCachedStatus()
+    public LicenseStatus GetCachedStatus() => GetCachedSnapshot().Status;
+
+    /// <summary>
+    /// <see cref="GetCachedStatus"/> plus the free trial's remaining time and whether it has ended,
+    /// all three from ONE clock sample and ONE trial-window read (LIC-14): three separate reads could
+    /// straddle the window's end and show the trial panel with no time left while the gate blocked.
+    /// With no stored key, <c>Status == FirstRunGrace</c> exactly when <c>TrialRemaining</c> is set.
+    /// </summary>
+    public (LicenseStatus Status, TimeSpan? TrialRemaining, bool TrialEnded) GetCachedSnapshot()
     {
         // The device was seen running (LIC-21 PR A): the trial window's last-seen advances on every
         // status read, key or no key — the per-hotkey path included. This is the UNLOCKED entry
         // point; the classification itself is lock-free and shared with the callers that run it
         // inside _stateWriteLock, which must never observe (the two locks are never nested).
-        _trialWindow.Observe(_clock());
-        return ClassifyCachedStatus();
+        var now = _clock();
+        _trialWindow.Observe(now);
+        var grace = ReadFirstRunGraceState(now);
+        return (ClassifyCachedStatus(now, grace.State), grace.Remaining, grace.State == FirstRunGraceState.Ended);
     }
 
     /// <summary>
@@ -1271,9 +1282,15 @@ public sealed class LicenseService
     /// </summary>
     private LicenseStatus ClassifyCachedStatus()
     {
+        var now = _clock();
+        return ClassifyCachedStatus(now, ReadFirstRunGraceState(now).State);
+    }
+
+    private LicenseStatus ClassifyCachedStatus(DateTimeOffset now, FirstRunGraceState grace)
+    {
         var storedKey = GetStoredLicenseKey();
         if (string.IsNullOrEmpty(storedKey))
-            return IsInFirstRunGrace() ? LicenseStatus.FirstRunGrace : LicenseStatus.Unlicensed;
+            return grace == FirstRunGraceState.Active ? LicenseStatus.FirstRunGrace : LicenseStatus.Unlicensed;
         if (!FingerprintMatchesStored())
             return LicenseStatus.Invalid;
         // Disabled signal persisted by CheckAsync (LIC-2a) — surface DisabledReadOnly at
@@ -1293,7 +1310,7 @@ public sealed class LicenseService
         // Expired trial key (LIC-4) — the hotkey gate and startup routing must see this
         // without a network call. Mirrors CheckAsync's decision-tree position (after the
         // disabled flag, before any cache trust) so the two classifications can't diverge.
-        if (HasExpiredPersistedExpiry())
+        if (HasExpiredPersistedExpiry(now))
             return LicenseStatus.Invalid;
         // Binding proof (LIC-4): an armed manifest grants no cache trust to a key that has
         // never matched THIS policy online. GraceExpired = "needs revalidation" — the
@@ -1302,7 +1319,6 @@ public sealed class LicenseService
             return LicenseStatus.GraceExpired;
 
         var lastValidatedUtc = GetLastValidatedUtc();
-        var now = _clock();
         if (lastValidatedUtc.HasValue && now - lastValidatedUtc.Value < RevalidationInterval)
             return LicenseStatus.Activated;
         if (lastValidatedUtc.HasValue && now - lastValidatedUtc.Value < OfflineGraceDuration)
@@ -1313,21 +1329,31 @@ public sealed class LicenseService
     /// <summary>
     /// Activation limit and current usage reported by LemonSqueezy for the stored
     /// license (LIC-6). Both are <c>null</c> when we've never observed them (pre-LIC-6
-    /// activation, or an LS response that omitted the fields). <c>(0, 0)</c> is a real
-    /// "LS said zero" value and should be treated as a contract violation by callers —
-    /// a legitimate license always has a positive limit.
+    /// activation, or an LS response that omitted the fields). Since LIC-17 a zero is never
+    /// written, but a build before it may have stored one, so callers still treat a zero as unknown.
     /// </summary>
     public (int? Limit, int? Usage) GetActivationCounts()
     {
-        // Sentinel value "-1" distinguishes "unknown" (never written) from "0" (LS
-        // contract violation). SettingsService.GetInt returns the default when the key
-        // is absent, so using -1 as the default and mapping it back to null preserves
-        // the pre-LIC-6-activation case while letting a real "0 of N" surface as itself.
-        var rawLimit = _settings.GetInt(AppDefaults.LicenseActivationLimit, -1);
-        var rawUsage = _settings.GetInt(AppDefaults.LicenseActivationUsage, -1);
-        return (
-            rawLimit < 0 ? null : rawLimit,
-            rawUsage < 0 ? null : rawUsage);
+        // -1 (also the absent-key default) is the "unknown" sentinel, mapped back to null.
+        // Under the write lock so the two reads come from one write of the pair (LIC-17).
+        lock (_stateWriteLock)
+        {
+            var rawLimit = _settings.GetInt(AppDefaults.LicenseActivationLimit, -1);
+            var rawUsage = _settings.GetInt(AppDefaults.LicenseActivationUsage, -1);
+            return (
+                rawLimit < 0 ? null : rawLimit,
+                rawUsage < 0 ? null : rawUsage);
+        }
+    }
+
+    /// <summary>LIC-17: writes limit and usage together from one response; a usage below 1 is unknown (this device is one of them).</summary>
+    /// <param name="newContract">True on activation: absent fields clear the pair. False on validate: a response without a positive limit leaves the pair as it was.</param>
+    private void PersistActivationCounts(int? limit, int? usage, bool newContract)
+    {
+        var knownLimit = limit is > 0 ? limit.Value : -1;
+        if (knownLimit < 0 && !newContract) return;
+        _settings.SetInt(AppDefaults.LicenseActivationLimit, knownLimit);
+        _settings.SetInt(AppDefaults.LicenseActivationUsage, usage is > 0 ? usage.Value : -1);
     }
 
     /// <summary>
@@ -1378,8 +1404,8 @@ public sealed class LicenseService
     /// (both are projections of <see cref="ReadFirstRunGraceState"/>), so the wizard's "already
     /// used" card and the recording gate can never disagree about the boundary: an elapsed time
     /// equal to <see cref="FirstRunGraceDuration"/> is Ended here exactly because it is not in
-    /// grace there. Each call still performs its own read — what is shared is the derivation, not
-    /// a cached snapshot.
+    /// grace there. Each call still performs its own read — a caller that needs this beside the
+    /// status takes both from <see cref="GetCachedSnapshot"/> (LIC-14).
     /// A stamp that does not parse reads as never started (<c>false</c>), never as ended — the same
     /// polarity as "not in grace": a corrupt value offers the tryout rather than refusing it.
     /// </summary>
@@ -1398,12 +1424,14 @@ public sealed class LicenseService
     /// one moment call this once and read both fields; a predicate called twice reads twice.
     /// <c>Remaining</c> is non-null only while Active.
     /// </summary>
-    private (FirstRunGraceState State, TimeSpan? Remaining) ReadFirstRunGraceState()
+    private (FirstRunGraceState State, TimeSpan? Remaining) ReadFirstRunGraceState() => ReadFirstRunGraceState(_clock());
+
+    private (FirstRunGraceState State, TimeSpan? Remaining) ReadFirstRunGraceState(DateTimeOffset now)
     {
         // Lock-free (LIC-21 PR A): the window is an immutable snapshot, the clock guard is
         // max(now, lastSeen), and no observation happens here — so this is safe from inside
         // _stateWriteLock, where ClassifyCachedStatus reaches it.
-        var (state, remaining) = _trialWindow.Read(_clock());
+        var (state, remaining) = _trialWindow.Read(now);
         return state switch
         {
             TrialWindow.State.Active => (FirstRunGraceState.Active, remaining),
@@ -1702,10 +1730,12 @@ public sealed class LicenseService
     /// have already established the stored key is non-empty — avoids a second DPAPI
     /// decrypt on the per-hotkey-press GetCachedStatus path.
     /// </summary>
-    private bool HasExpiredPersistedExpiry()
+    private bool HasExpiredPersistedExpiry() => HasExpiredPersistedExpiry(_clock());
+
+    private bool HasExpiredPersistedExpiry(DateTimeOffset now)
     {
         var expiresAt = GetKeyExpiresAt();
-        return expiresAt.HasValue && _clock() >= expiresAt.Value;
+        return expiresAt.HasValue && now >= expiresAt.Value;
     }
 
     /// <summary>
@@ -1714,7 +1744,7 @@ public sealed class LicenseService
     /// within the <c>license_key</c> object — a missing or unparseable <c>activation_limit</c>
     /// yields <c>null</c> for Limit while Usage may still return a value (and vice versa).
     /// Returns <c>(null, null)</c> only when the <c>license_key</c> object itself is missing.
-    /// Callers treat per-field <c>null</c> as "unchanged" rather than zero.
+    /// <see cref="PersistActivationCounts"/> decides what a per-field <c>null</c> does to the stored pair.
     /// <para>Uses <c>TryGetInt32</c> rather than <c>GetInt32</c> so an unexpected numeric shape
     /// (float, out-of-Int32 range) does not throw out of a successful activate/validate flow —
     /// the counts are a UX cue, not a correctness input, so a parse failure degrades gracefully.</para>
@@ -1904,33 +1934,35 @@ public sealed class LicenseService
     // Admits exactly one in-flight activation across the whole app — see ActivateAsync.
     private readonly SingleFlight _activationFlight = new();
 
-    // The last seat-critical outcome the user has not yet been shown a resolution for.
-    // Lives on the SINGLETON because the warning must outlive the transient LicenseViewModel:
-    // the messages that can be lost are exactly the ones that matter — "a seat may have been
-    // consumed", "the release wasn't confirmed" — and navigating away during a slow call
-    // destroyed the VM that held them, so the user would hit the activation limit later with
-    // no idea why (Codex round 14). In-memory only: it describes THIS session's operation, and
-    // a restart's own status routing is the honest surface after that.
-    private string? _seatNotice;
+    // On the singleton so a warning outlives the transient view that raised it; one per operation (LIC-9).
+    private readonly object _seatIncidentLock = new();
+    private SeatIncident[] _seatIncidents = [];
+    private long _nextSeatIncidentId;
 
-    /// <summary>
-    /// A seat-critical warning from an earlier operation that no longer has a live view model —
-    /// surfaced by whichever <c>LicenseViewModel</c> exists next. Null when nothing is pending.
-    /// </summary>
-    public string? SeatNotice => Volatile.Read(ref _seatNotice);
+    /// <summary>Undismissed seat warnings, oldest first; the same instance until it changes, so a tick raises no change (LIC-9).</summary>
+    public IReadOnlyList<SeatIncident> SeatIncidents => Volatile.Read(ref _seatIncidents);
 
-    /// <summary>
-    /// Record a seat-critical warning so it survives the transient view model that requested
-    /// the operation (see <see cref="SeatNotice"/>). The caller composes the copy; the service
-    /// only outlives the page.
-    /// </summary>
-    public void RememberSeatNotice(string message) => Volatile.Write(ref _seatNotice, message);
+    /// <summary>Records one operation's seat warning, never coalesced: equal messages may be two seats (LIC-9).</summary>
+    /// <returns>The new warning's id.</returns>
+    public long AddSeatIncident(string message)
+    {
+        lock (_seatIncidentLock)
+        {
+            var id = ++_nextSeatIncidentId;
+            Volatile.Write(ref _seatIncidents, [.. _seatIncidents, new SeatIncident(id, message)]);
+            return id;
+        }
+    }
 
-    /// <summary>
-    /// Dismiss the pending seat warning. Called once a view model has actually displayed it,
-    /// and by the service itself whenever a clean outcome supersedes it.
-    /// </summary>
-    public void ClearSeatNotice() => Volatile.Write(ref _seatNotice, null);
+    /// <summary>The only way a warning clears: nothing in the app can confirm its seat is free (LIC-9).</summary>
+    public void DismissSeatIncident(long id)
+    {
+        lock (_seatIncidentLock)
+        {
+            if (Array.FindIndex(_seatIncidents, i => i.Id == id) < 0) return;
+            Volatile.Write(ref _seatIncidents, Array.FindAll(_seatIncidents, i => i.Id != id));
+        }
+    }
 
     private readonly object _instanceLabelLock = new();
 
@@ -2083,10 +2115,8 @@ public sealed class LicenseService
             _settings.SetString(AppDefaults.LicenseIdentityMismatchUtc, "");
             _settings.SetString(AppDefaults.LicenseBindingMismatchDigest, "");
             _settings.SetString(AppDefaults.LicenseValidationRefusedUtc, "");
-            // Reset counts to the "unknown" sentinel (-1), not 0 — after a deactivate we
-            // have no active license and the counts are genuinely unknown. Writing 0 would
-            // let GetActivationCounts return (0, 0), which under the new nullable contract
-            // means "LS said zero" (contract violation) rather than "never observed".
+            // Reset counts to the "unknown" sentinel (-1) — after a deactivate there is no
+            // active license; -1 is what GetActivationCounts maps back to null (LIC-17).
             _settings.SetInt(AppDefaults.LicenseActivationLimit, -1);
             _settings.SetInt(AppDefaults.LicenseActivationUsage, -1);
 
@@ -2101,12 +2131,8 @@ public sealed class LicenseService
             // the server may already have released.
             try
             {
-                _settings.FlushOrThrow();
-                // FlushOrThrow ALSO returns silently when persistence is suppressed (the
-                // data-erasure quiesce), and a failed erasure pass can leave the app running
-                // in that state with settings.json still on disk. Absence of an exception is
-                // therefore not proof of a write — ask (Codex round 12).
-                if (_settings.IsPersistenceSuppressed)
+                // A suppressed flush writes nothing; asked inside the flush's lock (LIC-9).
+                if (!_settings.TryFlushOrThrow())
                 {
                     Logger.Error("Cleared license state was not written: settings persistence is suppressed");
                     return LicenseClearOutcome.PersistenceFailed;
@@ -2120,6 +2146,19 @@ public sealed class LicenseService
             }
         }
     }
+}
+
+/// <summary>What a free-trial start did (LIC-12).</summary>
+public enum TrialStartOutcome
+{
+    /// <summary>Started, and saved where the next launch reads it.</summary>
+    Started,
+
+    /// <summary>A window already existed, active or ended; nothing was written.</summary>
+    AlreadyStarted,
+
+    /// <summary>Neither the settings file nor the registry stamp took the start, so nothing was started.</summary>
+    PersistenceFailed,
 }
 
 /// <summary>What happened to this machine's local license state during a deactivation.</summary>
@@ -2164,4 +2203,11 @@ public sealed record LicenseActivationResult(
     // nothing holds an id for. The UI uses it to persist the warning past its own lifetime —
     // a transient view model would otherwise take the message to the grave when the user
     // navigates away, and they'd meet the activation limit later with no explanation.
-    bool SeatMayBeConsumed = false);
+    bool SeatMayBeConsumed = false,
+    // Refused before any request: the caller's view predates a durable activation (LIC-9).
+    bool StaleView = false,
+    // ErrorMessage is the server's own text; false keeps our messages from being reworded (LIC-16).
+    bool ErrorFromServer = false);
+
+/// <summary>An undismissed seat warning (LIC-9) — see <see cref="LicenseService.SeatIncidents"/>.</summary>
+public sealed record SeatIncident(long Id, string Message);

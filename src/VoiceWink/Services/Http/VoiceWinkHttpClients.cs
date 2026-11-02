@@ -27,7 +27,8 @@ namespace VoiceWink.Services.Http;
 /// bounded-retry + HTTP-Range-resume + stall machinery.</item>
 /// <item><c>licensing</c> — 30 s Timeout, retry handler attached but disabled
 /// per-request by LicenseService (the user-facing error must reflect the LATEST
-/// server state — do not re-enable, see CLAUDE.md).</item>
+/// server state — do not re-enable, see CLAUDE.md); connect-bounded + translated,
+/// no redirects (LIC-34).</item>
 /// </list>
 /// </summary>
 internal static class VoiceWinkHttpClients
@@ -138,8 +139,15 @@ internal static class VoiceWinkHttpClients
                 h.AllowAutoRedirect = false;
             });
         services.AddHttpClient("downloads", c => c.Timeout = TimeSpan.FromMinutes(10));
+        // LIC-34: a connect timeout means this connection carried nothing; no redirects, so it is never a hop after a POST that arrived.
         services.AddHttpClient("licensing", c => c.Timeout = TimeSpan.FromSeconds(30))
-            .AddHttpMessageHandler<RetryingHandler>();
+            .AddHttpMessageHandler<RetryingHandler>()
+            .AddHttpMessageHandler<ConnectTimeoutTranslatingHandler>()
+            .UseSocketsHttpHandler((h, _) =>
+            {
+                h.ConnectTimeout = ConnectTimeout;
+                h.AllowAutoRedirect = false;
+            });
         // dvstudio-metrics #85: the one-time first-check report (Privacy §4.5). One GET to
         // updates.voicewink.app whose ANY response ends it. No retry handler — InstallSourceReporter
         // owns the three-attempt budget and counts each attempt before sending, so a handler replay

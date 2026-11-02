@@ -135,18 +135,46 @@ internal sealed class TrialWindow
     }
 
     /// <summary>
-    /// Start the window at <paramref name="now"/>. Returns <c>false</c> (writing nothing) when a
-    /// window already exists — Active or Ended alike; a corrupt settings stamp reads as never started
-    /// everywhere, so a real start overwrites it.
+    /// Start the window at <paramref name="now"/>. <see cref="TrialStartOutcome.AlreadyStarted"/>
+    /// (writing nothing) when a window already exists — Active or Ended alike; a corrupt settings
+    /// stamp reads as never started everywhere, so a real start overwrites it.
     /// </summary>
-    internal bool Start(DateTimeOffset now)
+    // LIC-12: published only once a store the next launch reads took it, so a failed start is never staged.
+    internal TrialStartOutcome Start(DateTimeOffset now)
     {
         lock (_lock)
         {
-            if (_window is not null) return false;
+            if (_window is not null) return TrialStartOutcome.AlreadyStarted;
+            var candidate = new FirstRunTattoo.Reading(now, now);
+            var storeLanded = WriteStore(candidate);
+            var settingsLanded = TryCommitSettings(candidate);
+            if (!storeLanded && !settingsLanded)
+            {
+                Logger.Warning("The free trial start could not be saved; the trial was not started");
+                return TrialStartOutcome.PersistenceFailed;
+            }
             _window = new Snapshot(now, now);
-            Persist();
-            return true;
+            if (!settingsLanded) WriteSettings(candidate); // best effort; the next launch re-seeds it from the registry
+            _lastPersistedSeen = now;
+            return TrialStartOutcome.Started;
+        }
+    }
+
+    // Disk first (the cache takes the stamps only after the write); the verdict is taken inside the save lock (LIC-36).
+    private bool TryCommitSettings(FirstRunTattoo.Reading reading)
+    {
+        try
+        {
+            return _settings.TrySetManyAndFlushOrThrow(new Dictionary<string, string?>
+            {
+                [AppDefaults.LicenseFirstRunGraceStartedUtc] = reading.FirstRun.ToString("O"),
+                [AppDefaults.LicenseFirstRunGraceLastSeenUtc] = reading.LastSeen.ToString("O"),
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Free trial start not written to settings ({ExType})", ex.GetType().Name);
+            return false;
         }
     }
 
@@ -227,9 +255,10 @@ internal sealed class TrialWindow
         return reading;
     }
 
-    private void WriteStore(FirstRunTattoo.Reading reading)
+    /// <returns>Whether the reading reached the durable store.</returns>
+    private bool WriteStore(FirstRunTattoo.Reading reading)
     {
-        if (_store is null || _storeFaulted) return;
+        if (_store is null || _storeFaulted) return false;
         bool ok;
         try { ok = _store.Write(reading); }
         catch (Exception ex)
@@ -238,6 +267,7 @@ internal sealed class TrialWindow
             ok = false;
         }
         if (!ok) NoteStoreFaulted("write");
+        return ok;
     }
 
     private void NoteStoreFaulted(string operation)

@@ -257,6 +257,61 @@ internal static class NativeInterop
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
 
+    // --- Observe-only low-level keyboard hook (HKY-9 HotkeyEventTrace) ---
+
+    public const int WH_KEYBOARD_LL = 13;
+    public const uint WM_QUIT = 0x0012;
+    public const uint WM_APP = 0x8000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public UIntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public int ptX;
+        public int ptY;
+    }
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>Returns &gt; 0 for a message, 0 for WM_QUIT, -1 on error.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostThreadMessage(uint idThread, uint msg, UIntPtr wParam, IntPtr lParam);
+
+    public const uint PM_NOREMOVE = 0x0000;
+
+    /// <summary>Called once with PM_NOREMOVE to create the thread's message queue before its id is shared.</summary>
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
     // --- Keyboard layout inspection (HKY-3 AltGr detection) ---
     // KeyboardLayoutProfile asks whether any installed layout puts characters behind AltGr,
     // because AltGr arrives as a synthetic LeftControl + RightAlt pair and would otherwise

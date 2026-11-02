@@ -626,7 +626,7 @@ public sealed class AppModePage : Page
                 RefreshList();
             };
 
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "App mode editor");
         }
         catch (Exception ex)
         {
@@ -768,7 +768,7 @@ public sealed class AppModePage : Page
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto
             };
 
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "App mode templates");
 
             if (selected == null) return; // cancelled — nothing chosen
 
@@ -781,14 +781,14 @@ public sealed class AppModePage : Page
             var notice = AppModeAddNotice.Message(result);
             if (notice != null)
             {
-                await new ContentDialog
+                await DialogLease.MainWindow.ShowAsync(new ContentDialog
                 {
                     Title = "App mode added",
                     Content = new TextBlock { Text = notice, TextWrapping = TextWrapping.Wrap },
                     CloseButtonText = "OK",
                     XamlRoot = this.XamlRoot,
                     RequestedTheme = AppTheme.ElementTheme
-                }.ShowAsync();
+                }, "App mode added");
             }
         }
         catch (Exception ex)

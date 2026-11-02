@@ -57,15 +57,14 @@ public partial class LicenseViewModel : ObservableObject
     /// assignment's clear cannot swallow the result being reported.
     /// </summary>
     [ObservableProperty] private string? _attemptMessage;
-    /// <summary>
-    /// The durable seat warning — strictly the outcomes whose typed result says a seat may remain
-    /// held or state may return after a restart (<c>SeatMayBeConsumed</c> on activate; an unconfirmed
-    /// release or a failed clear on deactivate). Mirrors <c>LicenseService.SeatNotice</c> so it
-    /// outlives this TRANSIENT VM, survives every panel change and every network blip, and is cleared
-    /// only by the command that resolves it (<see cref="PublishSeatNotice"/>). Never a clean refusal:
-    /// before LIC-19 one property carried both, and every panel rendered whatever was in it.
-    /// </summary>
-    [ObservableProperty] private string? _seatNotice;
+    /// <summary>Outcomes that may have left a seat held, mirrored from the service; only a dismissal clears one (LIC-9, LIC-19).</summary>
+    [ObservableProperty] private IReadOnlyList<SeatIncident> _seatNotices = [];
+
+    // The epoch Status was last adopted from the cache at; a command's own status never moves it (LIC-9).
+    private int _projectedEpoch;
+
+    // The seat warning the running command added, so the wizard's one line shows only its own (LIC-9).
+    private long? _commandSeatIncidentId;
     /// <summary>
     /// The user asked for the key form over a live tryout ("Activate now" on the tryout card). A
     /// panel-plan INPUT (<see cref="LicensePanelPlan.Resolve"/>), owned here rather than by the page
@@ -80,7 +79,7 @@ public partial class LicenseViewModel : ObservableObject
     /// <see cref="IsBusy"/> a rebuild trigger (a rebuild mid-keystroke resets the key box's focus and
     /// caret — the documented reason it is excluded).
     ///
-    /// <para><b>Deliberately NOT <see cref="SeatNotice"/>.</b> That property is the durable
+    /// <para><b>Deliberately NOT <see cref="SeatNotices"/>.</b> That property is the durable
     /// seat-notice surface, so sharing one property would let a transient "couldn't reach the license
     /// server" overwrite "your seat may still be consumed — contact support": a warning about money
     /// replaced by a warning about wifi. Every non-null write goes through <see cref="Announce"/> so
@@ -177,18 +176,14 @@ public partial class LicenseViewModel : ObservableObject
         _clipboard = clipboard;
         _foundUs = foundUs;
         // Read-only state first so the page can render without waiting for network.
-        // Status is seeded from the synchronous GetCachedStatus so a freshly-resolved
+        // Status is seeded from the synchronous GetCachedSnapshot so a freshly-resolved
         // VM doesn't briefly flash "Unlicensed" to the user before the async refresh
         // runs — matters for LicensePage's initial render and for callers (like
         // OnboardingPage.BuildLicenseStep) that read Status at construction time.
-        Status = _license.GetCachedStatus();
-        RefreshLocalState();
-        // Carry over a seat-critical warning from an operation whose page is gone. This VM is
-        // TRANSIENT — every navigation to the License page builds a new one — so without this
-        // a "your seat may still be consumed" message raised during a slow call would simply
-        // vanish when the user navigated away, and they'd meet the activation limit later with
-        // no explanation (Codex round 14).
-        SeatNotice = _license.SeatNotice;
+        // Also carries over the seat warnings of operations whose page is gone (RefreshLocalState
+        // syncs them): this VM is TRANSIENT, so a warning raised during a slow call would otherwise
+        // vanish when the user navigated away (Codex round 14).
+        RefreshLocalState(adoptCachedStatus: true);
     }
 
     /// <summary>
@@ -237,6 +232,14 @@ public partial class LicenseViewModel : ObservableObject
     /// </summary>
     internal const string BusyGateNotice = "Still finishing the previous action — one moment.";
 
+    /// <summary>A click refused because the page predates another activation; nothing reached the server (LIC-9).</summary>
+    internal const string StaleViewMessage =
+        "This page was out of date and has been refreshed; your key wasn't sent. Click Activate again if you still need to.";
+
+    /// <summary>The trial start reached no store the next launch reads (LIC-12).</summary>
+    internal const string TrialStartNotSavedMessage =
+        "The free trial couldn't be saved, so it didn't start. Restart VoiceWink and try again.";
+
     private async Task DoCheckAsync(bool force, bool announce)
     {
         if (!TryEnterBusy())
@@ -274,7 +277,7 @@ public partial class LicenseViewModel : ObservableObject
             // not on the stamp advancing: a completed check that changes nothing (a refusal that
             // re-confirms Invalid) moves no stamp, and the plan-input clear only fires when Status
             // actually changed (Codex plan round, LIC-19). Unreachable and NotAttempted clear nothing,
-            // and no check ever touches SeatNotice — a seat warning must outlive a network blip.
+            // and no check ever touches SeatNotices — a seat warning must outlive a network blip.
             if (outcome == LicenseCheckOutcome.Completed) AttemptMessage = null;
         }
         catch (Exception ex)
@@ -389,16 +392,14 @@ public partial class LicenseViewModel : ObservableObject
     /// <para>A no-op while busy: a tick landing mid-command would overwrite <see cref="Status"/> from
     /// the cache moments before the command writes the real outcome. It never touches
     /// <see cref="ActivityMessage"/> — a background tick must never narrate — and it never DECIDES a
-    /// message: <see cref="SeatNotice"/> is copied from the service (a previous page instance may
-    /// have raised or cleared it), and <see cref="AttemptMessage"/> is cleared only by the plan-input
+    /// message: <see cref="SeatNotices"/> is copied from the service (another page instance may
+    /// have raised or dismissed one), and <see cref="AttemptMessage"/> is cleared only by the plan-input
     /// rule when the panel it described is itself about to change (LIC-19).</para>
     /// </summary>
     public void ReprojectLocalState()
     {
         if (IsBusy) return;
-        Status = _license.GetCachedStatus();
-        RefreshLocalState();
-        SeatNotice = _license.SeatNotice;
+        RefreshLocalState(adoptCachedStatus: true);
     }
 
     [RelayCommand]
@@ -432,22 +433,27 @@ public partial class LicenseViewModel : ObservableObject
         Announce("Activating…", LicenseActivityKind.Progress);
         try
         {
-            var result = await _license.ActivateAsync(key);
-            if (result.Success)
+            var result = await _license.ActivateAsync(key, expectedActivationEpoch: _projectedEpoch);
+            if (result.StaleView)
+            {
+                // After the redraw, so the status change cannot clear it; the panel may not move (LIC-9).
+                try { RefreshLocalState(adoptCachedStatus: true); }
+                catch (Exception refreshEx)
+                {
+                    Logger.Warning(refreshEx, "RefreshLocalState threw after a stale-view refusal; the next tick redraws");
+                }
+                AttemptMessage = StaleViewMessage;
+            }
+            else if (result.Success)
             {
                 LicenseKeyInput = string.Empty;
                 Status = result.Status;
-                // The service clears its seat notice on a durable activation (a new key is a new
-                // contract); mirror it NOW, not on the next 5 s tick — otherwise the previous
-                // attempt's "may still count toward your device limit" renders under the freshly
-                // Activated panel, the exact banner-outlives-its-cause class LIC-19 closes
-                // (self-review pass, both lenses).
-                SeatNotice = _license.SeatNotice;
                 // RefreshLocalState reads masked key / timestamp from settings — if it
                 // throws (e.g., a transient settings read fault), the activation itself
                 // still succeeded server-side. Don't overwrite Status or show an error
                 // banner in that case; the next CheckAsync will reconcile the UI.
-                try { RefreshLocalState(); }
+                // Adopting the cache certifies this commit's epoch for the next click (LIC-9).
+                try { RefreshLocalState(adoptCachedStatus: true); }
                 catch (Exception refreshEx)
                 {
                     Logger.Warning(refreshEx, "RefreshLocalState threw after successful activation; UI may show stale key/timestamp until next refresh");
@@ -456,12 +462,7 @@ public partial class LicenseViewModel : ObservableObject
             else
             {
                 ActivationLimitReached = result.ActivationLimitReached;
-                // When the server refuses because every seat is taken, substitute a
-                // more actionable message than LS's raw "This license key has reached
-                // the activation limit." — the user needs to know what to do next.
-                var refusal = result.ActivationLimitReached
-                    ? "This license is already active on the maximum number of devices. Deactivate VoiceWink on one of them from its License page, or contact support to free a lost device's slot or upgrade to a larger license."
-                    : FriendlyActivationError(result.ErrorMessage);
+                var refusal = ActivationRefusalText(result);
                 // Only adopt the service's "Invalid" signal when we weren't holding a
                 // richer state. A failed activation doesn't modify any stored license
                 // state — CheckAsync would return the original value on next call — so
@@ -502,6 +503,20 @@ public partial class LicenseViewModel : ObservableObject
             ExitBusy();
             ActivityMessage = null;
         }
+    }
+
+    /// <summary>The banner text for a failed activation; only the server's own text is reworded (LIC-16).</summary>
+    internal static string ActivationRefusalText(LicenseActivationResult result)
+    {
+        // When the server refuses because every seat is taken, substitute a
+        // more actionable message than LS's raw "This license key has reached
+        // the activation limit." — the user needs to know what to do next.
+        if (result.ActivationLimitReached)
+            return "This license is already active on the maximum number of devices. Deactivate VoiceWink on one of them from its License page, or contact support to free a lost device's slot or upgrade to a larger license.";
+        // Our own messages include the seat warnings, whose wording must reach the user unchanged.
+        if (!result.ErrorFromServer && !string.IsNullOrWhiteSpace(result.ErrorMessage))
+            return result.ErrorMessage;
+        return FriendlyActivationError(result.ErrorMessage);
     }
 
     /// <summary>
@@ -545,12 +560,10 @@ public partial class LicenseViewModel : ObservableObject
             // was in flight, the service's epoch guard preserved that key — forcing
             // Unlicensed here would render an Unlicensed panel over a live activation.
             // The normal path still lands on Unlicensed via the cleared state.
-            Status = _license.GetCachedStatus();
             // The local projections BEFORE the message: TryoutEnded and StoredKeyExpired are
-            // panel-plan inputs whose setters clear the attempt message, and the clear wipes
-            // LicenseFirstRunGraceStartedUtc, so a projection landing after the publish could
-            // erase the outcome this click just reported (self-review pass; StartTrial's order).
-            RefreshLocalState();
+            // panel-plan inputs whose setters clear the attempt message, so a projection landing
+            // after the publish could erase the outcome this click just reported (StartTrial's order).
+            RefreshLocalState(adoptCachedStatus: true);
             // An UNCONFIRMED release must be said out loud: local state is cleared either way,
             // so a silent "Unlicensed" would teach the user their seat is free when the server
             // may still hold it — they would then hit the activation limit on the next machine
@@ -598,24 +611,23 @@ public partial class LicenseViewModel : ObservableObject
             };
             // Same carry-over rule as activation: a seat that may still be held, or state that may
             // return after a restart, must not disappear when this page does — and ONLY those
-            // outcomes are durable (LIC-19). A confirmed, persisted release clears the previous
-            // notice, and the one informational outcome (a newer activation kept, the previous seat
-            // confirmed free) is an attempt message: it describes this click and the Activated panel
-            // it lands on, and it must not outlive either.
+            // outcomes are durable (LIC-19). A confirmed, persisted release says nothing about an
+            // EARLIER warning's seat, so it clears none (LIC-9); the one informational outcome (a
+            // newer activation kept, the previous seat confirmed free) is an attempt message: it
+            // describes this click and the Activated panel it lands on, and must not outlive either.
             var seatMayRemain = outcome switch
             {
                 (true, LicenseClearOutcome.Cleared) => false,
                 (true, LicenseClearOutcome.NewerActivationPreserved) => false,
                 _ => true,
             };
-            if (seatMayRemain)
+            if (seatMayRemain && message is not null)
             {
                 AttemptMessage = null;
                 PublishSeatNotice(message);
             }
             else
             {
-                PublishSeatNotice(null);
                 AttemptMessage = message;
             }
         }
@@ -641,6 +653,7 @@ public partial class LicenseViewModel : ObservableObject
     private bool TryEnterBusy()
     {
         if (Interlocked.CompareExchange(ref _busyFlag, 1, 0) != 0) return false;
+        _commandSeatIncidentId = null;
         IsBusy = true;
         return true;
     }
@@ -689,22 +702,18 @@ public partial class LicenseViewModel : ObservableObject
         finally { ExitBusy(); }
     }
 
-    /// <summary>
-    /// The ONE writer of the durable seat notice: the service first (so the next VM instance inherits
-    /// it), then this VM's property, synchronously. Null or empty clears both.
-    /// </summary>
-    private void PublishSeatNotice(string? notice)
+    /// <summary>The one writer of a seat warning, on the service so the next view inherits it; once per operation (LIC-9).</summary>
+    private void PublishSeatNotice(string notice)
     {
-        if (string.IsNullOrEmpty(notice))
-        {
-            _license.ClearSeatNotice();
-            SeatNotice = null;
-        }
-        else
-        {
-            _license.RememberSeatNotice(notice);
-            SeatNotice = notice;
-        }
+        _commandSeatIncidentId = _license.AddSeatIncident(notice);
+        SeatNotices = _license.SeatIncidents;
+    }
+
+    /// <summary>Clears one seat warning; outside the busy gate because it touches no licence state (LIC-9).</summary>
+    public void DismissSeatNotice(long id)
+    {
+        _license.DismissSeatIncident(id);
+        SeatNotices = _license.SeatIncidents;
     }
 
     /// <summary>
@@ -721,12 +730,14 @@ public partial class LicenseViewModel : ObservableObject
 
     /// <summary>
     /// What a caller with ONE line to show (the onboarding wizard) should show. A seat-critical
-    /// warning takes precedence over a clean attempt failure — the plan-round B3 contract; a joined
+    /// warning THE LAST COMMAND added takes precedence over a clean attempt failure (LIC-9: older
+    /// ones stay on the License page until dismissed) — the plan-round B3 contract; a joined
     /// "both" was tried after the self-review pass and REJECTED by the diff round, because one line
     /// carrying both dilutes the warning about money rather than preferring it. Null leaves the
     /// caller's fallback.
     /// </summary>
-    public string? OutcomeMessage => SeatNotice ?? AttemptMessage;
+    public string? OutcomeMessage =>
+        SeatNotices.FirstOrDefault(i => i.Id == _commandSeatIncidentId)?.Message ?? AttemptMessage;
 
     /// <summary>
     /// Start the free trial — the local <see cref="LicenseStatus.FirstRunGrace"/> window, the ONLY
@@ -748,22 +759,23 @@ public partial class LicenseViewModel : ObservableObject
         if (!TryEnterBusy()) { Announce(BusyGateNotice, LicenseActivityKind.Progress); return; }
         try
         {
-            _license.StartFirstRunGrace();
-            // Populate TrialTimeRemaining BEFORE flipping Status — on the first transition
-            // (Unlicensed → FirstRunGrace) the opposite order would rebuild the FirstRunGrace
-            // panel from a still-null countdown, rendering "… — 0h 00m remaining"
-            // for one dispatcher frame. On later idempotent calls the Status assignment is
-            // a no-op (ObservableProperty skips equal values) so order is irrelevant.
-            RefreshLocalState();
+            var outcome = _license.StartFirstRunGrace();
             // Re-read from the service rather than assuming success. StartFirstRunGrace is
             // idempotent — if a previous trial start timestamp exists and has already aged
             // past the window, the call no-ops and the cached status remains
             // Unlicensed. The recording gate (MainViewModel) reads GetCachedStatus(), so the
             // VM must reflect that same source of truth or the UI silently disagrees with
             // the gate (screen flips to FirstRunGrace, but the hotkey path still blocks).
-            var actual = _license.GetCachedStatus();
-            Status = actual;
-            if (actual == LicenseStatus.FirstRunGrace)
+            // RefreshLocalState sets TrialTimeRemaining before Status, so the first
+            // Unlicensed → FirstRunGrace rebuild never shows "0h 00m remaining".
+            RefreshLocalState(adoptCachedStatus: true);
+            var actual = Status;
+            if (outcome == TrialStartOutcome.PersistenceFailed)
+            {
+                // LIC-12: nothing started and the status is unchanged, so the wizard stays on the License step.
+                AttemptMessage = TrialStartNotSavedMessage;
+            }
+            else if (actual == LicenseStatus.FirstRunGrace)
             {
                 // Clear any stale error from a prior failed activate attempt (the status assignment
                 // already did when it changed; this covers the idempotent re-click).
@@ -796,8 +808,7 @@ public partial class LicenseViewModel : ObservableObject
     public void ReconcileStatusFromCache()
     {
         if (IsBusy) return;
-        Status = _license.GetCachedStatus();
-        RefreshLocalState();
+        RefreshLocalState(adoptCachedStatus: true);
     }
 
     [RelayCommand]
@@ -812,7 +823,7 @@ public partial class LicenseViewModel : ObservableObject
     // ── LNC-14: rating, review and feedback links ───────────────────
     //
     // None of these touches licence state, so none enters the busy gate, and none writes
-    // AttemptMessage or SeatNotice (LIC-19 ownership). Each opens something the USER finishes — the
+    // AttemptMessage or SeatNotices (LIC-19 ownership). Each opens something the USER finishes — the
     // Store, the browser, their own mail app — and reports on the activity line only when the shell
     // refused, the LIC-15 rule that a user-initiated command never ends in silence.
 
@@ -869,13 +880,16 @@ public partial class LicenseViewModel : ObservableObject
             Announce(failure, LicenseActivityKind.Failure);
     }
 
-    private void RefreshLocalState()
+    /// <param name="adoptCachedStatus">
+    /// Take <see cref="Status"/> from the cache. Otherwise a command's own status stands, except that
+    /// FirstRunGrace ↔ Unlicensed follows the trial fields' sample, so they cannot disagree (LIC-14).
+    /// </param>
+    private void RefreshLocalState(bool adoptCachedStatus = false)
     {
-        // Re-read each tick: another page instance may have a send in flight or just delivered one.
-        CanAskFoundUs = _foundUs?.CanAsk ?? false;
-        MaskedKey = _license.GetMaskedLicenseKey();
-        LastValidatedUtc = _license.GetLastValidatedUtc();
-        // GetTrialTimeRemaining is recomputed from the wall clock on EVERY call, so it can never
+        // Before the snapshot, so a commit between the two errs toward refusing, never a second post (LIC-9).
+        var epoch = _license.ActivationEpoch;
+        var snapshot = _license.GetCachedSnapshot();
+        // The trial's remaining time is recomputed from the wall clock on EVERY call, so it can never
         // compare equal — and an unconditional assignment therefore fired PropertyChanged on every
         // 5-second reprojection tick. TrialTimeRemaining is in LicensePage's rebuild-trigger list,
         // so the WHOLE panel subtree — key box included — was being destroyed and recreated every
@@ -888,10 +902,22 @@ public partial class LicenseViewModel : ObservableObject
         // under the retired 3650-day scaffold it never moved at all): the page rebuilds only when the user could
         // actually see a change. The window's END stays covered without this property — TryoutEnded
         // flips and Status leaves FirstRunGrace on the same tick, and both are triggers themselves.
-        var trialRemaining = _license.GetTrialTimeRemaining();
+        var trialRemaining = snapshot.TrialRemaining;
         if (FormatTrialRemaining(trialRemaining) != TrialTimeRemainingDisplay)
             TrialTimeRemaining = trialRemaining;
-        TryoutEnded = _license.HasFirstRunGraceEnded();
+        TryoutEnded = snapshot.TrialEnded;
+        // After the trial fields, so a FirstRunGrace panel never builds from a null countdown.
+        if (adoptCachedStatus || (IsKeyless(Status) && IsKeyless(snapshot.Status)))
+        {
+            Status = snapshot.Status;
+            // Only with a status taken from the same read: a command's own status may predate the epoch (LIC-9).
+            _projectedEpoch = epoch;
+        }
+        SeatNotices = _license.SeatIncidents;
+        // Re-read each tick: another page instance may have a send in flight or just delivered one.
+        CanAskFoundUs = _foundUs?.CanAsk ?? false;
+        MaskedKey = _license.GetMaskedLicenseKey();
+        LastValidatedUtc = _license.GetLastValidatedUtc();
         StoredKeyExpired = _license.IsStoredKeyExpired();
         KeyExpiresAt = _license.GetKeyExpiresAt();
         var (limit, usage) = _license.GetActivationCounts();
@@ -900,6 +926,9 @@ public partial class LicenseViewModel : ObservableObject
         DeviceCountLabel = FormatDeviceCountLabel(limit, usage);
         InstanceLine = FormatInstanceLine(_license.GetInstanceLabel());
     }
+
+    private static bool IsKeyless(LicenseStatus status) =>
+        status is LicenseStatus.FirstRunGrace or LicenseStatus.Unlicensed;
 
     /// <summary>
     /// Render the "Activated on N of M devices" line shown on the Activated panel (LIC-6).
@@ -912,18 +941,19 @@ public partial class LicenseViewModel : ObservableObject
     /// <item><c>limit</c> is negative — paranoia guard against a future encoding drift where
     /// the sentinel value leaks through the service read.</item>
     /// <item><c>usage</c> is null while <c>limit</c> is known — a real state, because
-    /// <c>ParseActivationCounts</c> reads the two fields independently and the persist block writes
-    /// each only when present. It used to default to 0 and render "Activated on 0 of 3 devices." on
+    /// a response may carry the limit without a usable usage, which is then stored as unknown. It used to default to 0 and render "Activated on 0 of 3 devices." on
     /// the Activated panel, directly under "Activated key: …" — a count that is provably wrong,
     /// since this device is one of them. Omitting the line for an unknown usage is the same rule the
     /// list above already applies to an unknown limit (LIC-13).</item>
+    /// <item><c>usage</c> is 0 or less — read as unknown too, because this device is one of them;
+    /// the service no longer stores one, but a build before LIC-17 may have.</item>
     /// </list>
     /// </summary>
     private static string? FormatDeviceCountLabel(int? limit, int? usage)
     {
         if (!limit.HasValue || limit.Value <= 0) return null;
         if (limit.Value == 1) return "Activated on this device (1-device license).";
-        if (!usage.HasValue) return $"This license covers up to {limit.Value} devices.";
+        if (usage is not > 0) return $"This license covers up to {limit.Value} devices.";
         return $"Activated on {usage.Value} of {limit.Value} devices.";
     }
 

@@ -6,9 +6,8 @@ namespace VoiceWink.Services.AIEnhancement.Clients;
 
 /// <summary>
 /// Gemini-native image generation client. Calls the :generateContent endpoint and returns
-/// PNG bytes. Imagen support was removed once Google scheduled Imagen-on-Gemini-API for
-/// deprecation — old persisted Imagen selections are blocked at
-/// <see cref="AIEnhancementService.GenerateImageAsync"/> with a clear error.
+/// PNG bytes. A persisted Imagen selection (shut down on the Gemini API) gets the provider's
+/// own error.
 ///
 /// IMAGE_OTHER is a known intermittent Gemini API issue (catch-all for "model couldn't
 /// produce the image"). The user can retry manually via the redo button.

@@ -78,6 +78,12 @@ public static class RestartHandoff
     /// <summary>The variable the predecessor sets on the successor's start info.</summary>
     public const string PredecessorPidVariable = "VOICEWINK_RESTART_PREDECESSOR_PID";
 
+    /// <summary>TRN-66: the Whisper CPU pin the predecessor could not save, set on the successor's start info only (<see cref="FormatWhisperPin"/>).</summary>
+    public const string WhisperCpuPinVariable = "VOICEWINK_RESTART_WHISPER_CPU_PIN";
+
+    /// <summary>TRN-66: the pin this launch was handed, or null. Set by <see cref="WaitForPredecessorExit()"/>.</summary>
+    internal static GpuSelfTestRecord? CarriedWhisperPin { get; private set; }
+
     /// <summary>How long the successor waits for the predecessor to EXIT. A graceful quit is
     /// normally over in a few seconds; the longest bounded step in <c>App.Cleanup</c> is the
     /// parakeet-server retire wait, and the unbounded one (the server gate held by a preload's
@@ -96,7 +102,48 @@ public static class RestartHandoff
 
     /// <summary>Production entry: the real process table, this process's pid, the default bound.</summary>
     public static RestartHandoffOutcome WaitForPredecessorExit()
-        => WaitForPredecessorExit(ProductionProcessRunner.Instance, Environment.ProcessId, PredecessorExitTimeoutMs);
+    {
+        CarriedWhisperPin = ConsumeWhisperPin();
+        return WaitForPredecessorExit(ProductionProcessRunner.Instance, Environment.ProcessId, PredecessorExitTimeoutMs);
+    }
+
+    /// <summary>TRN-66: keys a carried pin to the app version and display driver it was judged under, so a driver change across the restart drops it (TRN-63).</summary>
+    internal static string CarryKey(string appVersion, string? driverSignature)
+        => Convert.ToHexString(global::System.Security.Cryptography.SHA256.HashData(
+            global::System.Text.Encoding.UTF8.GetBytes($"{appVersion}\n{driverSignature}")))[..16];
+
+    internal static string CurrentCarryKey()
+        => CarryKey(GpuWarmupMarker.CurrentAppVersion(), GpuWarmupMarker.CurrentDriverSignature());
+
+    /// <summary>TRN-66: the carry variable's value, <c>Outcome|key|GpuName</c>; the inverse of <see cref="ParseWhisperPin"/>.</summary>
+    internal static string FormatWhisperPin(GpuSelfTestRecord pin, string carryKey) => $"{pin.Outcome}|{carryKey}|{pin.GpuName}";
+
+    /// <summary>TRN-66: a pinning outcome under this launch's key and a validated GPU name, or null for anything else.</summary>
+    internal static GpuSelfTestRecord? ParseWhisperPin(string? raw, string carryKey)
+    {
+        if (string.IsNullOrEmpty(raw)) return null;
+        var parts = raw.Split('|', 3);
+        if (parts.Length < 2 || !string.Equals(parts[1], carryKey, StringComparison.Ordinal)) return null;
+        var outcome = GpuWarmupMarker.ParseOutcome(parts[0]);
+        if (!GpuWarmupMarker.PinsCpu(outcome)) return null;
+        return new GpuSelfTestRecord(outcome, parts.Length < 3 ? null : GpuWarmupMarker.ValidName(parts[2]));
+    }
+
+    /// <summary>TRN-66: read and clear the carry variable before anything spawns, as for the pid; never throws.</summary>
+    internal static GpuSelfTestRecord? ConsumeWhisperPin()
+    {
+        try
+        {
+            var raw = Environment.GetEnvironmentVariable(WhisperCpuPinVariable);
+            if (raw is null) return null;
+            Environment.SetEnvironmentVariable(WhisperCpuPinVariable, null);
+            return ParseWhisperPin(raw, CurrentCarryKey());
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     /// <summary>The decision. Pure over its seam except for the environment read + clear.</summary>
     internal static RestartHandoffOutcome WaitForPredecessorExit(IProcessRunner processes, int currentPid, int timeoutMs)
@@ -209,6 +256,12 @@ public static class RestartHandoff
     /// show.</summary>
     public static void LogLastOutcome(ILogger logger)
     {
+        if (CarriedWhisperPin is { } pin)
+        {
+            logger.Information(
+                "Restart carried the Whisper GPU self-test {Outcome} pin the previous process could not save (TRN-66)",
+                pin.Outcome);
+        }
         var outcome = LastOutcome;
         if (outcome is null || outcome.Kind == RestartHandoffKind.NotARestart) return;
 

@@ -328,7 +328,7 @@ public sealed class HistoryPage : Page
                         XamlRoot = this.XamlRoot,
                         RequestedTheme = AppTheme.ElementTheme
                     };
-                    await successDialog.ShowAsync();
+                    await DialogLease.MainWindow.ShowAsync(successDialog, "Export Successful");
                 }
                 finally
                 {
@@ -351,7 +351,7 @@ public sealed class HistoryPage : Page
                     XamlRoot = this.XamlRoot,
                     RequestedTheme = AppTheme.ElementTheme
                 };
-                await errorDialog.ShowAsync();
+                await DialogLease.MainWindow.ShowAsync(errorDialog, "Export Blocked");
             }
             catch (Exception ex)
             {
@@ -364,7 +364,7 @@ public sealed class HistoryPage : Page
                     XamlRoot = this.XamlRoot,
                     RequestedTheme = AppTheme.ElementTheme
                 };
-                await errorDialog.ShowAsync();
+                await DialogLease.MainWindow.ShowAsync(errorDialog, "Export Failed");
             }
         });
 
@@ -389,7 +389,7 @@ public sealed class HistoryPage : Page
                     RequestedTheme = AppTheme.ElementTheme
                 };
 
-                if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete All History") == ContentDialogResult.Primary)
                 {
                     await WithCollectionRefreshSuppressedAsync(() => _filterMode == FilterMode.All
                         ? _viewModel.DeleteAllCommand.ExecuteAsync(null)
@@ -690,7 +690,7 @@ public sealed class HistoryPage : Page
         {
             try
             {
-                await new ContentDialog
+                await DialogLease.MainWindow.ShowAsync(new ContentDialog
                 {
                     Title = "Couldn't copy image",
                     Content = "This image couldn't be placed on the clipboard. "
@@ -698,7 +698,7 @@ public sealed class HistoryPage : Page
                     CloseButtonText = "OK",
                     XamlRoot = this.XamlRoot,
                     RequestedTheme = AppTheme.ElementTheme,
-                }.ShowAsync();
+                }, "Couldn't copy image");
             }
             catch (Exception ex)
             {
@@ -977,7 +977,7 @@ public sealed class HistoryPage : Page
                     XamlRoot = this.XamlRoot,
                     RequestedTheme = AppTheme.ElementTheme
                 };
-                if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+                if (await DialogLease.MainWindow.ShowAsync(dialog, "Load all history") != ContentDialogResult.Primary)
                     return;
             }
             catch (Exception ex)

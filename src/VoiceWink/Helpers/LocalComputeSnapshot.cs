@@ -62,8 +62,13 @@ public enum LocalCompute
 /// a GPU. The Pass tick names these, never a persisted name alone: the warm-up child and the resident
 /// child pick their adapters independently, so after a refused pin the marker can carry the dedicated
 /// adapter while the resident decodes on the integrated one (self-review Blocker).</para>
+/// <para><b>UI-13: <paramref name="EveryEngineCpuForSession"/></b> is true only when every local engine
+/// — Whisper, Parakeet and the built-in AI engine — is locked to the CPU for this process. The two
+/// compute fields cannot say that: they read Cpu for "not known yet" too. Default false, so
+/// <see cref="AllCpu"/> and the throw fallback never claim it.</para>
 internal readonly record struct LocalComputeSnapshot(
-    LocalCompute Whisper, LocalCompute Parakeet, string? WhisperGpuName = null, string? ParakeetGpuName = null)
+    LocalCompute Whisper, LocalCompute Parakeet, string? WhisperGpuName = null, string? ParakeetGpuName = null,
+    bool EveryEngineCpuForSession = false)
 {
     /// <summary>UI-14: the live adapter name for one engine, null when unknown or not on a GPU.</summary>
     public string? GpuNameFor(LocalRuntimeKind runtime) => runtime switch
@@ -87,6 +92,14 @@ internal readonly record struct LocalComputeSnapshot(
         LocalRuntimeKind.Parakeet => Parakeet,
         _ => LocalCompute.Cpu,
     };
+
+    /// <summary>UI-13: the composition root's three facts → <see cref="EveryEngineCpuForSession"/>. A null
+    /// Parakeet mode is the CPU-only sherpa build; a null built-in reading is no engine registered.</summary>
+    internal static bool EveryEngineCpu(bool whisperCpuForSession, Services.Transcription.ParakeetLaunchMode? parakeet,
+        bool? builtInRunsOnProcessor)
+        => whisperCpuForSession
+            && (parakeet is null or Services.Transcription.ParakeetLaunchMode.Cpu)
+            && builtInRunsOnProcessor != false;
 
     private static Func<LocalComputeSnapshot> s_provider = static () => AllCpu;
 

@@ -1630,8 +1630,6 @@ public sealed class AIEnhancementService
         if (string.IsNullOrWhiteSpace(model))
             model = DefaultImageModelFor(imageProvider);
 
-        EnsureModelStillSupported(model);
-
         var config = BuildConfig(model, imageProvider);
         if (string.IsNullOrEmpty(config.ApiKey))
             throw new InvalidOperationException($"No API key configured for {imageProvider}");
@@ -2064,25 +2062,6 @@ public sealed class AIEnhancementService
             normalized.Kind, normalized.OrientedWidth, normalized.OrientedHeight,
             original.Bytes.Length / 1024, normalized.Image.Bytes.Length / 1024);
         return normalized.Image;
-    }
-
-    /// <summary>
-    /// Block image generation for model families that VoiceWink no longer supports
-    /// (DALL-E and Imagen, both deprecated by their providers). Catches persisted selections
-    /// from older versions so the user gets a clear instruction instead of an opaque API error.
-    /// </summary>
-    private static void EnsureModelStillSupported(string model)
-    {
-        // Classify the BARE id (ImageOptions.Bare — the one shared slug-stripping rule) so a
-        // persisted OpenRouter selection like openai/dall-e-3 is refused the same as dall-e-3
-        // instead of slipping through to a live 4xx (F31).
-        var bare = ImageOptions.Bare(model);
-        if (bare.StartsWith("dall-e", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                "DALL-E models are no longer supported. Switch to gpt-image-2 in AI Enhancement settings.");
-        if (bare.StartsWith("imagen", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException(
-                "Imagen models are no longer supported. Switch to a Gemini-native image model (e.g. gemini-3.1-flash-image) in AI Enhancement settings.");
     }
 
     public List<CustomPrompt> GetPrompts()
@@ -2588,8 +2567,6 @@ public sealed class AIEnhancementService
 
         if (string.IsNullOrWhiteSpace(modelId))
             modelId = DefaultImageModelFor(imageProvider);
-
-        EnsureModelStillSupported(modelId);
 
         var config = BuildConfig(modelId, imageProvider);
         if (string.IsNullOrEmpty(config.ApiKey))

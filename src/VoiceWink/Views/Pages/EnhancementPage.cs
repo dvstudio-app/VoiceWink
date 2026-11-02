@@ -1007,34 +1007,26 @@ public sealed class EnhancementPage : Page
         };
     }
 
-    // A second ShowAsync while a dialog is open throws; one dialog at a time (the About page's rule).
-    private static bool s_graphicsDialogOpen;
-
     /// <summary>The integrated-graphics dialog — from the hint's link, or once per model on page open.</summary>
     private async Task ShowOllamaGraphicsDialogAsync(bool markOffered = false)
     {
-        if (s_graphicsDialogOpen || XamlRoot is null)
+        if (XamlRoot is null)
             return;
-        s_graphicsDialogOpen = true;
         try
         {
             var dialog = new OllamaGraphicsDialog(_viewModel.SelectedModel, _viewModel.FixLocalServerGraphicsAsync)
             {
                 XamlRoot = XamlRoot
             };
-            // The one-time offer counts only once the user has seen it: a ShowAsync that throws
-            // (another dialog open) leaves it for the next visit.
+            // The one-time offer counts only once the user has seen it: skipped while another dialog
+            // holds the window's slot (UI-5b), it is left for the next visit.
             if (markOffered)
                 dialog.Opened += (_, _) => _viewModel.MarkLocalServerGraphicsOffered();
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "Speed up AI enhancement");
         }
         catch (Exception ex)
         {
             Log.ForContext<EnhancementPage>().Warning("Integrated-graphics dialog failed: {ErrorType}", ex.GetType().Name);
-        }
-        finally
-        {
-            s_graphicsDialogOpen = false;
         }
     }
 
@@ -1421,7 +1413,7 @@ public sealed class EnhancementPage : Page
                         XamlRoot = this.XamlRoot,
                         RequestedTheme = AppTheme.ElementTheme
                     };
-                    if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+                    if (await DialogLease.MainWindow.ShowAsync(dialog, "AI Enhancement Disabled") != ContentDialogResult.Primary)
                         return;
                     _viewModel.IsEnabled = true;
                 }
@@ -1493,7 +1485,7 @@ public sealed class EnhancementPage : Page
                     XamlRoot = this.XamlRoot,
                     RequestedTheme = AppTheme.ElementTheme
                 };
-                if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+                if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete enhancement") != ContentDialogResult.Primary)
                     return;
             }
             _viewModel.DeletePromptCommand.Execute(prompt);
@@ -1637,7 +1629,7 @@ public sealed class EnhancementPage : Page
         // ContentDialog clips on constrained displays — it never scrolls.
         dialog.Content = AppTheme.CreateDialogScroller(content);
 
-        var result = await dialog.ShowAsync();
+        var result = await DialogLease.MainWindow.ShowAsync(dialog, "Edit enhancement");
 
         var newTitle = nameBox.Text.Trim();
         var newText = promptBox.Text.Trim();
@@ -1759,7 +1751,7 @@ public sealed class EnhancementPage : Page
             MaxHeight = 400
         };
 
-        await dialog.ShowAsync();
+        await DialogLease.MainWindow.ShowAsync(dialog, "Enhancement templates");
         }
         catch (Exception ex) { Logger.Error(ex, "ShowTemplateDialog failed"); }
     }
@@ -1859,7 +1851,7 @@ public sealed class EnhancementPage : Page
             RefreshPromptList();
         };
 
-        await dialog.ShowAsync();
+        await DialogLease.MainWindow.ShowAsync(dialog, "Trigger words");
         }
         catch (Exception ex) { Logger.Error(ex, "ShowTriggerWordDialog failed"); }
     }
@@ -2003,7 +1995,7 @@ public sealed class EnhancementPage : Page
                 RefreshPromptList();
             };
 
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "Enhancement hotkey");
         }
         catch (Exception ex) { Logger.Error(ex, "ShowHotkeyDialog failed"); }
     }
@@ -2715,7 +2707,7 @@ public sealed class EnhancementPage : Page
                 RefreshPromptList();
             };
 
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "Configure enhancement");
         }
         catch (Exception ex) { Logger.Error(ex, "ShowConfigureDialog failed"); }
     }

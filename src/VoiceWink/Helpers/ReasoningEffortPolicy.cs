@@ -341,9 +341,8 @@ public static class ReasoningEffortPolicy
         // Groq docs (read 2026-09-12): gpt-oss accepts low/medium/high (no none) and serves
         // with reasoning ON — the ~2.7 s round trips TextModelDefaults records. VoiceInk sends low.
         "gpt-oss-120b" or "gpt-oss-20b" => new ReasoningDirective(ReasoningWireKind.CompatEffort, "low"),
-        // qwen/qwen3.8-27b → qwen3-8-27b after the vendor strip: none/default/low/medium/high;
-        // qwen/qwen3.6-27b: none/default. Both accept none.
-        "qwen3-8-27b" or "qwen3-6-27b" => new ReasoningDirective(ReasoningWireKind.CompatEffort, "none"),
+        // qwen/qwen3.8-27b → qwen3-8-27b after the vendor strip: none/default/low/medium/high.
+        "qwen3-8-27b" => new ReasoningDirective(ReasoningWireKind.CompatEffort, "none"),
         _ => ReasoningDirective.None,
     };
 

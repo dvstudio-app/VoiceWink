@@ -26,12 +26,12 @@ namespace VoiceWink.Helpers;
 internal static class ReportOptionAvailability
 {
     /// <summary>
-    /// Shown when raw prompt logs CAN be included. Unchanged wording — it was never the
-    /// confusing one, and it is the consent text the REL-17 review settled.
+    /// Shown when raw prompt logs CAN be included: lists what <c>PromptTraceLog</c> writes raw, claiming nothing it may omit (REL-35).
     /// </summary>
     internal const string RawPromptsPrivacy =
-        "Raw prompt logs contain everything you dictated and the AI prompts/results, " +
-        "verbatim. Include them only if you're comfortable sharing that with support.";
+        "Raw prompt logs contain, word for word: transcripts, AI prompts and responses, " +
+        "App Mode names, and Dictionary and trigger words. " +
+        "Include them only if you're comfortable sharing that with support.";
 
     /// <summary>Traces exist, but the parent "Include logs" box is unticked.</summary>
     internal const string RawPromptsNeedsLogs =

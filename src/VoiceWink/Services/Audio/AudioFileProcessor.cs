@@ -40,13 +40,18 @@ public sealed class AudioFileProcessor
         Func<string, Helpers.WavLevels?> measure,
         Func<string, double, global::System.Threading.CancellationToken, bool> applyGain,
         Func<string> outputDir,
-        Func<string, Helpers.ZeroRunCounts?>? scanZeroRuns = null)
+        Func<string, Helpers.ZeroRunCounts?>? scanZeroRuns = null,
+        Action? blockWritten = null)
     {
         _measure = measure;
         _applyGain = applyGain;
         _outputDir = outputDir;
         _scanZeroRuns = scanZeroRuns ?? Helpers.ZeroRunScan.TryScan;
+        _blockWritten = blockWritten;
     }
+
+    // TRN-80 test seam: runs after each decoded block is written.
+    private readonly Action? _blockWritten;
 
     // AUD-10: same seam and same shared adapter (ZeroRunScan) as the recording side — "the
     // counter belongs in both or file conversions stay blind" (the card's own AUD-9 note). The
@@ -135,13 +140,13 @@ public sealed class AudioFileProcessor
             {
                 using var resampler = new MediaFoundationResampler(reader, targetFormat);
                 resampler.ResamplerQuality = 60;
-                WaveFileWriter.CreateWaveFile(outputPath, resampler);
+                WriteWaveFile(outputPath, resampler, ct);
             }
             else
             {
-                WaveFileWriter.CreateWaveFile(outputPath, reader);
+                WriteWaveFile(outputPath, reader, ct);
             }
-        }).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
 
         Logger.Information("Audio converted to {Output}", outputPath);
 
@@ -161,6 +166,22 @@ public sealed class AudioFileProcessor
         //
         // Leak handling lives in the CALLER's single try, which covers this and the decode above.
         await Task.Run(() => NormalizeFailSoft(outputPath, ct), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Copies in one-second blocks with a cancel check between them, so Cancel stops a long decode (TRN-80).</summary>
+    private void WriteWaveFile(string outputPath, IWaveProvider source, global::System.Threading.CancellationToken ct)
+    {
+        using var writer = new WaveFileWriter(outputPath, source.WaveFormat);
+        // Whole frames, not AverageBytesPerSecond: a .wav header's own value may not be block-aligned.
+        var block = new byte[source.WaveFormat.SampleRate * source.WaveFormat.BlockAlign];
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var read = source.Read(block, 0, block.Length);
+            if (read == 0) break;
+            writer.Write(block, 0, read);
+            _blockWritten?.Invoke();
+        }
     }
 
     /// <summary>

@@ -97,7 +97,7 @@ public sealed class LogViewerPage : Page
         var debugHeartbeat = App.Services.GetRequiredService<Services.System.DebugHeartbeat>();
         var verboseToggle = AppTheme.CreateToggleSetting(
             "Verbose debug logging",
-            "Writes debug-level detail, the UI thread heartbeat and operation timings to the log.",
+            "Writes debug-level detail to the log, such as the UI thread heartbeat, operation timings and key events for Ctrl, Alt and the recording hotkey (never letters, digits or Space).",
             settings.GetBoolDefaulted(AppDefaults.VerboseLoggingEnabled),
             v =>
             {
@@ -144,6 +144,8 @@ public sealed class LogViewerPage : Page
         // report them).
         var reportBtn = AppTheme.CreateSecondaryButton("Report a problem", async (_, _) =>
         {
+            using var slot = DialogLease.MainWindow.TryAcquire("Report a problem");
+            if (slot is null) return;
             try
             {
                 var dialog = new Dialogs.ReportProblemDialog { XamlRoot = this.XamlRoot };

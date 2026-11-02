@@ -253,6 +253,19 @@ public sealed class AudioRecorderService : IDisposable
 
     private readonly Func<MMDevice?, IWaveIn> _captureConstructor;
 
+    /// <summary>AUD-35: with no device passed, WASAPI resolves the default itself; its "not found" means no microphone at all.</summary>
+    private IWaveIn ConstructCapture(MMDevice? device)
+    {
+        try
+        {
+            return _captureConstructor(device);
+        }
+        catch (Exception ex) when (device is null && ex.HResult == RenderEndpointGone.NotFound)
+        {
+            throw new AudioCaptureUnavailableException("No microphone found", noMicrophone: true);
+        }
+    }
+
     /// <summary>
     /// What the constructor actually stored. Exists so a test can assert the const reached the field
     /// through the PUBLIC constructor — both diff reviewers found that nothing else could: the field
@@ -519,7 +532,7 @@ public sealed class AudioRecorderService : IDisposable
                 try
                 {
                     _capture = await Helpers.BoundedComCall.RunBoundedAsync(
-                        () => _captureConstructor(device),
+                        () => ConstructCapture(device),
                         TimeSpan.FromSeconds(1),
                         "recording-NewWasapiCapture",
                         dependency: device,
@@ -702,6 +715,9 @@ public sealed class AudioRecorderService : IDisposable
                 // catch runs before the view-model's. Any other failure stays Error.
                 if (ex is OperationCanceledException && ct.IsCancellationRequested)
                     Logger.Information("Recording start cancelled ({ErrorType})", ex.GetType().Name);
+                // AUD-35: no microphone is the view-model's one Warning; an Error here was a second Sentry event.
+                else if (ex is AudioCaptureUnavailableException { NoMicrophone: true })
+                    Logger.Information("Recording start failed: {Reason}", ex.Message);
                 else
                     Logger.Error(ex, "Failed to start recording");
                 // Resets state set ahead of StartRecording so callers don't see a bogus

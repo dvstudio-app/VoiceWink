@@ -286,9 +286,11 @@ public partial class SettingsViewModel : ObservableObject
     /// <summary>AUD-1: async device snapshot → Microphone dropdown items + selected index
     /// (pure rules in <see cref="MicrophoneListBuilder"/>; enumeration runs off the UI thread,
     /// coalesced by <c>AudioDeviceManager.RefreshDevicesAsync</c>).</summary>
-    public async Task<(IReadOnlyList<MicComboItem> Items, int SelectedIndex, string? ResolvedLabel)> BuildMicrophoneListAsync()
+    /// <param name="fresh">AUD-20: never join a pass that started before the call (a device change).</param>
+    public async Task<(IReadOnlyList<MicComboItem> Items, int SelectedIndex, string? ResolvedLabel)> BuildMicrophoneListAsync(bool fresh = false)
     {
-        var devices = await _deviceManager.RefreshDevicesAsync().ConfigureAwait(false);
+        var devices = await (fresh ? _deviceManager.RefreshDevicesFreshAsync() : _deviceManager.RefreshDevicesAsync())
+            .ConfigureAwait(false);
         var (id, name) = ReadMicrophonePin();
         var (items, selected) = MicrophoneListBuilder.Build(devices, id, name);
         // AUD-17: computed from the SAME snapshot the items came from, so the label can never
@@ -431,9 +433,10 @@ public partial class SettingsViewModel : ObservableObject
         // REL-17 diagnostics opt-ins (Settings -> Diagnostics owns the toggles). Device-local
         // consent — reset must switch them off; the trace key was also a pre-existing
         // gap in this list back when it was Debug-only.
-        _settings.SetBool(AppDefaults.PromptTraceLoggingOptIn, (bool)AppDefaults.Defaults[AppDefaults.PromptTraceLoggingOptIn]);
-        _settings.SetBool(AppDefaults.PromptTraceIncludeImagePrompts, (bool)AppDefaults.Defaults[AppDefaults.PromptTraceIncludeImagePrompts]);
-        _settings.SetBool(AppDefaults.KeepRecordingsForDebug, (bool)AppDefaults.Defaults[AppDefaults.KeepRecordingsForDebug]);
+        // REL-19: through the durable apply, so a reset whose write fails is recorded and stays off at the next launch.
+        DiagnosticsConsent.Apply(_settings, AppDefaults.PromptTraceLoggingOptIn, (bool)AppDefaults.Defaults[AppDefaults.PromptTraceLoggingOptIn]);
+        DiagnosticsConsent.Apply(_settings, AppDefaults.PromptTraceIncludeImagePrompts, (bool)AppDefaults.Defaults[AppDefaults.PromptTraceIncludeImagePrompts]);
+        DiagnosticsConsent.Apply(_settings, AppDefaults.KeepRecordingsForDebug, (bool)AppDefaults.Defaults[AppDefaults.KeepRecordingsForDebug]);
         // The Log Viewer's verbose toggle is a preference like the three above and was the one
         // diagnostics switch the reset skipped (2026-09-13). The sink's level switch follows the
         // setting here as it does under the toggle, so the log is back at Information the moment

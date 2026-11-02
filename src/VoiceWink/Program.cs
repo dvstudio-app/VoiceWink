@@ -90,6 +90,9 @@ public static class Program
                        //
                        // Has its own try/catch and never throws, same contract as the cleanup above.
                        UninstallRunningInstanceStop.StopVelopackOwnedInstances();
+
+                       // INS-2: last, because it only spawns the detached cleanup of the install-root husk and never throws.
+                       InstallRootJanitor.Schedule();
                    })
                    // TCH-1: machines updating from a 1.x-runtime VoiceWink hold no
                    // runtime of the 2.x family WAR_MAJOR_MINOR_VERSION names, so the

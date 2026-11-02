@@ -19,7 +19,8 @@ namespace VoiceWink.Services.System;
 ///
 /// <para><b>What that belt does NOT cover — the two gaps REL-31 considered, NOT an exhaustive
 /// list:</b> <c>Contexts</c> (a deliberate decision, recorded at its point in
-/// <see cref="BeforeSendEvent"/>) and the inside of a non-string <c>Extra</c> value. Other event
+/// <see cref="BeforeSendEvent"/>) and the inside of a non-string <c>Extra</c> value written by a
+/// direct <c>SetExtra</c> (Serilog-sourced ones arrive already scrubbed — REL-33). Other event
 /// fields are equally untouched — <c>TransactionName</c>, <c>Fingerprint</c>, <c>Modules</c>,
 /// <c>User</c>/<c>Request</c> (kept empty by <c>SendDefaultPii=false</c> rather than by scrubbing),
 /// <c>DebugImages</c> (whose <c>CodeFile</c>/<c>DebugFile</c> are the same path class
@@ -271,32 +272,18 @@ internal static class SentryInitializer
             // inside the fail-closed try (Codex plan round). The NAME layer is shared; only the
             // value call differs.
             //
-            // KNOWN LIMIT: a non-string value is left alone, and that channel is LIVE, not
-            // hypothetical. The first version of this comment claimed the gap was "arrived at
-            // independently" of the enricher's {@}-destructuring limit because "a direct Extra
-            // write never reaches the enricher" — which is wrong twice over, and the correction is
-            // the useful part (self-review). Sentry.Serilog's sink unwraps a ScalarValue to its RAW
-            // underlying object and passes any non-scalar LogEventPropertyValue through as an
-            // object, so ordinary structured logging puts non-strings in Extra with no SetExtra
-            // call anywhere: HotkeyService's hook-restart-limit Error logs an int, LicenseService's
-            // activation-shape Error logs a JsonValueKind. So this is the ENRICHER'S limit
-            // resurfacing on the same entries — LogRedactionEnricher.Enrich's value layer matches
-            // only ScalarValue { Value: string } — and the two limits STACK rather than backstop
-            // each other.
+            // KNOWN LIMIT: a non-string value is left alone HERE. Sentry.Serilog's sink unwraps a
+            // ScalarValue to its RAW object and passes any non-scalar LogEventPropertyValue through
+            // as an object, so ordinary structured logging puts non-strings in Extra — but since
+            // REL-33 LogRedactionEnricher walks every value shape (collections, {@} objects, maps,
+            // Uri/Guid scalars) before the sink sees it, so those arrive already scrubbed, exactly as
+            // strings do. The walk lives in the enricher, not here, so the two halves cannot diverge.
             //
-            // What keeps that benign today is the NAME layer, which both the enricher and this loop
-            // apply whatever the value's shape: a sensitive property name is dropped even when it
-            // carries a collection. The exposure is a non-sensitive NAME carrying user data in a
-            // collection or destructured object at Error level. No such site exists today (SEC-3/4
-            // routed the user-data sites through string tokens), and the fix belongs in the
-            // enricher rather than here, or the two halves diverge — tracked as REL-33.
-            //
-            // REOPEN THIS on either way a non-sensitive collection or destructured object can carry
-            // user data past the string-only value branch: an Error-level structured-log argument
-            // (the live channel, and the one the first version of this comment MISSED), or a direct
-            // SentryEvent.SetExtra in a capture path (which the first version named as the ONLY
-            // trigger — wrong as an exclusive claim, correct as one of two; Codex diff r1). Contexts
-            // below additionally reopens on a Sentry SDK upgrade that changes what it populates.
+            // What this loop still cannot reach is a non-string value written by a direct
+            // SentryEvent.SetExtra in a capture path, which never passes the enricher. None exists.
+            // REOPEN THIS on any object- or collection-valued SetExtra, or a Sentry SDK upgrade that
+            // changes how the sink maps properties into Extra. Contexts below additionally reopens
+            // on an SDK upgrade that changes what it populates.
             //
             // ALSO not covered, so it is not inferred from silence: Extra KEYS are never scrubbed
             // (the same posture as the tags loop and the breadcrumb Data scrub), and the string

@@ -65,7 +65,8 @@ public static class SupportBundle
     /// the limits common mail clients impose (~2000 chars after URL-encoding).</summary>
     public const int MaxMailtoChars = 1800;
 
-    internal const string OverflowNote = " (Full details are in the attached log file.)";
+    /// <summary>REL-36: names no attachment — the bundle never holds the description, and a mailto may attach nothing.</summary>
+    internal const string OverflowNote = " (The message was cut short here.)";
 
     /// <summary>Uncompressed budget for included recordings: 16 kHz mono 16-bit ≈ 1.9 MB/min,
     /// so ~8 minutes of audio; WAV barely compresses and mail attachments cap ~20-25 MB.</summary>
@@ -417,7 +418,7 @@ public static class SupportBundle
     /// <summary>
     /// Build a <c>mailto:</c> URI, truncating the body if subject+body would exceed
     /// <see cref="MaxMailtoChars"/> (appending <see cref="OverflowNote"/> so the recipient knows
-    /// the attached log carries the full detail). Subject and body are URL-encoded.
+    /// the text was cut). Subject and body are URL-encoded.
     /// </summary>
     public static string BuildMailto(string email, string subject, string body)
         => BuildMailto(email, subject, body, tail: null);

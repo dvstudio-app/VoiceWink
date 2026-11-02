@@ -92,10 +92,9 @@ internal static class ImageModelGate
     /// True only for an id verified text-only. The <paramref name="isImageModel"/> check is a
     /// fail-open safety valve: if the image classifier ever recognises a listed id, believe the
     /// classifier and proceed rather than refuse.
-    /// <para>Everything not on the list is "unknown capability" and proceeds — including
-    /// <c>dall-e-3</c>, which <c>AIEnhancementService.EnsureModelStillSupported</c> refuses further
-    /// downstream with an accurate retired-family message. This gate deliberately does not pre-empt
-    /// that guard.</para>
+    /// <para>Everything not on the list is "unknown capability" and proceeds — including a
+    /// shut-down model such as <c>dall-e-3</c>, which the provider then refuses with its own
+    /// error.</para>
     /// </summary>
     internal static bool IsKnownNonImageModel(string model, Func<string, bool> isImageModel)
         => !string.IsNullOrWhiteSpace(model)

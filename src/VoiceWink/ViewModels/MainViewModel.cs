@@ -307,8 +307,8 @@ public partial class MainViewModel : ObservableObject
     private readonly RedoFocusRetention _redoFocusRetention = new();
 
     /// <summary>
-    /// UI-7: how many picker dialogs are ON SCREEN right now (0 or 1 — the pickers are serialised
-    /// by <see cref="_enhancementPickerActive"/>).
+    /// UI-7: how many picker dialogs are ON SCREEN right now, or waiting for the main window's dialog
+    /// slot (UI-5: a wait behind an About dialog counts, so a dictation then copies rather than pastes).
     ///
     /// <para><b>Deliberately NOT <see cref="_enhancementPickerActive"/>, which is a different
     /// question.</b> That flag means "an enhancement operation owns the dialog slot" and is held
@@ -689,6 +689,11 @@ public partial class MainViewModel : ObservableObject
                 IsModelLoaded = true;
                 sw.Stop();
                 Logger.Debug("Local model preloaded in {ElapsedMs}ms", sw.ElapsedMilliseconds);
+            }
+            else if (outcome == Services.Transcription.PrepareOutcome.UnknownModel)
+            {
+                // ONB-6: the startup trail for a selection nothing serves; still fail-soft.
+                Logger.Warning("Selected speech model is not served by any runtime — the first recording will refuse it");
             }
             else
             {
@@ -1429,7 +1434,9 @@ public partial class MainViewModel : ObservableObject
         // ImageBatchPolicy.ClampCount). No target window or focus element rides the job:
         // a generated image goes to the clipboard only, never pasted (owner, 2026-09-29).
         int Count,
-        IDisposable? ReferenceLease);
+        IDisposable? ReferenceLease,
+        // HIS-10: the dictation's recording length, persisted by BuildImageRow; 0 where nothing was recorded.
+        double DurationSeconds);
 
     /// <summary>
     /// A finished job's presentation, waiting for the pipeline to be idle. OWNS the fresh-copy
@@ -2066,6 +2073,7 @@ public partial class MainViewModel : ObservableObject
             PromptUsed = req.Prompt?.Id,
             Timestamp = timestampUtc,
             AudioFilePath = null,
+            DurationSeconds = req.DurationSeconds,
             ModelName = req.TranscriptionModelName,
             EnhancementModelName = ImageJobModelLabel(req),
             Language = req.Language,
@@ -3334,7 +3342,8 @@ public partial class MainViewModel : ObservableObject
                 WasPushToTalk: ctx.WasPushToTalk,
                 IsNewGeneration: ctx.IsNewGeneration,
                 Count: count,
-                ReferenceLease: referenceLease);
+                ReferenceLease: referenceLease,
+                DurationSeconds: 0); // HIS-10: redo, regenerate and new image record nothing, so there is no recording length
 
             reservation.Start(jobCt => RunImageGenerationJobAsync(request, jobCt));
             Logger.Information("Image redo dispatched to background job (model {Model})", modelId);
@@ -4552,14 +4561,18 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
 
-            Logger.Warning("Recording start failed: audio device contention. {Message}", ex.Message);
+            if (ex.NoMicrophone)
+                Logger.Warning("Recording start failed: no microphone found");
+            else
+                Logger.Warning("Recording start failed: audio device contention. {Message}", ex.Message);
             HandleStartRecordingFailureCleanup(startupRecordingPath);
-            StatusText = "Microphone unavailable";
+            StatusText = ex.NoMicrophone ? NoMicrophonePillMessage : "Microphone unavailable";
             // EmitMiniRecorderError publishes a message pill, whose render shows the pill; an
             // Error-tone pill PERSISTS (no auto-hide) until the corner × or a newer presentation
             // (ERR-PERSIST). Do NOT manually set IsMiniRecorderVisible = false here — doing so would
             // immediately hide the actionable error before the user can read it.
-            EmitMiniRecorderError("Microphone unavailable — try again", MiniRecorderTone.Error);
+            EmitMiniRecorderError(ex.NoMicrophone ? NoMicrophonePillMessage : "Microphone unavailable — try again",
+                MiniRecorderTone.Error);
             ResetHotkeyState?.Invoke();
         }
         catch (Exception ex)
@@ -4583,6 +4596,8 @@ public partial class MainViewModel : ObservableObject
             // pill CAN name — the typed exception carries it, and its Sentry event (with the
             // cause) was already sent once by the runtime's reporter, so this line is Warning.
             var engineUnavailable = ex as Services.Transcription.LocalEngineUnavailableException;
+            // ONB-6: the selected model is one nothing serves — the third nameable cause.
+            var unknownModel = ex is Services.Transcription.UnknownTranscriptionModelException;
             var logLevel = StartFailureLogLevel(ex, startupCts?.IsCancellationRequested == true);
             if (diskFull)
                 Logger.Warning("Failed to start recording, disk full: {ErrorType}: {ErrorMessage}",
@@ -4590,6 +4605,8 @@ public partial class MainViewModel : ObservableObject
             else if (engineUnavailable is not null)
                 Logger.Warning("Failed to start recording, speech engine unavailable: {Cause}",
                     engineUnavailable.Cause?.ToString() ?? "unknown");
+            else if (unknownModel)
+                Logger.Warning("Failed to start recording, selected speech model unknown");
             else if (logLevel == Serilog.Events.LogEventLevel.Information)
                 Logger.Information("Recording start cancelled ({ErrorType})", ex.GetType().Name);
             else
@@ -4604,6 +4621,7 @@ public partial class MainViewModel : ObservableObject
                 ? "Recording cancelled"
                 : diskFull ? DiskFullPillMessage
                 : engineUnavailable is not null ? engineUnavailable.Message
+                : unknownModel ? Helpers.UnusableModelSelection.PillMessage
                 : "Recording failed";
             // One string for both surfaces — a longer window-status variant would only restate
             // the pill in a second style (copy review 2026-07-25).
@@ -5920,6 +5938,9 @@ public partial class MainViewModel : ObservableObject
             transcriptionTrace.Resolve(promptWasImageGeneration);
             transcriptionTrace.Emit();
 
+            // HIS-10: read once while the WAV exists; feeds the text row and the voice image rows. 0 = unreadable.
+            var recordingSeconds = Helpers.OperationTiming.TryReadWavSeconds(recordingPath) ?? 0;
+
             // Image generation flow — dispatches a BACKGROUND job (IMG-BG) and returns; the
             // pipeline goes Idle while the image generates, so recording stays available.
             if (ImageGenerationFeature.IsEnabled && prompt?.IsImageGeneration == true &&
@@ -5927,7 +5948,7 @@ public partial class MainViewModel : ObservableObject
             {
                 var transcriptionModelNameForImage = attemptModel;
                 var handledByImageBranch = await TryRunImageGenerationAsync(
-                    text, rawText, prompt, transcriptionModelNameForImage, language, wasPushToTalk, ct);
+                    text, rawText, prompt, transcriptionModelNameForImage, language, wasPushToTalk, recordingSeconds, ct);
                 if (handledByImageBranch) return;
                 // IMG-BG: the ONLY fall-through is a REFUSAL (a background image job is
                 // already running, or exclusive maintenance). The words are handled as a
@@ -6160,6 +6181,7 @@ public partial class MainViewModel : ObservableObject
                         PromptUsed = prompt?.Id,
                         Timestamp = transcriptionCompletedAtUtc,
                         AudioFilePath = null, // WAV is deleted after transcription
+                        DurationSeconds = recordingSeconds,
                         ModelName = modelName,
                         EnhancementModelName = enhancedText != null || enhancementFailed
                             ? GetEnhancementModelLabel(prompt) : null,
@@ -6414,10 +6436,15 @@ public partial class MainViewModel : ObservableObject
             // environmental, fully surfaced by DescribeTranscriptionFailure, no defect of ours.
             // 2026-10-17 adds LocalEngineUnavailableException: its cause-bearing event was sent once
             // per session by ParakeetUnavailableReporter; an Error here would add one per dictation.
+            // ONB-6 adds UnknownTranscriptionModelException: a stored setting the user fixes on Models.
             if (ex is HttpRequestException or TimeoutException or Helpers.InvalidApiKeyFormatException
                 or Helpers.GpuSelfTestRefusedException or Services.Transcription.ModelLocalIOException
-                or Services.Transcription.LocalEngineUnavailableException)
-                Logger.Warning("Failed to transcribe: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
+                or Services.Transcription.LocalEngineUnavailableException
+                or Services.Transcription.UnknownTranscriptionModelException)
+                Logger.Warning("Failed to transcribe: {ErrorType}: {ErrorMessage}", ex.GetType().Name,
+                    // ONB-6: that message carries the imported setting's text; never log it.
+                    ex is Services.Transcription.UnknownTranscriptionModelException
+                        ? Helpers.UnusableModelSelection.PillMessage : ex.Message);
             else
                 Logger.Error(ex, "Failed to transcribe");
             MarkTerminalPresentation(); // IMG-BG epoch fence
@@ -6576,9 +6603,10 @@ public partial class MainViewModel : ObservableObject
             // chose — and once a second local runtime exists it would also mean the wrong ENGINE.
             // The message deliberately does not echo the stored name: settings import validates
             // that field only as a string, so it can carry control or bidi characters.
-            Logger.Error("Selected local model is not served by any runtime");
-            throw new InvalidOperationException(
-                "That transcription model isn't available. Pick one on the Models page.");
+            // ONB-6: typed, so every pill names the cause (UnusableModelSelection.PillMessage);
+            // Warning, because a stored setting the user can fix is not a defect of ours.
+            Logger.Warning("Selected local model is not served by any runtime");
+            throw new Services.Transcription.UnknownTranscriptionModelException(selectedName);
         }
 
         if (outcome == Services.Transcription.PrepareOutcome.Unavailable)
@@ -6906,6 +6934,7 @@ public partial class MainViewModel : ObservableObject
         string transcriptionModelName,
         string language,
         bool wasPushToTalk, // resolved by the caller — a RETRY run must not read live hotkey state (REL-12)
+        double recordingSeconds, // HIS-10: the dictation's length, read while its WAV still exists
         CancellationToken ct)
     {
         // Refusal BEFORE the options dialog and before ANY resource transfer
@@ -7060,7 +7089,8 @@ public partial class MainViewModel : ObservableObject
                 WasPushToTalk: wasPushToTalk,
                 IsNewGeneration: false,
                 Count: count,
-                ReferenceLease: referenceLease);
+                ReferenceLease: referenceLease,
+                DurationSeconds: recordingSeconds);
 
             // Pipeline exit state BEFORE Start (Codex diff review round 2): a PRE-CANCELLED
             // job token (tray Cancel during preparation) makes the body's synchronous prefix
@@ -7499,6 +7529,9 @@ public partial class MainViewModel : ObservableObject
     /// stays in the log line.</summary>
     internal const string DiskFullPillMessage = "Not enough disk space — free some space and try again";
 
+    /// <summary>AUD-35: Windows reports no capture endpoint at all; also the window status line.</summary>
+    internal const string NoMicrophonePillMessage = "No microphone found";
+
     /// <summary>REL-42: the level a failed recording start logs at — Error is what the Sentry sink
     /// forwards. A full disk is environmental (NET-5c, Warning). A cancel of THIS start — the
     /// push-to-talk release, Esc or the pill's × while still Starting — is the user's own action
@@ -7512,6 +7545,7 @@ public partial class MainViewModel : ObservableObject
     {
         Services.Transcription.ModelLocalIOException => Serilog.Events.LogEventLevel.Warning,
         Services.Transcription.LocalEngineUnavailableException => Serilog.Events.LogEventLevel.Warning,
+        Services.Transcription.UnknownTranscriptionModelException => Serilog.Events.LogEventLevel.Warning,
         OperationCanceledException when startCancelled => Serilog.Events.LogEventLevel.Information,
         _ => Serilog.Events.LogEventLevel.Error,
     };
@@ -7545,6 +7579,9 @@ public partial class MainViewModel : ObservableObject
         // 2026-10-17: the local engine cannot run here — the message names the cause (an engine
         // that would not start, a processor it cannot use, a restart owed). App-authored.
         Services.Transcription.LocalEngineUnavailableException unavailable => unavailable.Message,
+        // ONB-6: the selected model is one nothing serves (the registry's throw too); the message
+        // never echoes the stored name.
+        Services.Transcription.UnknownTranscriptionModelException => Helpers.UnusableModelSelection.PillMessage,
         // REL-22: a 401 the PROVIDER labelled as credit exhaustion in a structured field is not a
         // credential failure. ElevenLabs answers an empty balance with 401, so the arm below sent a
         // user with a perfectly good key off to regenerate it. Must precede that arm; app-authored

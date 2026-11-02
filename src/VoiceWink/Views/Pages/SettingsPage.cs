@@ -32,6 +32,42 @@ public sealed class SettingsPage : Page
         _viewModel = App.Services.GetRequiredService<SettingsViewModel>();
         BuildUI();
         if (scrollToShortcuts) Loaded += ScrollToShortcutsOnce;
+        Loaded += (_, _) => StartDeviceWatcher();
+        Unloaded += (_, _) => StopDeviceWatcher();
+    }
+
+    // AUD-20: live row's refresh (replaced on rebuild); 500 ms trailing debounce so one plug's burst is one enumeration.
+    private Action? _refreshMicrophoneRow;
+    private Services.Audio.CaptureDeviceChangeWatcher? _deviceWatcher;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _deviceChangeDebounce;
+
+    private void StartDeviceWatcher()
+    {
+        if (_deviceWatcher is not null || _pageUnloaded) return; // a Loaded after Unloaded would never be stopped
+        var queue = DispatcherQueue;
+        _deviceWatcher = Services.Audio.CaptureDeviceChangeWatcher.Start(
+            () => queue.TryEnqueue(RestartDeviceChangeDebounce));
+    }
+
+    private void StopDeviceWatcher()
+    {
+        _deviceWatcher?.Dispose();
+        _deviceWatcher = null;
+        _deviceChangeDebounce?.Stop();
+    }
+
+    private void RestartDeviceChangeDebounce()
+    {
+        if (_pageUnloaded) return;
+        if (_deviceChangeDebounce is null)
+        {
+            _deviceChangeDebounce = DispatcherQueue.CreateTimer();
+            _deviceChangeDebounce.Interval = TimeSpan.FromMilliseconds(500);
+            _deviceChangeDebounce.IsRepeating = false;
+            _deviceChangeDebounce.Tick += (_, _) => { if (!_pageUnloaded) _refreshMicrophoneRow?.Invoke(); };
+        }
+        _deviceChangeDebounce.Stop();
+        _deviceChangeDebounce.Start();
     }
 
     /// <summary>
@@ -139,7 +175,7 @@ public sealed class SettingsPage : Page
                 RequestedTheme = AppTheme.ElementTheme
             };
 
-            if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            if (await DialogLease.MainWindow.ShowAsync(dialog, "Reset all settings") == ContentDialogResult.Primary)
             {
                 _viewModel.ResetAllSettingsCommand.Execute(null);
                 // Rebuild UI to reflect new values
@@ -570,6 +606,7 @@ public sealed class SettingsPage : Page
         combo.DropDownOpened += async (_, _) => await RefreshMicrophoneComboAsync(combo, resolvedBlock);
         Unloaded += (_, _) => _pageUnloaded = true;
         _ = RefreshMicrophoneComboAsync(combo, resolvedBlock);
+        _refreshMicrophoneRow = () => _ = RefreshMicrophoneComboAsync(combo, resolvedBlock, fresh: true);
 
         // STACKED, not the label-left/control-right shape the sibling toggle rows use, and the
         // difference is the control: a ToggleSwitch is a fixed width, so it never competes with
@@ -598,12 +635,12 @@ public sealed class SettingsPage : Page
         };
     }
 
-    private async Task RefreshMicrophoneComboAsync(ComboBox combo, TextBlock resolvedBlock)
+    private async Task RefreshMicrophoneComboAsync(ComboBox combo, TextBlock resolvedBlock, bool fresh = false)
     {
         var gen = _micSelectionGen; // snapshot BEFORE the enumeration reads settings
         try
         {
-            var (items, selectedIndex, resolvedLabel) = await _viewModel.BuildMicrophoneListAsync();
+            var (items, selectedIndex, resolvedLabel) = await _viewModel.BuildMicrophoneListAsync(fresh);
             if (_pageUnloaded) return;            // resumed after navigation away — stale UI
             if (gen != _micSelectionGen) return;  // user picked meanwhile — this snapshot is stale
 
@@ -1163,7 +1200,7 @@ public sealed class SettingsPage : Page
         settingsBox.Checked += Sync; settingsBox.Unchecked += Sync;
         dictionaryBox.Checked += Sync; dictionaryBox.Unchecked += Sync;
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        if (await DialogLease.MainWindow.ShowAsync(dialog, "Import from this file") != ContentDialogResult.Primary)
             return BackupParts.None;
         return (settingsBox.IsChecked == true ? BackupParts.Settings : BackupParts.None)
              | (dictionaryBox.IsChecked == true ? BackupParts.Dictionary : BackupParts.None);
@@ -1198,7 +1235,7 @@ public sealed class SettingsPage : Page
             RequestedTheme = AppTheme.ElementTheme,
         };
 
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete transcription history") != ContentDialogResult.Primary) return;
 
         try
         {
@@ -1339,7 +1376,7 @@ public sealed class SettingsPage : Page
             }
         };
 
-        await dialog.ShowAsync();
+        await DialogLease.MainWindow.ShowAsync(dialog, "Delete all data");
     }
 
     /// <summary>Minimal informational dialog (single close button).</summary>
@@ -1622,7 +1659,7 @@ public sealed class SettingsPage : Page
                 RequestedTheme = AppTheme.ElementTheme
             };
 
-            await dialog.ShowAsync();
+            await DialogLease.MainWindow.ShowAsync(dialog, "Hotkey unavailable");
         }
         catch (Exception ex)
         {
@@ -1672,7 +1709,7 @@ public sealed class SettingsPage : Page
                 RequestedTheme = AppTheme.ElementTheme
             };
 
-            var result = await dialog.ShowAsync();
+            var result = await DialogLease.MainWindow.ShowAsync(dialog, "Hotkey conflict");
             return result == ContentDialogResult.Primary;
         }
         catch (Exception ex)

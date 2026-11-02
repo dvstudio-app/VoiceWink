@@ -36,6 +36,7 @@ internal static class PreflightFaultLog
         OperationCanceledException or TimeoutException or HttpRequestException
             or ModelSourceIOException or ModelSourceEndOfStreamException
             or ModelLocalIOException or GpuSelfTestRefusedException
+            or UnknownTranscriptionModelException // ONB-6: a stored setting the user fixes on Models
             => LogEventLevel.Warning,
         _ => SessionErrorBudget.LevelFor("preflight:" + ex.GetType().Name),
     };

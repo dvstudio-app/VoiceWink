@@ -13,11 +13,16 @@ namespace VoiceWink.Services.Licensing;
 /// Validation requires 2 of 3 components to match the stored fingerprint so that common
 /// failure modes — VM clones sharing MachineGuid, disk restores regenerating it, USB NICs
 /// being added/removed — do not lock paying users out of their own machines.
+/// The stored MAC also matches any other adapter present here, so a change of active adapter is tolerated (LIC-33).
 /// </summary>
 public readonly record struct HardwareFingerprint(string MachineGuidHash, string SmbiosUuidHash, string MacHash)
 {
     private const char Separator = '|';
+    private const char CandidateSeparator = ',';
     private static ILogger Logger => Log.ForContext(typeof(HardwareFingerprint));
+
+    /// <summary>LIC-33 hashes of every non-loopback adapter on THIS machine, any status, comma-joined; current side only, never serialized.</summary>
+    public string? AdapterMacHashes { get; init; }
 
     /// <summary>
     /// Number of non-empty components in this fingerprint. Used to decide whether the
@@ -38,9 +43,15 @@ public readonly record struct HardwareFingerprint(string MachineGuidHash, string
         var count = 0;
         if (!string.IsNullOrEmpty(MachineGuidHash) && MachineGuidHash == other.MachineGuidHash) count++;
         if (!string.IsNullOrEmpty(SmbiosUuidHash) && SmbiosUuidHash == other.SmbiosUuidHash) count++;
-        if (!string.IsNullOrEmpty(MacHash) && MacHash == other.MacHash) count++;
+        // LIC-33: the stored MAC may sit on any adapter here, but only while the current MAC part is itself counted.
+        if (!string.IsNullOrEmpty(MacHash) && !string.IsNullOrEmpty(other.MacHash)
+            && (MacHash == other.MacHash || IsAdapterMacHash(other.MacHash))) count++;
         return count;
     }
+
+    private bool IsAdapterMacHash(string hash) =>
+        !string.IsNullOrEmpty(AdapterMacHashes)
+        && AdapterMacHashes.Split(CandidateSeparator).Contains(hash, StringComparer.Ordinal);
 
     public string Serialize() => $"{MachineGuidHash}{Separator}{SmbiosUuidHash}{Separator}{MacHash}";
 
@@ -65,7 +76,11 @@ public readonly record struct HardwareFingerprint(string MachineGuidHash, string
         return new HardwareFingerprint(
             HashOrEmpty(ReadMachineGuid()),
             HashOrEmpty(ReadSmbiosUuid()),
-            HashOrEmpty(ReadPrimaryMac()));
+            HashOrEmpty(ReadPrimaryMac()))
+        {
+            AdapterMacHashes = string.Join(CandidateSeparator,
+                ReadAdapterMacs().Select(HashOrEmpty).Where(h => h.Length > 0).Distinct().Order(StringComparer.Ordinal)),
+        };
     }
 
     private static string HashOrEmpty(string raw)
@@ -143,5 +158,23 @@ public readonly record struct HardwareFingerprint(string MachineGuidHash, string
             Logger.Debug(ex, "Failed to enumerate network interfaces for MAC fingerprint");
         }
         return "";
+    }
+
+    // Every MAC ReadPrimaryMac could ever pick (its two loops' union), minus the Up filter.
+    private static List<string> ReadAdapterMacs()
+    {
+        try
+        {
+            return NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+                .Select(n => n.GetPhysicalAddress().ToString())
+                .Where(mac => !string.IsNullOrEmpty(mac))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug(ex, "Failed to enumerate network interfaces for adapter MAC candidates");
+            return [];
+        }
     }
 }

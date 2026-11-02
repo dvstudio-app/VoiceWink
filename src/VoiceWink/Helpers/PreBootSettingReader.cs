@@ -33,6 +33,9 @@ internal static class PreBootSettingReader
 {
     public static PreBootSetting Read(string settingsFilePath, string key)
     {
+        // REL-19: a recorded consent opt-out wins over the file, an absent file or key included.
+        if (ConsentTombstone.IsVetoed(settingsFilePath, key)) return PreBootSetting.False;
+
         // Read first, never File.Exists: it answers false on an ACCESS error too, which would turn
         // settings that exist but cannot be read into "absent" (SettingsService's own TryLoadPrimary
         // avoids File.Exists for the same reason). Only a missing file or folder is absent.

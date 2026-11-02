@@ -9,8 +9,8 @@ namespace VoiceWink.Services.Http;
 /// OperationCanceledException leaks to catch sites that mislabel it: the transcribe
 /// path's outer OCE catch reads it as "cancelled by user" (silent loss), and
 /// <see cref="RetryingHandler"/> — which retries only HttpRequestException — would
-/// not retry it. Sits BELOW RetryingHandler on the "ai"/"images" pipelines (so a
-/// connect-timeout is retried like any other network error) and alone on
+/// not retry it. Sits BELOW RetryingHandler on "ai"/"images" (which retry it like any other
+/// network error) and "licensing" (which disables retries per request), and alone on
 /// "transcription", whose HTTP pipeline still has no retry handler — upload bodies
 /// are not replayable. Since NET-1 that path retries at the OPERATION level instead
 /// (<c>TranscriptionConnectRetry</c>), gated on the <see cref="ConnectTimeoutException"/>

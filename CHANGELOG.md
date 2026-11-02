@@ -17,6 +17,29 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.122.423] - 2026-11-01
+
+- On a PC with no microphone, recording now says "No microphone found" instead of "Recording failed".
+- The Microphone list in Settings now updates as soon as you plug in or unplug a microphone.
+- Activating on a network that silently blocks the license server now asks you to check your connection instead of warning that a device may still count against your license.
+- Starting a new image right after cancelling one now shows "Generating image…" and its Stop button at once.
+- If Windows doesn't show the tray icon at first, VoiceWink now tries again instead of running without it.
+- The GPU line on the Models page no longer says your graphics card will be checked when VoiceWink restarts.
+- Turning off GPU acceleration no longer asks you to restart when every local model already runs on the processor.
+- After a failed GPU check, "Restart now" no longer brings the same dialog back.
+- Uninstalling VoiceWink no longer leaves a VoiceWinkApp folder behind.
+- Report a problem now says what raw prompt logs contain.
+- Redo and Retry pressed while a VoiceWink dialog is open now go ahead once you close that dialog.
+
+## [1.122.422] - 2026-10-30
+
+- Exported history now shows how long each new recording was.
+- Fixed AVIF images sometimes being unavailable as references until VoiceWink restarted.
+- Changing network adapters is less likely to make your license invalid.
+- If the free trial can't be saved, VoiceWink now says so instead of appearing to start it.
+- Warnings that a device may still count against your license now stay on the License page until you dismiss them.
+- Activating from an out-of-date License page no longer uses up a second device.
+
 ## [1.121.420] - 2026-10-27
 
 - Cancel a recording: press Escape while holding the hotkey, press Escape twice quickly, or click × on the recorder. Nothing is transcribed or pasted.

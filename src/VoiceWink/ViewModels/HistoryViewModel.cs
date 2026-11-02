@@ -308,15 +308,11 @@ public partial class HistoryViewModel : ObservableObject
     /// <summary>Delete all image or all text records from the database.</summary>
     public async Task DeleteByTypeAsync(bool imagesOnly)
     {
-        // Leave SEARCH mode (and page 0) BEFORE the delete (F39 + Codex R1/R2 ordering): the
-        // service raises HistoryChanged from inside the delete call, and the page's queued
-        // handler runs RefreshAsync — which must already observe the post-search, page-0
-        // state, or its stale load races the type-filtered reload below. Restored if the
-        // delete fails — the view genuinely still shows the search results then.
+        // Before the delete, whose HistoryChanged refresh must load what ReloadAsync loads (F39, HIS-15).
         var wasSearchActive = IsSearchActive;
         var priorSearchPage = _searchPage;
         var priorCurrentPage = CurrentPage;
-        IsSearchActive = false;
+        IsSearchActive = !string.IsNullOrWhiteSpace(SearchQuery);
         _searchPage = 0;
         CurrentPage = 0;
         int count;
@@ -333,12 +329,7 @@ public partial class HistoryViewModel : ObservableObject
             CurrentPage = priorCurrentPage;
             throw;
         }
-        // Reload through the SHARED non-search load (keeps _typeFilter): it queries first and
-        // replaces the collection only after both awaits, atomically on the UI thread — the
-        // old manual clear-await-append block here could interleave with the event-triggered
-        // RefreshAsync (clear → event refresh replaces → append = duplicate rows, Codex R2).
-        // Now both flows are whole-collection replacements; any completion order converges.
-        await LoadAsync(null);
+        await ReloadAsync(); // keeps the filter and the box's term (HIS-15)
     }
 
 }

@@ -33,7 +33,7 @@ namespace VoiceWink.Services.System;
 /// elevated instance makes <c>MainModule</c> throw, and "could not read the path" must never
 /// degrade into "stop it anyway", which would make the guard name-only.</item>
 /// <item><b>A hard kill can corrupt user data.</b> Settings writes are debounced 250 ms, and
-/// Velopack's uninstall does not remove <c>%LOCALAPPDATA%\VoiceWink</c> (that is INS-2's husk), so a
+/// Velopack's uninstall does not remove <c>%LOCALAPPDATA%\VoiceWink</c> (the data root survives by design), so a
 /// killed process can lose a write it had already accepted. Graceful first, kill only as fallback.</item>
 /// </list>
 ///

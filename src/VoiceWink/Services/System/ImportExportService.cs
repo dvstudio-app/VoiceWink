@@ -527,6 +527,12 @@ public sealed class ImportExportService
         var importedCount = 0;
         foreach (var (name, value) in toApply)
         {
+            // REL-19: a recorded opt-out stays authoritative; only a durable toggle or reset clears it.
+            if (ConsentTombstone.IsVetoed(_settings.FilePath, name))
+            {
+                Logger.Information("Import: '{Key}' skipped — a recorded opt-out keeps it off", name);
+                continue;
+            }
             _settings.Set(name, value);
             importedCount++;
         }

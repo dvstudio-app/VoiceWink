@@ -258,18 +258,18 @@ internal sealed class MiniRecorderPresentationController : IDisposable
         if (_imageJob is not { Content: PillContent.ImageJob })
         {
             _imageJob = new Slot { Handle = NextHandle(), Content = new PillContent.ImageJob(null), Lifetime = new PillLifetime.WhileOwned() };
-            // REL-22 supersession, mirroring PublishPipeline's: a genuinely NEW job clears a PERSISTENT
-            // message so a stale error can't cover "Generating image…" (+ hide its stop button). Needed
-            // because REL-22 stopped masking persistent messages under an idle job — without this, an
-            // undismissed "Transcription failed" would sit on top of a job the user started afterwards
-            // from History Redo, which reaches ImageGenerationJobService WITHOUT running a recording
-            // pipeline (HistoryPage → RequestModelPickerWithContext), so nothing else clears it.
-            // Scoped two ways, each deliberate: only on NEW slot creation, because
-            // OnImageJobServiceStateChanged republishes on every job state change and an unconditional
-            // clear would wipe a failure reported DURING the job — the REL-22 case itself; and only
-            // UntilDismissed, because a timed message expires on its own and was never masked anyway.
-            if (_message is { Lifetime: PillLifetime.UntilDismissed })
-                _message = null;
+            // REL-22 supersession, mirroring PublishPipeline's: a genuinely NEW job clears a predating
+            // message so stale news can't cover "Generating image…" (+ hide its stop button). Needed
+            // because a message outranks an idle job — without this, an undismissed "Transcription
+            // failed" would sit on top of a job the user started afterwards from History Redo, which
+            // reaches ImageGenerationJobService WITHOUT running a recording pipeline
+            // (HistoryPage → RequestModelPickerWithContext), so nothing else clears it.
+            // Only on NEW slot creation, because OnImageJobServiceStateChanged republishes on every job
+            // state change and an unconditional clear would wipe a failure reported DURING the job —
+            // the REL-22 case itself. Any lifetime (PILL-7): a timed message is cleared, not masked —
+            // starting the job means the user moved on, and a paused "Image generation cancelled"
+            // resumed after this job would read as THIS job's outcome.
+            _message = null;
             // The AFFORDANCE needs the same temporal rule but must NOT be cleared — its retained
             // context is the user's recording. So it is stamped as predating this job and MASKED by
             // Reconcile instead, resurfacing when the job ends. `FromFallback` cannot serve here: it
@@ -626,7 +626,7 @@ internal sealed class MiniRecorderPresentationController : IDisposable
         //    age and an OLD persistent pill covering a NEW job is the 2026-07-24 bug again. Neither slot
         //    could answer it alone: the message slot has no flag at all, and the affordance's
         //    FromFallback answers a different question (resurfaced by machinery, not older than the
-        //    job). So PublishImageJob stamps both at job start — clearing a persistent message, masking
+        //    job). So PublishImageJob stamps both at job start — clearing any message (PILL-7), masking
         //    a predating affordance via `_affordancePredatesImageJob` — and PublishPipeline keeps
         //    clearing `_message` at recording start. Both sites are needed: an image job does NOT always
         //    follow a dictation (History Redo starts one with no recording at all).

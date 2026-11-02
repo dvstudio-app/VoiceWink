@@ -176,14 +176,8 @@ internal static class GpuToggleAvailability
     /// <summary>UI-12: the neutral status line while the selected engine's check is in flight.</summary>
     internal static string CheckingStatus(string engine) => $"Checking your graphics card for {engine}\u2026";
 
-    /// <summary>UI-12: the neutral status line when the selected engine's check is still owed. The
-    /// promise holds for the SELECTED engine WHEN ITS MODEL IS INSTALLED: a Whisper selection is
-    /// preloaded at start (which queues its self-test) and a Parakeet selection queues its warm-up
-    /// at start. It is false when the model is not on disk — the preload no-ops with nothing to
-    /// load and the Parakeet warm-up finds no GGUF — so <see cref="Decide"/> withholds it there
-    /// (Codex diff r2). The case where it fails for an installed model, one selected after a
-    /// recording, is TRN-64's defect.</summary>
-    internal static string AwaitingStatus(string engine) => $"Your graphics card will be checked for {engine} when VoiceWink restarts.";
+    /// <summary>UI-12/UI-17: the owed-check line names no occasion — the check usually starts within seconds, only sometimes at the next start.</summary>
+    internal static string AwaitingStatus(string engine) => $"Your graphics card hasn't been checked for {engine} yet.";
 
     /// <summary>TRN-64 PR 2 (owner copy decision, 2026-09-04): a PASSING check is said, positively —
     /// the feature is promoted, never merely defended. Never a per-PC number: nothing measured on
@@ -242,8 +236,8 @@ internal static class GpuToggleAvailability
     /// "local models run on the CPU" whichever one is selected. Defaulting to <c>null</c> keeps
     /// every existing caller — and the union behaviour — unchanged.</param>
     /// <param name="selectedModelInstalled">UI-12: whether the selected model is on disk. Gates
-    /// the "will be checked when VoiceWink restarts" line only — a check that cannot be scheduled
-    /// (nothing to preload, no GGUF to warm) must not be promised. A run already in flight is a
+    /// the "hasn't been checked yet" line only — a check that cannot be scheduled
+    /// (nothing to preload, no GGUF to warm) must not be announced as pending. A run already in flight is a
     /// fact and is reported regardless. Defaults to <c>true</c> so every existing caller and
     /// test keeps its behaviour.</param>
     /// <param name="selectedEngineOnGpu">TRN-64 PR 2 (self-review): whether the selected engine is

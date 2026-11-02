@@ -481,16 +481,14 @@ public static class ImageOptions
     /// <summary>
     /// ENH-6: whether an OpenAI image model accepts the <c>input_fidelity</c> parameter
     /// on <c>/images/edits</c>. Per the API reference (verified 2026-07-11): supported by
-    /// <c>gpt-image-1</c> and <c>gpt-image-1.5</c> only; explicitly NOT
-    /// <c>gpt-image-1-mini</c>; gpt-image-2 always processes at high fidelity and
-    /// REJECTS the parameter. Equality-first matching — a broad
-    /// <c>StartsWith("gpt-image-1")</c> would wrongly include the mini (plan review).
+    /// <c>gpt-image-1.5</c> only (<c>gpt-image-1</c>, the other one, was shut down 2026-10-23);
+    /// explicitly NOT <c>gpt-image-1-mini</c>; gpt-image-2 always processes at high fidelity
+    /// and REJECTS the parameter. Equality-first matching, so the mini never matches.
     /// Dated snapshots (<c>gpt-image-1.5-2026-…</c>) match via their family prefix.
     /// </summary>
     public static bool SupportsInputFidelity(string? model)
     {
         if (string.IsNullOrEmpty(model)) return false;
-        if (model.Equals("gpt-image-1", StringComparison.OrdinalIgnoreCase)) return true;
         if (model.Equals("gpt-image-1.5", StringComparison.OrdinalIgnoreCase)) return true;
         if (model.StartsWith("gpt-image-1.5-", StringComparison.OrdinalIgnoreCase)) return true;
         return false;
@@ -1327,8 +1325,8 @@ public static class ImageOptions
         // OpenRouter routing-variant suffixes (":nitro", ":floor", ":free" — documented
         // as applicable to ANY model id) are routing hints, not part of the model
         // family — strip before classification so "openai/gpt-image-2:nitro" keeps
-        // gpt-image-2's capabilities and "dall-e-3:nitro" is still refused (Codex
-        // diff r2: the delimiter-aware classifiers would otherwise regress them).
+        // gpt-image-2's capabilities (Codex diff r2: the delimiter-aware classifiers
+        // would otherwise regress it).
         var colon = bare.IndexOf(':');
         return colon >= 0 ? bare[..colon] : bare;
     }

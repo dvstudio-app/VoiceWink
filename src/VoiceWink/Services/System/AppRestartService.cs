@@ -82,16 +82,19 @@ public sealed class AppRestartService
     private readonly Func<bool> _isUpdateApplyInFlight;
     private readonly IProcessStarter _starter;
     private readonly int _currentPid;
+    private readonly Func<string?> _whisperPinToCarry;
 
     /// <param name="isUpdateApplyInFlight">Bound in DI to <c>IUpdateService.IsApplyInFlight</c>
     /// — a probe rather than the whole interface, the <c>MaintenanceSourcesWiring</c> shape.</param>
+    /// <param name="whisperPinToCarry">TRN-66: the unsaved Whisper CPU pin for <see cref="RestartHandoff.WhisperCpuPinVariable"/>, or null.</param>
     public AppRestartService(
         SettingsService settings,
         IMaintenanceGate gate,
         IAppLifetime lifetime,
         LauncherDiscovery launcher,
-        Func<bool> isUpdateApplyInFlight)
-        : this(settings, gate, lifetime, launcher, isUpdateApplyInFlight, ProductionProcessStarter.Instance, Environment.ProcessId)
+        Func<bool> isUpdateApplyInFlight,
+        Func<string?>? whisperPinToCarry = null)
+        : this(settings, gate, lifetime, launcher, isUpdateApplyInFlight, ProductionProcessStarter.Instance, Environment.ProcessId, whisperPinToCarry)
     {
     }
 
@@ -102,8 +105,10 @@ public sealed class AppRestartService
         LauncherDiscovery launcher,
         Func<bool> isUpdateApplyInFlight,
         IProcessStarter starter,
-        int currentPid)
+        int currentPid,
+        Func<string?>? whisperPinToCarry = null)
     {
+        _whisperPinToCarry = whisperPinToCarry ?? (static () => null);
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _gate = gate ?? throw new ArgumentNullException(nameof(gate));
         _lifetime = lifetime ?? throw new ArgumentNullException(nameof(lifetime));
@@ -191,9 +196,10 @@ public sealed class AppRestartService
                 return AppRestartResult.SettingsNotDurable(DescribeError(ex));
             }
 
-            // 6. Start the successor. It inherits our environment plus ONE child-only variable naming
-            //    our pid, and waits for us to exit before it claims anything (RestartHandoff).
-            var startInfo = BuildStartInfo(launch, _currentPid);
+            // 6. Start the successor. It inherits our environment plus a child-only variable naming
+            //    our pid, and waits for us to exit before it claims anything (RestartHandoff). A
+            //    Whisper CPU pin the marker could not save rides a second one (TRN-66).
+            var startInfo = BuildStartInfo(launch, _currentPid, _whisperPinToCarry());
             try
             {
                 _starter.Start(startInfo);
@@ -238,7 +244,7 @@ public sealed class AppRestartService
     /// <summary>The successor's start info. Pure, so the test pins the shape: no shell, no console
     /// window (a bare <c>dotnet … .dll</c> would otherwise open one), and the handoff variable set
     /// on the CHILD's block only — never <c>Environment.SetEnvironmentVariable</c> in this process.</summary>
-    internal static ProcessStartInfo BuildStartInfo(LaunchCommand launch, int predecessorPid)
+    internal static ProcessStartInfo BuildStartInfo(LaunchCommand launch, int predecessorPid, string? whisperPin = null)
     {
         var startInfo = new ProcessStartInfo(launch.FileName, launch.Arguments)
         {
@@ -246,6 +252,7 @@ public sealed class AppRestartService
             CreateNoWindow = true,
         };
         startInfo.Environment[RestartHandoff.PredecessorPidVariable] = predecessorPid.ToString(CultureInfo.InvariantCulture);
+        if (whisperPin is not null) startInfo.Environment[RestartHandoff.WhisperCpuPinVariable] = whisperPin;
         return startInfo;
     }
 

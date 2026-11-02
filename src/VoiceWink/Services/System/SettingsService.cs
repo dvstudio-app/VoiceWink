@@ -214,7 +214,11 @@ public sealed class SettingsService : IDisposable
     /// NOT swallow exceptions. Existing debounced + Dispose paths continue using
     /// <see cref="Save"/> so their fail-quiet behaviour is unchanged.
     /// </summary>
-    public void FlushOrThrow()
+    public void FlushOrThrow() => _ = TryFlushOrThrow();
+
+    /// <summary><see cref="FlushOrThrow"/> that says whether it wrote, decided inside the IO lock so a later suppression cannot unmake a landed write (LIC-9).</summary>
+    /// <returns>True when the snapshot reached disk; false when persistence was suppressed and nothing was written.</returns>
+    public bool TryFlushOrThrow()
     {
         try { _saveTimer.Change(Timeout.Infinite, Timeout.Infinite); }
         catch (ObjectDisposedException) { /* already disposed */ }
@@ -225,7 +229,7 @@ public sealed class SettingsService : IDisposable
             // a protect-mode load failure is a REAL persistence failure the durability callers
             // (legal acceptance, UPD-3c visible-restart flag) must see — a silent skip would let
             // FlushOrThrow falsely report a durable write.
-            if (Volatile.Read(ref _persistenceSuppressed) != 0) return;
+            if (Volatile.Read(ref _persistenceSuppressed) != 0) return false;
             if (Volatile.Read(ref _loadFailedProtectFile) != 0)
                 throw new global::System.IO.IOException(
                     "Settings persistence is disabled: the settings file could not be loaded and was left intact to protect recoverable data. Restarting the app usually resolves this.");
@@ -242,6 +246,7 @@ public sealed class SettingsService : IDisposable
                 ScheduleSave();
                 throw;
             }
+            return true;
         }
     }
 
@@ -331,15 +336,19 @@ public sealed class SettingsService : IDisposable
     /// by invalidating the manifest BEFORE applying + a single <see cref="FlushOrThrow"/> at the
     /// end.) Honors persistence suppression / protect mode exactly like <see cref="FlushOrThrow"/>.
     /// </summary>
-    public void SetManyAndFlushOrThrow(IReadOnlyDictionary<string, string?> changes)
+    public void SetManyAndFlushOrThrow(IReadOnlyDictionary<string, string?> changes) => _ = TrySetManyAndFlushOrThrow(changes);
+
+    /// <summary><see cref="SetManyAndFlushOrThrow"/> that says whether it wrote, decided inside the IO lock like <see cref="TryFlushOrThrow"/> (LIC-36).</summary>
+    /// <returns>True when the batch reached disk (an empty batch writes nothing and counts); false when persistence was suppressed and nothing changed.</returns>
+    public bool TrySetManyAndFlushOrThrow(IReadOnlyDictionary<string, string?> changes)
     {
-        if (changes.Count == 0) return;
+        if (changes.Count == 0) return true;
         try { _saveTimer.Change(Timeout.Infinite, Timeout.Infinite); }
         catch (ObjectDisposedException) { /* already disposed */ }
         lock (_saveIoLock)
         {
             // Same guards as FlushOrThrow, checked inside the IO lock.
-            if (Volatile.Read(ref _persistenceSuppressed) != 0) return;
+            if (Volatile.Read(ref _persistenceSuppressed) != 0) return false;
             if (Volatile.Read(ref _loadFailedProtectFile) != 0)
                 throw new global::System.IO.IOException(
                     "Settings persistence is disabled: the settings file could not be loaded and was left intact to protect recoverable data. Restarting the app usually resolves this.");
@@ -379,12 +388,38 @@ public sealed class SettingsService : IDisposable
                     else _cache[key] = JsonSerializer.SerializeToElement(value);
                 }
             }
+            return true;
         }
     }
 
     private enum PrimaryState { Loaded, NotFound, Unreadable, Corrupt }
 
     private void Load()
+    {
+        LoadCache();
+        ApplyConsentVetoes();
+    }
+
+    // REL-19: a recorded opt-out reads OFF whatever settings.json says, absent default-ON keys included; healed on the next save.
+    // shortcut: an UNREADABLE record (a read failure outlasting TransientFileRetry, even a long scanner lock) persists all six OFF, update checks included; recovery is deleting it and turning the switches back on. Upgrade to a read-time veto if one is ever seen.
+    private void ApplyConsentVetoes()
+    {
+        if (global::VoiceWink.Helpers.ConsentTombstone.Read(_settingsFilePath, out _) == global::VoiceWink.Helpers.ConsentTombstone.State.Unreadable)
+            Logger.Warning("Consent opt-out record {Path} is unreadable; every diagnostics and update consent reads off, automatic updates included, until it is removed and the switches are turned back on",
+                global::VoiceWink.Helpers.ConsentTombstone.PathFor(_settingsFilePath));
+        var changed = false;
+        foreach (var key in global::VoiceWink.Helpers.ConsentTombstone.Vetoed(_settingsFilePath))
+        {
+            if (!GetBoolDefaulted(key)) continue;
+            lock (_lock) { _cache[key] = JsonSerializer.SerializeToElement(false); }
+            changed = true;
+        }
+        if (!changed) return;
+        Logger.Information("Recorded consent opt-outs applied to settings");
+        ScheduleSave();
+    }
+
+    private void LoadCache()
     {
         lock (_lock)
         {

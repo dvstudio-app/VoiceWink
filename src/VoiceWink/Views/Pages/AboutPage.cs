@@ -17,15 +17,6 @@ public sealed class AboutPage : Page
 {
     private static ILogger Logger => Log.ForContext<AboutPage>();
 
-    /// <summary>
-    /// One notices dialog at a time, across PAGE INSTANCES: <c>MainWindow</c>'s page factory builds a
-    /// fresh <see cref="AboutPage"/> on every navigation, so a per-instance flag holds for a
-    /// double-click and not for "click, navigate away and back while the file read is in flight,
-    /// click again" — the second <c>ShowAsync</c> throws, and its catch would launch Notepad
-    /// (Codex diff review r1). Only ever touched on the UI thread.
-    /// </summary>
-    private static bool s_thirdPartyDialogOpen;
-
     public AboutPage()
     {
         RequestedTheme = AppTheme.ElementTheme;
@@ -83,6 +74,8 @@ public sealed class AboutPage : Page
         var whatsNew = new HyperlinkButton { Content = "What's new" };
         whatsNew.Click += async (_, _) =>
         {
+            using var slot = DialogLease.MainWindow.TryAcquire("What's new");
+            if (slot is null) return;
             try
             {
                 var parser = App.Services.GetRequiredService<ChangelogParser>();
@@ -122,8 +115,9 @@ public sealed class AboutPage : Page
         var thirdParty = new HyperlinkButton { Content = "Third-party licenses" };
         thirdParty.Click += async (_, _) =>
         {
-            if (s_thirdPartyDialogOpen) return; // a second ShowAsync while one is open THROWS
-            s_thirdPartyDialogOpen = true;
+            // Before the read: a second click's ShowAsync would throw and its catch launch Notepad.
+            using var slot = DialogLease.MainWindow.TryAcquire("Third-party licenses");
+            if (slot is null) return;
             try
             {
                 var markdown = await File.ReadAllTextAsync(AboutInfo.ThirdPartyNoticesPath);
@@ -137,10 +131,6 @@ public sealed class AboutPage : Page
                 thirdPartyStatus.Visibility = ShellFolder.OpenTextFile(AboutInfo.ThirdPartyNoticesPath)
                     ? Visibility.Collapsed
                     : Visibility.Visible;
-            }
-            finally
-            {
-                s_thirdPartyDialogOpen = false;
             }
         };
 
@@ -277,6 +267,8 @@ public sealed class AboutPage : Page
         // AboutInfoTests pins the sentence's absence.
         var reportButton = AppTheme.CreateSecondaryButton("Report a problem", async (_, _) =>
         {
+            using var slot = DialogLease.MainWindow.TryAcquire("Report a problem");
+            if (slot is null) return;
             try
             {
                 var dialog = new ReportProblemDialog { XamlRoot = this.XamlRoot };

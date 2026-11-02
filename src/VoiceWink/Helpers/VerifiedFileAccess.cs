@@ -134,6 +134,56 @@ public static class VerifiedFileAccess
         }
     }
 
+    /// <summary>REL-19: true when a kernel-resolved file sits directly in <paramref name="dir"/>, judged against dir's resolved parent plus its name so a junction AT dir fails.</summary>
+    internal static bool ResolvesDirectlyIn(string? finalFile, string dir) =>
+        IsDirectChildOf(finalFile, ExpectedDirectory(dir));
+
+    /// <summary><see cref="ResolvesDirectlyIn(string?, string)"/> for a path, resolved through a transient attributes-only handle.</summary>
+    internal static bool PathResolvesDirectlyIn(string path, string dir)
+    {
+        try { return ResolvesDirectlyIn(TryGetFinalDirectoryPath(path), dir); }
+        catch { return false; }
+    }
+
+    /// <summary>True when <paramref name="dir"/> exists and is not itself a redirect: its final path is its resolved parent plus its name.</summary>
+    internal static bool DirectoryResolvesDirectly(string dir)
+    {
+        try
+        {
+            var expected = ExpectedDirectory(dir);
+            var actual = TryGetFinalDirectoryPath(dir);
+            return expected != null && actual != null
+                && string.Equals(TrimSeparators(actual), expected, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The pure comparison behind <see cref="ResolvesDirectlyIn(string?, string)"/>: the file's directory equals <paramref name="expectedDir"/>.</summary>
+    internal static bool IsDirectChildOf(string? actualFinalFile, string? expectedDir)
+    {
+        if (string.IsNullOrEmpty(actualFinalFile) || string.IsNullOrEmpty(expectedDir)) return false;
+        var fileDir = Path.GetDirectoryName(actualFinalFile);
+        return fileDir != null
+            && string.Equals(TrimSeparators(fileDir), TrimSeparators(expectedDir), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Resolved parent + leaf name, both trimmed so a drive-root parent or a trailing separator cannot double or drop one.
+    private static string? ExpectedDirectory(string dir)
+    {
+        var trimmed = TrimSeparators(Path.GetFullPath(dir));
+        var parent = Path.GetDirectoryName(trimmed);
+        var name = Path.GetFileName(trimmed);
+        if (string.IsNullOrEmpty(parent) || string.IsNullOrEmpty(name)) return null;
+        var resolvedParent = TryGetFinalDirectoryPath(parent);
+        return resolvedParent == null ? null : TrimSeparators(resolvedParent) + Path.DirectorySeparatorChar + name;
+    }
+
+    private static string TrimSeparators(string path) =>
+        path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
     internal static string? TryGetFinalPath(global::Microsoft.Win32.SafeHandles.SafeFileHandle handle)
     {
         var buffer = new global::System.Text.StringBuilder(1024);
