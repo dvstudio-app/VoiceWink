@@ -26,8 +26,7 @@ public class AIProviderConfig
     /// chat model except Mistral, which answered HTTP 429 at every value tried INCLUDING the
     /// then-current 4096 — rate-limited rather than cap-limited, and therefore the one provider left
     /// unmeasured. Above 16000 the providers diverge: Groq refused 32768, OpenAI and Anthropic
-    /// refused 131072. The probed ids were chosen for coverage and are NOT all
-    /// <see cref="Helpers.TextModelDefaults"/> entries.</para>
+    /// refused 131072. The probed ids were chosen for coverage.</para>
     ///
     /// <para><b>Why a cap exists at all.</b> Anthropic's Messages API returns HTTP 400 without
     /// <c>max_tokens</c> (probed), so removing it is a per-provider branch rather than a deletion;

@@ -172,6 +172,11 @@ public sealed partial class MainWindow : Window
         // update one branch and miss the other.
         AppWindow.Resize(new Windows.Graphics.SizeInt32(windowWidth, windowHeight));
 
+        // UI-28: without a minimum, native sizing let the window shrink to ~120 px and page dialogs clipped their buttons.
+        ApplyMinimumSize();
+        // The minimum is in pixels, and a move, a scale change or a work-area change can each make it stale.
+        AppWindow.Changed += (_, _) => ApplyMinimumSize();
+
         // Center on the work area (excludes taskbar) so the window isn't clipped. Move keeps its
         // OWN try/catch: before this change the catch covered lookup AND move together, and
         // hoisting the lookup out left Move uncovered, so a display-topology race could escape the
@@ -195,6 +200,31 @@ public sealed partial class MainWindow : Window
         SetAppIcon();
 
         AppTheme.ThemeChanged += OnThemeChanged;
+    }
+
+    private (int Width, int Height) _appliedMinimumSize;
+
+    /// <summary>UI-28 sets the minimum resize size for the display the window is on now.</summary>
+    private void ApplyMinimumSize()
+    {
+        try
+        {
+            if (AppWindow.Presenter is not Microsoft.UI.Windowing.OverlappedPresenter presenter)
+                return;
+            var scale = Helpers.NativeInterop.GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96.0;
+            var workArea = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(
+                AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Nearest).WorkArea;
+            var minimum = Helpers.MainWindowPlacement.MinimumSize(scale, workArea.Width, workArea.Height);
+            if (minimum == _appliedMinimumSize)
+                return;
+            presenter.PreferredMinimumWidth = minimum.Width;
+            presenter.PreferredMinimumHeight = minimum.Height;
+            _appliedMinimumSize = minimum;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(ex, "Failed to set the main window's minimum size");
+        }
     }
 
     /// <summary>

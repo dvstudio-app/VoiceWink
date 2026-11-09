@@ -486,8 +486,8 @@ public partial class ModelManagementViewModel : ObservableObject
             // disk is not a defect of ours) and copy that says what to do instead. Three raise
             // sites reach this arm (NET-5b): the mid-write fault, whose partial is kept so the next
             // Download resumes, and the two free-space pre-checks, which refuse before a byte is
-            // written - a bundle never resumes and a first attempt has nothing to resume - so the
-            // copy promises no resume; the pre-check's MB arithmetic rides {ErrorMessage} into the log.
+            // written - a first attempt has nothing to resume - so the copy promises no resume;
+            // the pre-check's MB arithmetic rides {ErrorMessage} into the log.
             Logger.Warning("Model download stopped, disk full: {Name}: {ErrorType}: {ErrorMessage}",
                 model.Name, ex.GetType().Name, ex.Message);
             model.IsDownloading = false;

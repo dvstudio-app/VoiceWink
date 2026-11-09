@@ -11,14 +11,14 @@ namespace VoiceWink.Services.AIEnhancement.Clients;
 /// OpenAI rides /images/generations (no references) or /images/edits (references);
 /// OpenRouter rides its unified Image API (<c>POST {base}/images</c>) for EVERY call since
 /// 2026-07-31 — new OpenRouter image models are added exclusively to that API.
-/// Supports gpt-image-1-mini / 1.5 / 2 / 2.5 and compatible APIs. A persisted selection of a
+/// Supports gpt-image-1-mini / 1.5 / 2 / 2.5 / 2.6 and compatible APIs. A persisted selection of a
 /// shut-down model (DALL-E, gpt-image-1) gets the provider's own error.
 ///
 /// Inputs are the user's three independent choices: aspect ratio, size tier, and quality
 /// (detail). On the OpenAI routes the client synthesises the <c>size</c> parameter from
 /// (aspect, tier) via <see cref="VoiceWink.Helpers.ImageOptions.SynthesizeGptImage2Size"/> for
 /// every model <see cref="VoiceWink.Helpers.ImageOptions.HasFlexibleSize"/> admits (gpt-image-2
-/// and the two gpt-image-2.5 ids), while gpt-image-1.x — and any OpenAI-family id the predicate
+/// and the gpt-image-2.5 and 2.6 ids), while gpt-image-1.x — and any OpenAI-family id the predicate
 /// does not know — uses an enumerated preset that ignores the tier entirely; the
 /// OpenRouter route sends the normalized <c>resolution</c>/<c>aspect_ratio</c> verbatim.
 /// </summary>
@@ -76,8 +76,8 @@ public sealed class ImageGenerationClient
             ? ImageOptions.SynthesizeGptImage2Size(imageAspect, imageSizeTier)
             : ImageOptions.SynthesizeGptImage1xSize(imageAspect);
 
-        // gpt-image models: "low", "medium", "high", "auto" (default); the two 2.5 ids also take
-        // "xhigh" and "max" (IMG-14). The map answers for any tag it knows — the NORMALIZER upstream
+        // gpt-image models: "low", "medium", "high", "auto" (default); the 2.5 and 2.6 ids also take
+        // "xhigh" and "max" (IMG-14, IMG-24). The map answers for any tag it knows — the NORMALIZER upstream
         // is what keeps the two top values off models that reject them.
         var quality = ImageOptions.QualityToGptImageParam(imageQuality);
 

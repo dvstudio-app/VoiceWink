@@ -880,8 +880,12 @@ internal static class ModelRatings
     internal const double Arm64CpuFactor = 2.0;
 
     internal static bool IsArm64Os
-        => System.Runtime.InteropServices.RuntimeInformation.OSArchitecture
-           == System.Runtime.InteropServices.Architecture.Arm64;
+        => Arm64OverrideForTests
+           ?? System.Runtime.InteropServices.RuntimeInformation.OSArchitecture
+              == System.Runtime.InteropServices.Architecture.Arm64;
+
+    /// <summary>Lets tests pin the architecture, so a table-star row passes on an ARM64 dev PC too.</summary>
+    internal static bool? Arm64OverrideForTests { get; set; }
 
     /// <summary>The speed star on this PC (owner rule, 2026-10-03: stars must not jump around
     /// without the user knowing why). A row this PC has MEASURED shows its own check's time; any

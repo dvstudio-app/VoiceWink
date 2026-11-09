@@ -159,12 +159,12 @@ public sealed class StandingCaptureService : IDisposable
     // lifetime (Kimi diff review #6).
     private int _dataErrorCount;
 
-    /// <summary>Production wiring: AUD-1 device resolution, stock WasapiCapture, the real
+    /// <summary>Production wiring: AUD-1 device resolution, GuardedWasapiCapture (AUD-42), the real
     /// classifier read, Stopwatch clock, real default-device notifications.</summary>
     public StandingCaptureService(RecordingDeviceSelectionService deviceSelection, Func<bool> startGate)
         : this(
             deviceSelection.ResolveForRecordingAsync,
-            device => device != null ? new WasapiCapture(device) : new WasapiCapture(),
+            device => device != null ? new GuardedWasapiCapture(device) : new GuardedWasapiCapture(),
             EndpointClassificationReader.Classify,
             startGate,
             Stopwatch.GetTimestamp,

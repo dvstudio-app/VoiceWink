@@ -42,13 +42,19 @@ public sealed class HotkeyService : IDisposable
     /// the diagnostic line off-thread. Null in tests / the public ctor.</summary>
     private readonly WatchdogForegroundObserver? _watchdogObserver;
 
-    private SimpleGlobalHook? _hook;
+    private IGlobalHook? _hook;
     private DispatcherQueue? _dispatcherQueue;
     private volatile bool _disposed;
     private int _restartCount;
 
     /// <summary>Test seam: restart attempts this hook lifetime (pins RestartDeadHookAsync's superseded no-op).</summary>
     internal int RestartAttemptCount => Volatile.Read(ref _restartCount);
+
+    /// <summary>Test seam: installs a test hook, so Dispose can meet a failing stop (HKY-12).</summary>
+    internal void SetHookForTests(IGlobalHook hook) => _hook = hook;
+
+    /// <summary>Test seam: whether a hook is still held (HKY-12).</summary>
+    internal bool HasHookForTests => Volatile.Read(ref _hook) != null;
 
     private DispatcherTimer? _watchdogTimer;
     /// <summary>UTC timestamp of the most recent keyboard event our hook received (key down/up).</summary>
@@ -902,19 +908,7 @@ public sealed class HotkeyService : IDisposable
         Logger.Information("Restarting global hotkey hook ({Reason}, attempt {N}/{Max})", reason, attempt, MaxRestartAttempts);
 
         // Dispose the dead hook
-        if (_hook != null)
-        {
-            _hook.KeyPressed -= OnKeyPressed;
-            _hook.KeyReleased -= OnKeyReleased;
-            _hook.MousePressed -= OnMouseEvent;
-            _hook.MouseReleased -= OnMouseEvent;
-            _hook.MouseMoved -= OnMouseEvent;
-            _hook.MouseDragged -= OnMouseEvent;
-            _hook.MouseWheel -= OnMouseWheel;
-            _hook.HookEnabled -= OnHookEnabled;
-            try { _hook.Dispose(); } catch { /* already dead */ }
-            _hook = null;
-        }
+        DetachAndDisposeHook();
 
         // Hook-state-only reset preserves _isHandsFreeMode so a tap immediately
         // after the restart resolves to the correct action (the user's hands-free
@@ -1911,23 +1905,38 @@ public sealed class HotkeyService : IDisposable
             _watchdogTimer.Tick -= OnWatchdogTick;
             _watchdogTimer = null;
         }
-        if (_hook != null)
-        {
-            _hook.KeyPressed -= OnKeyPressed;
-            _hook.KeyReleased -= OnKeyReleased;
-            _hook.MousePressed -= OnMouseEvent;
-            _hook.MouseReleased -= OnMouseEvent;
-            _hook.MouseMoved -= OnMouseEvent;
-            _hook.MouseDragged -= OnMouseEvent;
-            _hook.MouseWheel -= OnMouseWheel;
-            _hook.HookEnabled -= OnHookEnabled;
-            _hook.Dispose();
-            _hook = null;
+        if (DetachAndDisposeHook())
             Logger.Information("Global hotkey hook disposed");
-        }
         // Don't dispose _restartLock — App.OnPowerModeChanged.Resume can call
         // RestartAsync after Dispose (e.g. a wake-from-sleep mid-shutdown). The
         // _disposed guard inside RestartHookAsync makes the call a no-op in that
         // case, but only if the semaphore is still valid.
+    }
+
+    /// <summary>Detaches and disposes the hook; a failed native stop is logged, never thrown, so App.Cleanup carries on (HKY-12).</summary>
+    /// <returns>True when a hook was held and stopped cleanly.</returns>
+    // Clearing _hook first turns this hook's task-ended restart into a no-op, so callers set _disposed or install a replacement.
+    private bool DetachAndDisposeHook()
+    {
+        var hook = Interlocked.Exchange(ref _hook, null);
+        if (hook == null) return false;
+        hook.KeyPressed -= OnKeyPressed;
+        hook.KeyReleased -= OnKeyReleased;
+        hook.MousePressed -= OnMouseEvent;
+        hook.MouseReleased -= OnMouseEvent;
+        hook.MouseMoved -= OnMouseEvent;
+        hook.MouseDragged -= OnMouseEvent;
+        hook.MouseWheel -= OnMouseWheel;
+        hook.HookEnabled -= OnHookEnabled;
+        try
+        {
+            hook.Dispose();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning(ex, "Global hotkey hook did not stop cleanly - continuing");
+            return false;
+        }
     }
 }

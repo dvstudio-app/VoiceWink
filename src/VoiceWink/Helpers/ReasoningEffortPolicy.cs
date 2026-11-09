@@ -134,10 +134,7 @@ public static class ReasoningEffortPolicy
     /// <summary>
     /// Anthropic families documented for <c>output_config.effort</c> (canonical form).
     /// Deliberately EXCLUDES <c>claude-haiku-4-5</c> (not in the documented effort list —
-    /// and it was the app's Anthropic text default in <see cref="TextModelDefaults"/> when
-    /// phase A shipped, so a wrong row here would have 400'd the default path; the default is
-    /// <c>claude-sonnet-5</c> on 2026-07-29 and <c>claude-sonnet-5-5</c> on 2026-10-03, which the
-    /// <c>claude-sonnet-5</c> row covers by prefix) and every <c>claude-3*</c> generation.
+    /// a wrong row 400s every request on that model) and every <c>claude-3*</c> generation.
     /// </summary>
     private static readonly string[] AnthropicEffortFamilies =
     {
@@ -339,7 +336,7 @@ public static class ReasoningEffortPolicy
     private static ReasoningDirective ResolveGroqDefault(string canon) => canon switch
     {
         // Groq docs (read 2026-09-12): gpt-oss accepts low/medium/high (no none) and serves
-        // with reasoning ON — the ~2.7 s round trips TextModelDefaults records. VoiceInk sends low.
+        // with reasoning ON (~2.7 s round trips measured). VoiceInk sends low.
         "gpt-oss-120b" or "gpt-oss-20b" => new ReasoningDirective(ReasoningWireKind.CompatEffort, "low"),
         // qwen/qwen3.8-27b → qwen3-8-27b after the vendor strip: none/default/low/medium/high.
         "qwen3-8-27b" => new ReasoningDirective(ReasoningWireKind.CompatEffort, "none"),

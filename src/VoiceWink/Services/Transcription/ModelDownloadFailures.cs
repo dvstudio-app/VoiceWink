@@ -56,8 +56,8 @@ internal sealed class ModelSourceIOException : IOException, IModelSourceFailure
 /// catch exists so a POISONED partial cannot survive — bytes from a host that lied, or that fail
 /// the SHA pin. A disk-full partial is neither: those bytes are valid and simply incomplete, so
 /// deleting them would trade wasted retries for a lost 874 MB of progress and leave the user no
-/// better off than the defect did. Single-file downloads only: a BUNDLE's staging directory is
-/// cleared on any failure by its own path, and this type does not change that.</para></summary>
+/// better off than the defect did. A bundle keeps its staging directory on this exception too
+/// (NET-8); every other bundle failure still clears it.</para></summary>
 internal sealed class ModelLocalIOException : IOException
 {
     /// <summary>The pre-check refusal: no underlying fault, the message carries the MB arithmetic.</summary>

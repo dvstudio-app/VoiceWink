@@ -732,7 +732,7 @@ public static class AppTheme
     /// added by IMG-12, because a model that publishes <c>quality</c> does not necessarily publish
     /// all of them (<c>x-ai/grok-imagine-image-2.0</c> tops out at <c>medium</c>, and offering
     /// the <c>high</c> tier there earned an HTTP 400). Rows live in <see cref="ImageOptions.QualityComboRows"/>
-    /// since IMG-14 (five tiers; the two gpt-image-2.5-only ones arrive through the same gate), so a
+    /// since IMG-14 (five tiers; the two gpt-image-2.5/2.6-only ones arrive through the same gate), so a
     /// unit test pins the tag set against <see cref="ImageOptions.AllQualities"/>.
     /// </summary>
     public static void PopulateImageQualityComboWithIndicators(

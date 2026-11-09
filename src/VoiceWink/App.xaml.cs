@@ -3635,7 +3635,7 @@ public partial class App : Application, Services.IAppLifetime
                     modelCombo.ItemsSource = EngineModelLabel.Labels(selProvider, filtered);
 
                     // Pre-select (UX-1): redo-chain recency, then the per-provider persisted
-                    // memory, then the provider default — for ANY selected provider, not just
+                    // memory, then the image default (text has none) — for ANY selected provider, not just
                     // the one the dialog opened with (the old defaultProvider gate left
                     // live-switched providers on the meaningless alphabetical list[0]).
                     // Per-provider, never the global selection (F17). No candidate offered =
@@ -3645,9 +3645,7 @@ public partial class App : Application, Services.IAppLifetime
                         capturedContext.PreviousProvider,
                         capturedContext.PreviousModel,
                         enhancement.PersistedModelFor(selProvider, isImageGeneration),
-                        isImageGeneration
-                            ? ImageOptions.DefaultModelFor(selProvider)
-                            : TextModelDefaults.DefaultModelFor(selProvider),
+                        isImageGeneration ? ImageOptions.DefaultModelFor(selProvider) : null,
                         filtered);
                     if (next != null)
                         modelCombo.SelectedItem = EngineModelLabel.Label(selProvider, next);

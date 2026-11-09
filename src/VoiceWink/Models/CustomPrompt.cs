@@ -102,7 +102,7 @@ public class CustomPrompt
 
     /// <summary>
     /// Pixel-resolution tier chosen by the user ("1K", "2K", "4K"). Null means "Auto".
-    /// On gpt-image-2 and the two named gpt-image-2.5 models (<c>ImageOptions.HasFlexibleSize</c>)
+    /// On gpt-image-2 and the named gpt-image-2.5 and 2.6 models (<c>ImageOptions.HasFlexibleSize</c>)
     /// this combines with <see cref="ImageAspect"/> to synthesize the
     /// <c>size</c> API parameter; on Gemini-native it maps to <c>imageConfig.imageSize</c>.
     /// Only used when IsImageGeneration is true.
@@ -118,7 +118,7 @@ public class CustomPrompt
     /// <summary>
     /// Image quality (detail / token-count) tier for image generation. Values: the tags in
     /// <c>ImageOptions.AllQualities</c> — "standard", "enhanced", "maximum" (= wire <c>high</c>, shown
-    /// as "High"), and since IMG-14 "xhigh" and "max" (statically gpt-image-2.5-only, clamped DOWN
+    /// as "High"), and since IMG-14 "xhigh" and "max" (statically gpt-image-2.5/2.6-only, clamped DOWN
     /// elsewhere; an OpenRouter capability snapshot may explicitly offer them on another model).
     /// Null = auto. Only meaningful for OpenAI gpt-image — Gemini has no separate detail knob
     /// (its imageSize covers that role).

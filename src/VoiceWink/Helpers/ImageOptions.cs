@@ -56,8 +56,8 @@ public static class ImageOptions
 
     /// <summary>
     /// IMG-2: ratios offered ONLY on OPENAI-DIRECT models with flexible sizing
-    /// (<see cref="HasFlexibleSize"/> — gpt-image-2 and, since IMG-13, the two gpt-image-2.5
-    /// ids) — their generations/edits endpoints get synthesized W×H, which preserves exact
+    /// (<see cref="HasFlexibleSize"/> — gpt-image-2 and, since IMG-13/IMG-24, the gpt-image-2.5
+    /// and 2.6 ids) — their generations/edits endpoints get synthesized W×H, which preserves exact
     /// ratios. Deliberately NOT offered on Gemini (not in its documented set), gpt-image-1x
     /// (whose 3-size bucketing would silently render a different ratio than History records —
     /// Codex plan round 2), or OpenRouter's gpt-image-2 (its unified Image API publishes an
@@ -155,7 +155,7 @@ public static class ImageOptions
         ("7:5",   Aspect7x5, 17, 12),  // catalog-only (CatalogOnlyAspects)
         ("3:2",   Aspect3x2, 18, 12),
         ("16:9",  Aspect16x9, 20, 11),
-        ("2:1",   Aspect2x1, 22, 11),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
+        ("2:1",   Aspect2x1, 22, 11),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 IMG-13, 2.6 IMG-24)
         ("19.5:9", Aspect19_5x9, 21.7, 10), // catalog-only
         ("20:9",  Aspect20x9, 22.2, 10), // catalog-only
         ("21:9",  Aspect21x9, 23, 10),
@@ -164,10 +164,10 @@ public static class ImageOptions
         ("5:7",   Aspect5x7, 12, 17),  // catalog-only
         ("2:3",   Aspect2x3, 12, 18),
         ("9:16",  Aspect9x16, 11, 20),
-        ("1:2",   Aspect1x2, 11, 22),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
+        ("1:2",   Aspect1x2, 11, 22),  // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 IMG-13, 2.6 IMG-24)
         ("9:19.5", Aspect9x19_5, 10, 21.7), // catalog-only
         ("9:20",  Aspect9x20, 10, 22.2), // catalog-only
-        ("9:21",  Aspect9x21, 10, 23), // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 since IMG-13)
+        ("9:21",  Aspect9x21, 10, 23), // OpenAI-direct HasFlexibleSize only (IMG-2; 2.5 IMG-13, 2.6 IMG-24)
         // Extreme ratios (gemini-3.1 flash-image family and Nano Banana 2.1 only). Capped at 24 long edge.
         ("4:1",   Aspect4x1, 24,  6),  // 24/6 = 4 ✓
         ("8:1",   Aspect8x1, 24,  3),  // 24/3 = 8 ✓
@@ -215,7 +215,7 @@ public static class ImageOptions
     };
 
     // ─── Quality tags (persisted on CustomPrompt.ImageQuality / TranscriptionRecord.ImageQuality) ───
-    // The wire parameter is `quality` (low/medium/high, plus xhigh/max on gpt-image-2.5 — IMG-14).
+    // The wire parameter is `quality` (low/medium/high, plus xhigh/max on gpt-image-2.5/2.6 — IMG-14, IMG-24).
     // Gemini has no separate detail knob — its imageSize covers what would be both Tier and
     // Quality elsewhere.
 
@@ -230,9 +230,9 @@ public static class ImageOptions
     /// — a saved "maximum" must keep costing what it cost when the user picked it.
     /// </summary>
     public const string QualityMaximum  = "maximum";
-    /// <summary>IMG-14: OpenAI's <c>xhigh</c> — gpt-image-2.5 only. Persisted as the wire value.</summary>
+    /// <summary>IMG-14: OpenAI's <c>xhigh</c> — gpt-image-2.5/2.6 only. Persisted as the wire value.</summary>
     public const string QualityExtraHigh = "xhigh";
-    /// <summary>IMG-14: OpenAI's <c>max</c> — gpt-image-2.5 only. Persisted as the wire value.</summary>
+    /// <summary>IMG-14: OpenAI's <c>max</c> — gpt-image-2.5/2.6 only. Persisted as the wire value.</summary>
     public const string QualityMax = "max";
 
     /// <summary>
@@ -255,7 +255,7 @@ public static class ImageOptions
 
     /// <summary>
     /// The three tiers every gpt-image model before 2.5 takes (<c>low</c>/<c>medium</c>/<c>high</c>)
-    /// — the static answer for OpenAI-direct ids that are not gpt-image-2.5, and for the two OpenAI
+    /// — the static answer for OpenAI-direct ids that are not gpt-image-2.5/2.6, and for the two OpenAI
     /// families on OpenRouter when no catalog snapshot exists. Offering <see cref="QualityExtraHigh"/>
     /// or <see cref="QualityMax"/> to gpt-image-2 earns an HTTP 400, the IMG-12 class.
     /// </summary>
@@ -379,7 +379,8 @@ public static class ImageOptions
     /// Synthesise the <c>size</c> parameter for OpenAI's flexible-size models — <c>gpt-image-2</c>
     /// and the two <c>gpt-image-2.5</c> ids (<see cref="HasFlexibleSize"/>; the API reference names
     /// all of them in the ONE sentence that documents arbitrary <c>WIDTHxHEIGHT</c>, with identical
-    /// constraints — verified 2026-09-13). Returns null when:
+    /// constraints — verified 2026-09-13), plus the two <c>gpt-image-2.6</c> ids (IMG-24, live
+    /// probe). Returns null when:
     /// <list type="bullet">
     ///   <item>Both inputs are null/empty (caller should send no <c>size</c> field).</item>
     ///   <item>The aspect is one of the extreme ratios (<c>1:4</c>, <c>4:1</c>, <c>1:8</c>, <c>8:1</c>) —
@@ -557,7 +558,7 @@ public static class ImageOptions
     /// Baseline <see cref="CommonAspects"/>; adds <see cref="ExtremeAspects"/> only on the
     /// gemini-3.1 flash-image family and Nano Banana 2.1, and <see cref="GptImage2ExtraAspects"/> only on
     /// OPENAI-DIRECT flexible-size models (<see cref="HasFlexibleSize"/> — IMG-2, widened to
-    /// gpt-image-2.5 by IMG-13); the OpenRouter gpt-image families get their
+    /// gpt-image-2.5 by IMG-13 and 2.6 by IMG-24); the OpenRouter gpt-image families get their
     /// catalog-exact sets and gpt-5*-image* gets none. <paramref name="model"/> may be
     /// null/empty when the user hasn't picked one yet — we then substitute the provider's
     /// documented default model so the UI reflects what the runtime will actually use.
@@ -631,8 +632,8 @@ public static class ImageOptions
         if (string.IsNullOrEmpty(model)) model = DefaultModelFor(provider);
 
         // OpenAI-family ids: on OPENAI the rule mirrors the SERIALIZER exactly (Codex diff
-        // r2) — only the flexible-size models (HasFlexibleSize: gpt-image-2 and the two
-        // gpt-image-2.5 ids, IMG-13) get W×H synthesis; every other family rides the
+        // r2) — only the flexible-size models (HasFlexibleSize: gpt-image-2 and the
+        // gpt-image-2.5/2.6 ids, IMG-13/IMG-24) get W×H synthesis; every other family rides the
         // enumerated preset serializer that IGNORES tiers, so offering tiers there would
         // make the Effective record claim a size the request never carried. On OPENROUTER
         // the unified Image API publishes NO `resolution` for ANY gpt-image model — incl.
@@ -729,8 +730,8 @@ public static class ImageOptions
     /// kept, so no caller can reach the old answer.</para>
     ///
     /// <para>Null/unknown <paramref name="capabilities"/> falls back to the static rule: OpenAI-direct
-    /// (the classic low/medium/high on every gpt-image model, plus xhigh/max on the two gpt-image-2.5
-    /// ids — IMG-14), and on OpenRouter the two OpenAI image families only, classic three. Gemini has
+    /// (the classic low/medium/high on every gpt-image model, plus xhigh/max on the gpt-image-2.5
+    /// and 2.6 ids — IMG-14, IMG-24), and on OpenRouter the two OpenAI image families only, classic three. Gemini has
     /// no separate knob — <c>imageSize</c> covers both axes.</para>
     /// </summary>
     public static IReadOnlyList<string> SupportedQualitiesFor(
@@ -742,8 +743,8 @@ public static class ImageOptions
         if (capabilities?.Quality is { } published)
             return published;
 
-        // IMG-14: only the two gpt-image-2.5 ids document xhigh/max (image guide + API reference,
-        // 2026-09-13); every older gpt-image model stops at high and 400s above it. On OpenRouter
+        // IMG-14/IMG-24: only the gpt-image-2.5 and 2.6 ids take xhigh/max (2.5 documented
+        // 2026-09-13, 2.6 probed 2026-11-08); every older gpt-image model stops at high and 400s above it. On OpenRouter
         // the catalog snapshot answers when one exists (its published values translate at parse
         // time, so a 2.5 slug there gets whatever OpenRouter publishes); the static fallback stays
         // the classic three for the whole family — no live read of OpenRouter's 2.5 rows was made.
@@ -755,7 +756,7 @@ public static class ImageOptions
         // was not a 2.5 id).
         if (string.IsNullOrEmpty(model)) model = DefaultModelFor(provider);
         if (provider == AIProvider.OpenAI)
-            return IsGptImage25(model) ? AllQualities : ClassicQualities;
+            return IsGptImage25(model) || IsGptImage26(model) ? AllQualities : ClassicQualities;
         return IsGptImageFamily(model) || IsGpt5ImageFamily(model)
             ? ClassicQualities
             : System.Array.Empty<string>();
@@ -880,12 +881,22 @@ public static class ImageOptions
             || MatchesIdOrDatedSnapshot(bare, "gpt-image-2.5-flare");
     }
 
+    /// <summary>IMG-24: the two gpt-image-2.6 ids take 2.5's W×H sizes and xhigh/max (live probe 2026-11-08; the docs did not yet say).</summary>
+    public static bool IsGptImage26(string? model)
+    {
+        if (string.IsNullOrEmpty(model)) return false;
+        var bare = Bare(model!);
+        return MatchesIdOrDatedSnapshot(bare, "gpt-image-2.6-sunburst")
+            || MatchesIdOrDatedSnapshot(bare, "gpt-image-2.6-flare");
+    }
+
     /// <summary>
     /// The ONE predicate behind "this OpenAI model takes an arbitrary <c>WIDTHxHEIGHT</c>":
     /// the serializer (generations AND edits), the OpenAI-direct tier rule and the OpenAI-direct
     /// aspect rule all ask it, so the three cannot disagree about which ids synthesize.
     /// </summary>
-    public static bool HasFlexibleSize(string? model) => IsGptImage2(model) || IsGptImage25(model);
+    public static bool HasFlexibleSize(string? model) =>
+        IsGptImage2(model) || IsGptImage25(model) || IsGptImage26(model);
 
     // Exact id, or that id followed by a DATED snapshot suffix in OpenAI's published shape
     // (`-yyyy-MM-dd`, e.g. gpt-image-2.5-flare-2026-09-08). Deliberately narrower than

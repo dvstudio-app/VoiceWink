@@ -1582,8 +1582,8 @@ public partial class MainViewModel : ObservableObject
     public event Action<string>? ImageJobNoticeRequested;
 
     /// <summary>
-    /// AUD-1: raised when the mic-fallback notice should render INSIDE the pipeline pill
-    /// ("Selected mic unavailable — using default") — never through the message surface,
+    /// AUD-1/AUD-47: raised when a recording notice (mic fallback, no audio, microphone stopped) should render INSIDE the pipeline pill
+    /// — never through the message surface,
     /// which both COVERS the pipeline pill's stop button (message outranks pipeline in the
     /// controller's precedence) and gets WIPED by the next PublishPipeline. Arg: the notice text.
     /// </summary>
@@ -6779,6 +6779,8 @@ public partial class MainViewModel : ObservableObject
         {
             case Helpers.AudioStallVerdict.WarnRecorderDead:
                 StatusText = "Microphone stopped \u2014 recording may be incomplete";
+                // AUD-47: StatusText only reaches Home; the pill shows pipeline notices.
+                PipelineNoticeRequested?.Invoke(StatusText);
                 Logger.Warning(
                     "Capture lost while recording: expected session {ExpectedSession}, recorder reports {RecorderSession}",
                     _stallMonitor.ExpectedSessionId, recorderSessionId);
@@ -6786,6 +6788,8 @@ public partial class MainViewModel : ObservableObject
 
             case Helpers.AudioStallVerdict.WarnStall:
                 StatusText = "No audio \u2014 check microphone";
+                // shortcut: the pill notice lasts 8 s and is not withdrawn on recovery, upgrade if testers misread it (AUD-47).
+                PipelineNoticeRequested?.Invoke(StatusText);
                 Logger.Warning("Audio stall detected: no data for {Seconds:F1}s", silence.TotalSeconds);
                 break;
 

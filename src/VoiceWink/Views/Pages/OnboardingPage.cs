@@ -200,6 +200,23 @@ public sealed class OnboardingPage : Page
 
     private const int SpeechStepIndex = 5;
 
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _pointerHoldTimer;
+
+    /// <summary>UI-29: a double-click's second click would land on the step just shown, under the same pointer, so clicks wait out the user's double-click time.</summary>
+    private void HoldPointerClicksForDoubleClick()
+    {
+        _contentPanel.IsHitTestVisible = false;
+        if (_pointerHoldTimer is null)
+        {
+            _pointerHoldTimer = DispatcherQueue.CreateTimer();
+            _pointerHoldTimer.IsRepeating = false;
+            _pointerHoldTimer.Tick += (_, _) => _contentPanel.IsHitTestVisible = true;
+        }
+        _pointerHoldTimer.Stop();
+        _pointerHoldTimer.Interval = ActionToggleCore.ArmingWindow(NativeInterop.GetDoubleClickTime());
+        _pointerHoldTimer.Start();
+    }
+
     private void BuildUI()
     {
         _contentPanel = new StackPanel
@@ -243,6 +260,7 @@ public sealed class OnboardingPage : Page
 
         _step = step;
         _contentPanel.Children.Clear();
+        HoldPointerClicksForDoubleClick();
 
         // Welcome carries the path choice, so no total exists yet: no counter there.
         if (step != OnboardingStepFlow.WelcomeStepIndex)

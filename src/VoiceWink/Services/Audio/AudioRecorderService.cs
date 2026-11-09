@@ -27,7 +27,7 @@ public sealed class AudioRecorderService : IDisposable
     private readonly SemaphoreSlim _recordingLock = new(1, 1);
     // IWaveIn, not WasapiCapture: AUD-12 injects the constructor so the cold path is testable
     // without hardware. All uses here are IWaveIn members (WaveFormat, DataAvailable,
-    // RecordingStopped, StartRecording, Dispose); production still builds a WasapiCapture.
+    // RecordingStopped, StartRecording, Dispose); production builds a GuardedWasapiCapture (AUD-42).
     private IWaveIn? _capture;
     private MMDevice? _captureDevice;
     private WaveFileWriter? _writer;
@@ -249,7 +249,7 @@ public sealed class AudioRecorderService : IDisposable
     }
 
     private static IWaveIn DefaultCaptureConstructor(MMDevice? device)
-        => device != null ? new WasapiCapture(device) : new WasapiCapture();
+        => device != null ? new GuardedWasapiCapture(device) : new GuardedWasapiCapture();
 
     private readonly Func<MMDevice?, IWaveIn> _captureConstructor;
 
@@ -358,14 +358,14 @@ public sealed class AudioRecorderService : IDisposable
     public static async Task WarmUpAsync(MMDevice? device = null, CancellationToken ct = default)
     {
         var sw = global::System.Diagnostics.Stopwatch.StartNew();
-        WasapiCapture? warmCapture = null;
+        GuardedWasapiCapture? warmCapture = null;
         var stopTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         try
         {
             warmCapture = device != null
-                ? new WasapiCapture(device)
-                : new WasapiCapture();
+                ? new GuardedWasapiCapture(device)
+                : new GuardedWasapiCapture();
 
             warmCapture.RecordingStopped += (_, _) => stopTcs.TrySetResult(true);
 

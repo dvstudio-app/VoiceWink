@@ -43,36 +43,36 @@
     # and every Sha256 below, update the consumers above, and re-validate the GPU self-test
     # threshold and the local-AI bench on the
     # new build - numerics change between builds.
-    Build = 'b11147'
-    Commit = 'fee39dd92'
-    SourceArchive = 'https://github.com/ggml-org/llama.cpp/releases/download/b11147/llama-b11147-bin-win-vulkan-x64.zip'
-    SourceArchiveSha256 = '55058706491ecc2a33c0bb3d24400ebda341965d89bfa4b975dc9c68e7f37d35'
+    Build = 'b11960'
+    Commit = '8642541b2'
+    SourceArchive = 'https://github.com/ggml-org/llama.cpp/releases/download/b11960/llama-b11960-bin-win-vulkan-x64.zip'
+    SourceArchiveSha256 = 'bac6914b5e83523eb008c6789eaa12669f93fbc196c3b9e8237b6672323b33e9'
     Machine = '0x8664'
     ExeName = 'llama-server.exe'
     Files = @(
-        @{ Name = 'ggml-base.dll'; Sha256 = '7ee3380f8d4758b518caefbe7b1cdcbf2c752d1bcb3a5823e837f24b55a7f99d' }
-        @{ Name = 'ggml-cpu-alderlake.dll'; Sha256 = '832dfb28df9a5a4a15c982a4f286cfdcc2fb0220c57af102fb6cf0823f58df69' }
-        @{ Name = 'ggml-cpu-cannonlake.dll'; Sha256 = '842aa91963d4259b0e6a406f9e55ce5c2fc43fff9c90885b01478d30cf77602d' }
-        @{ Name = 'ggml-cpu-cascadelake.dll'; Sha256 = '042b9e375846a2e840c836a55ff2e60068398d4521d92ea231b4153d6fb9ad37' }
-        @{ Name = 'ggml-cpu-cooperlake.dll'; Sha256 = '452bf574e28e003ea02786513efeebd3af049bbf3d332fb1f2f67f5f2527ea9f' }
-        @{ Name = 'ggml-cpu-haswell.dll'; Sha256 = 'b6ddbee3c5de7da4c844eeb7df74a4279db7eecff94786d81b833bae3415f5d5' }
-        @{ Name = 'ggml-cpu-icelake.dll'; Sha256 = '3c9de8002008369f994a1048540187991ac83fc3daf29ddcbc97fa01808f44dd' }
-        @{ Name = 'ggml-cpu-ivybridge.dll'; Sha256 = '7a32ff2606a652197ee76931d5c97b02d02e90e09d6c479e4d12a0561cfd8880' }
-        @{ Name = 'ggml-cpu-piledriver.dll'; Sha256 = '375df17509f3a8ccbb8165e8d48ebe7086e13d10b7bba3f763fd30f01de04b26' }
-        @{ Name = 'ggml-cpu-sandybridge.dll'; Sha256 = 'ccd500e1639e931f93fa8b51f6b43f6a2ca95dd3c14243ee39d88cc5ac48df50' }
-        @{ Name = 'ggml-cpu-sapphirerapids.dll'; Sha256 = '263c3fee6b7a4add9cc8fb9876c818cf0721c72dd8f9f8ecfbe58f64f837e5bd' }
-        @{ Name = 'ggml-cpu-skylakex.dll'; Sha256 = 'e7b742a3c4a5445f385882eaadb14abb6da28912c652a2530a5a4598152ea5d7' }
-        @{ Name = 'ggml-cpu-sse42.dll'; Sha256 = '808c4c8abb9f99f496ac3ee69d72529b156663ce1c9c6789c463d68193f97c06' }
-        @{ Name = 'ggml-cpu-x64.dll'; Sha256 = '095549b90f3562ef4690542f977bb3e62e25e531f1285e9d5c80a1958bf0c70b' }
-        @{ Name = 'ggml-cpu-zen4.dll'; Sha256 = '8cd60877ec783e59ec84e851f8f6914f52445400d7014e2b67e7de954a44f8f6' }
-        @{ Name = 'ggml-vulkan.dll'; Sha256 = 'a1fa1db850faedc7b450a1d3b306bab4443c2c380839e3994be1bd390bc41613' }
-        @{ Name = 'ggml.dll'; Sha256 = 'b76c45a3e2493ab7e22487d9ab5217508fb452d983e2cc8b6a9dfd882a724a27' }
+        @{ Name = 'ggml-base.dll'; Sha256 = '200cd9b6f0a7934c2e1c85e55289d5498332713321b03e83eb2ae3da5eeb6137' }
+        @{ Name = 'ggml-cpu-alderlake.dll'; Sha256 = '8ae4c14de9eeb5528e42cff69ed8485e6cd0e3f8601837add873a9d12199ca95' }
+        @{ Name = 'ggml-cpu-cannonlake.dll'; Sha256 = '779a9d0ede6215fba8a00fb680c1295dd62836f9d8a124437d48f9c086fc1f07' }
+        @{ Name = 'ggml-cpu-cascadelake.dll'; Sha256 = '71f6275d8aa7df86545975e02510e10280abfcc274ae419dee898746a5b2ce1b' }
+        @{ Name = 'ggml-cpu-cooperlake.dll'; Sha256 = 'c0b3f9445cbd4490504c13d06e89b25bdbe9dea73784fc62c0c10ae7069de6cb' }
+        @{ Name = 'ggml-cpu-haswell.dll'; Sha256 = '0bc8209ebe520b43d8549db7d45ca87382df88c3a8b238f3dda42d96e2af178e' }
+        @{ Name = 'ggml-cpu-icelake.dll'; Sha256 = '81f86f655c82dfe330f9ee269b97a2b21352e5e876bd385d48bc61d9a6ca230b' }
+        @{ Name = 'ggml-cpu-ivybridge.dll'; Sha256 = '52f262a610ac189d0375472c66c46b7b366d618916ed67a2b119e69023c3f943' }
+        @{ Name = 'ggml-cpu-piledriver.dll'; Sha256 = '340c9dc4c5618fa4f89e6311c31f2f472d3277a87858c79b3c44890b0e92d1e7' }
+        @{ Name = 'ggml-cpu-sandybridge.dll'; Sha256 = '6251d2dc50745bad1d0f16ea95a4484ef5d8c7cb49b5a4a33af85d199c08be61' }
+        @{ Name = 'ggml-cpu-sapphirerapids.dll'; Sha256 = 'cdfdc20cb7f953f87e61ab90e234c864df4e2c2615f5651bd83a4cf27fdc4e3d' }
+        @{ Name = 'ggml-cpu-skylakex.dll'; Sha256 = 'da5c7c86df8409c08fb748ed5596eba65285ead7747581daa124a7fff2f65704' }
+        @{ Name = 'ggml-cpu-sse42.dll'; Sha256 = '00efeb321bb728616cde5719bab06ea575679f7ca4967367faa70fd5ca1c8ba6' }
+        @{ Name = 'ggml-cpu-x64.dll'; Sha256 = 'af7233344eec5587d531b4e875ec5bf2b1aa62c2be57b657f69cca503f0db918' }
+        @{ Name = 'ggml-cpu-zen4.dll'; Sha256 = '4ebbee0eb0c5a4e9e3c3b437d7a2876ede8f1d3e00526dad33db50f39f46e831' }
+        @{ Name = 'ggml-vulkan.dll'; Sha256 = '429b5dc6931cfc51121f05a43b4fb0b7dbf49d8c2ce38c0f72f848b308c592c8' }
+        @{ Name = 'ggml.dll'; Sha256 = 'd2e63157b90c0fd15f010fb2952d032d9f3296b8406b78ff0950211cc144705b' }
         @{ Name = 'libomp.dll'; Sha256 = 'a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c' }
-        @{ Name = 'llama-common.dll'; Sha256 = 'bd24c02aabffbcb71bdc8870660631e6d27bcc0332972a7d4c023884b2223f4b' }
-        @{ Name = 'llama-server-impl.dll'; Sha256 = 'f3cebd952136b01171b3ab92d90064b3fa1ed2e00ba178f2ecd37828cd65c547' }
-        @{ Name = 'llama-server.exe'; Sha256 = 'a9b905492642e253f85347fa7166c614dedf44fcabe82550fd769425ef224a03' }
-        @{ Name = 'llama.dll'; Sha256 = '8def2e0053d68d85c747492d12ac70e25ea673cd05e32f92a90e9834ffb95409' }
-        @{ Name = 'mtmd.dll'; Sha256 = '227521be2d121edea8460ba650963e213847443ae6a0eccc6988d6bfaa9742ee' }
+        @{ Name = 'llama-common.dll'; Sha256 = '34370fd48c31112b2ebe4e7bb234747c1a9b39325a29e61302659c525a6049d9' }
+        @{ Name = 'llama-server-impl.dll'; Sha256 = '0b329dcfdece6a43f34d0554dec5ca0cc2efe6ee23d5aabd8141c51487668564' }
+        @{ Name = 'llama-server.exe'; Sha256 = '81f65c6681d66099e5d48757aa2c050ba958dc43816e584f0bb4181eb7c910d8' }
+        @{ Name = 'llama.dll'; Sha256 = 'af13ed8cb1454a80689dbd390310995b6c4b23333e096152453fe6d0fef17356' }
+        @{ Name = 'mtmd.dll'; Sha256 = 'e82d563ae9dad225a3d15d0f189e046909713e26759ae9a046f89430bc845bd3' }
     )
     # The three VC++ runtime DLLs copied into the same directory, by name - their bytes and
     # hashes are governed by installer/runtime/vcredist/MANIFEST.psd1, not restated here.

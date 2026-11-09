@@ -190,6 +190,55 @@ public sealed class ModelDownloadManager
         }
     }
 
+    /// <summary>NET-8: bytes a new install of this bundle would resume, credited by the coordinator's free-space gate; 0 for a single-file model or on any failure.</summary>
+    internal long ResumableStagingBytes(TranscriptionModelInfo model)
+    {
+        try
+        {
+            return model.Files is null
+                ? 0
+                : ResumablePartials(model, Path.Combine(StagingRoot, ValidateModelName(model.Name))).Sum(p => p.Length);
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>NET-8: staging's resumable partials — plain, contained, of this plan, shorter than their file (a full-length one would Range from EOF and the 416 arm deletes it unhashed).</summary>
+    private List<(string Path, long Length)> ResumablePartials(TranscriptionModelInfo model, string staging)
+    {
+        var kept = new List<(string Path, long Length)>();
+        if (ProbeOccupant(staging) != OccupantKind.Directory
+            || !Helpers.VerifiedFileAccess.DirectoryResolvesDirectly(staging)
+            || !Helpers.VerifiedFileAccess.IsDirectoryVerifiedUnder(staging, _modelsDirectory))
+            return kept;
+
+        var stagingFull = Path.GetFullPath(staging);
+        foreach (var file in model.Files!)
+        {
+            var partial = Helpers.BundleRelativePathGuard.ResolveWithin(stagingFull, file.RelativePath) + ".download";
+            // shortcut: nested bundle files are not resumed (no shipped bundle has one); add a contained-subdirectory walk if one ships.
+            if (!string.Equals(Path.GetDirectoryName(partial), stagingFull, StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                var info = new FileInfo(partial);
+                if (!info.Exists
+                    || (info.Attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0
+                    || info.Length < 1 || info.Length >= file.FileSizeBytes
+                    || !Helpers.VerifiedFileAccess.PathResolvesDirectlyIn(partial, stagingFull))
+                    continue;
+                kept.Add((partial, info.Length));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Unreadable is not resumable; the stale-entry sweep decides what happens to it.
+            }
+        }
+        return kept;
+    }
+
     /// <summary>
     /// TRN-29 slice 4: remove a model's staging leftovers, containment-safe and serialized under
     /// the SAME per-model lock as its installs — the delete flow's staging sweep must not race a
@@ -542,10 +591,9 @@ public sealed class ModelDownloadManager
     /// not installed) or a complete directory. There is no intermediate state that reads as
     /// installed.</para>
     ///
-    /// <para><b>Stale staging is discarded, not resumed.</b> A staging directory surviving a crash
-    /// has unknown provenance, and the cheap validity check available here is existence and size,
-    /// not hashes. Restarting costs one re-download; accepting it risks committing a bundle this run
-    /// never verified.</para>
+    /// <para><b>Stale staging's completed files are discarded, never adopted</b> — the cheap check on
+    /// them is existence and size, not hashes. Only its <c>.download</c> partials are resumed
+    /// (NET-8, <see cref="ResumablePartials"/>), and each is hashed whole before the commit.</para>
     /// </summary>
     private async Task<string> DownloadBundleAsync(
         TranscriptionModelInfo model,
@@ -562,6 +610,7 @@ public sealed class ModelDownloadManager
 
         var counted = false;
         var containmentVerified = false;
+        var preserveStaging = false;
         var committed = false;
         try
         {
@@ -627,11 +676,41 @@ public sealed class ModelDownloadManager
             // not a valid install — including a regular FILE sitting where the bundle directory
             // belongs, which would otherwise fail the commit move forever.
             DeleteOccupantFailClosed(destination, "debris at the bundle destination");
-            DeleteOccupantFailClosed(staging, "stale staging directory");
 
-            // Nothing resumable survives the two deletes above, so the demand is the full size.
+            // NET-8: a partial a full disk stopped is resumed; every other staging entry goes.
+            var kept = ResumablePartials(model, staging);
+            if (kept.Count > 0)
+            {
+                // A failed sweep must not fall into the catch's wholesale delete and take the partial with it.
+                preserveStaging = true;
+                var entries = new DirectoryInfo(staging).EnumerateFileSystemInfos().ToList();
+                // A link inside staging would make the per-entry sweep refuse every later install; the wholesale delete unlinks it.
+                if (entries.Exists(e => (e.Attributes & FileAttributes.ReparsePoint) != 0))
+                {
+                    kept.Clear();
+                }
+                else
+                {
+                    foreach (var entry in entries)
+                    {
+                        var full = Path.GetFullPath(entry.FullName);
+                        if (!kept.Exists(k => string.Equals(k.Path, full, StringComparison.OrdinalIgnoreCase)))
+                            DeleteOccupantFailClosed(full, "stale staging entry");
+                    }
+                }
+                preserveStaging = false;
+            }
+            if (kept.Count == 0)
+            {
+                DeleteOccupantFailClosed(staging, "stale staging directory");
+            }
+
             var totalBytes = files.Sum(f => f.FileSizeBytes);
-            EnsureFreeSpaceForBundle(model, totalBytes);
+            var keptBytes = kept.Sum(k => k.Length);
+            if (keptBytes > 0)
+                Logger.Information("Resuming model bundle {Name}: {KeptBytes} of {TotalBytes} bytes already downloaded",
+                    model.Name, keptBytes, totalBytes);
+            EnsureFreeSpaceForBundle(model, totalBytes, keptBytes);
 
             Directory.CreateDirectory(staging);
 
@@ -681,23 +760,14 @@ public sealed class ModelDownloadManager
             progress?.Report(1.0);
             return destination;
         }
-        catch
+        catch (Exception ex)
         {
-            // Staging is ALWAYS discarded on failure, transient or not — which is the same rule the
-            // entry path applies, and the two must agree or the comments start lying about the
-            // behaviour. A bundle install therefore does NOT resume across calls; only the retry
-            // loop WITHIN one call resumes, from the .download partials inside staging.
-            //
-            // That is a deliberate difference from the single-file path, which keeps its .download
-            // across calls: there, one file's partial is self-describing and cheap to validate. A
-            // staging TREE that survived a crash is not — the affordable check is existence and
-            // size, not hashes — so trusting it risks committing a bundle this run never verified.
-            // The cost is a re-download; the alternative is an unverifiable install.
-            //
+            // NET-8: a full disk keeps staging (NET-5's single-file rule) so the next call resumes its partials; everything else discards it.
+            // shortcut: only a later download, erasure or the coordinator's GGUF delete clears kept staging; add a staging sweep to DeleteModel if users ask for the space back.
             // GUARDED on containmentVerified: if the gate above is what threw, the staging path has
             // NOT been proven to resolve inside the models directory, and cleaning up anyway is how
             // a junctioned .staging gets an external file deleted on the way out.
-            if (containmentVerified)
+            if (containmentVerified && !preserveStaging && ex is not ModelLocalIOException)
             {
                 try { DeleteOccupantFailClosed(staging, "failed bundle install"); } catch { }
             }
@@ -1025,18 +1095,17 @@ public sealed class ModelDownloadManager
     }
 
     /// <summary>
-    /// Free-space demand for a bundle. Callers must have cleared staging first: a bundle install
-    /// never resumes across calls, so there are no pre-existing bytes to credit — passing 0 as the
-    /// partial keeps the shared <see cref="RequiredFreeBytes"/> formula honest instead of
-    /// discounting bytes that are about to be deleted.
+    /// Free-space demand for a bundle. Callers must have cleared staging down to the partials they
+    /// resume first, and pass those bytes as <paramref name="resumedBytes"/> (NET-8) — never bytes
+    /// that are about to be deleted.
     /// </summary>
-    private void EnsureFreeSpaceForBundle(TranscriptionModelInfo model, long totalBytes)
+    private void EnsureFreeSpaceForBundle(TranscriptionModelInfo model, long totalBytes, long resumedBytes)
     {
         try
         {
             var drive = new DriveInfo(Path.GetPathRoot(_modelsDirectory)
                                       ?? throw new InvalidOperationException("Models directory has no drive root"));
-            var required = RequiredFreeBytes(totalBytes, existingPartialBytes: 0);
+            var required = RequiredFreeBytes(totalBytes, resumedBytes);
             if (drive.AvailableFreeSpace < required)
             {
                 throw new ModelLocalIOException(

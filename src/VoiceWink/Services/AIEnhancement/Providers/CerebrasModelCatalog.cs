@@ -18,8 +18,8 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 /// <c>EnhanceAsync</c>'s ENH-12 guard — it keeps failing loudly with Cerebras's own message and
 /// survives a relaunch (owner UAT 198.2 / 198.3), the no-migration decision ENH-24 recorded. (The
 /// redo picker is the one surface that changes: its membership-gated pre-select — UX-1's
-/// <c>ProviderModelMemoryPolicy.NextDialogModel</c> — falls to the default for a hidden id, as it
-/// does for every curated-away id on every provider; nothing is persisted by that pre-fill.) The
+/// <c>ProviderModelMemoryPolicy.NextDialogModel</c> — leaves the box unselected for a hidden id, as
+/// it does for every curated-away id on every provider; nothing is persisted.) The
 /// withdrawn set is a hardcoded table because a catalog-membership check cannot see an endpoint
 /// withdrawal. Rows are added and retired by hand from the weekly <c>/vw-model-review</c> report:
 /// its deprecation-page read (ENH-24's skill change) is SCOPED to the default set, so a withdrawn

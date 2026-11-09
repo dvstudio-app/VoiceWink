@@ -24,8 +24,8 @@ internal static class ProviderModelMemoryPolicy
     /// <item>the RAW persisted per-provider model (null when never chosen — callers pass
     /// <c>AIEnhancementService.PersistedModelFor</c>, which does NO implicit-default
     /// substitution);</item>
-    /// <item>the provider default (<see cref="ImageOptions.DefaultModelFor"/> /
-    /// <see cref="TextModelDefaults.DefaultModelFor"/>);</item>
+    /// <item>the provider default (<see cref="ImageOptions.DefaultModelFor"/>; text models
+    /// have none — hardcoded text ids went stale too fast);</item>
     /// <item>null — the caller leaves the combo UNSELECTED with the confirm button gated,
     /// never an arbitrary alphabetical <c>list[0]</c>.</item>
     /// </list>

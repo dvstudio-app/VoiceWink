@@ -352,7 +352,8 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                           && Volatile.Read(ref _consecutiveWholeCallFailures) < MaxConsecutiveWholeCallFailures,
             PcppHasServed: identity is not null
                            && string.Equals(_servedIdentity, identity, StringComparison.Ordinal),
-            DiskAllowsGguf: _availableFreeBytes() >= _gguf.FileSizeBytes + DiskSlackBytes,
+            // NET-8: a partial a full disk stopped is resumed, so only the remaining bytes need room.
+            DiskAllowsGguf: _availableFreeBytes() >= _gguf.FileSizeBytes - _downloads.ResumableStagingBytes(_gguf) + DiskSlackBytes,
             DeletePending: deletePending,
             // != false, deliberately: an unreadable probe keeps the auto-cleanup REACHABLE —
             // the same fail-open-toward-delete direction as HasAnyArtifact. Over genuinely

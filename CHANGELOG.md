@@ -17,6 +17,20 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.124.426] - 2026-11-09
+
+- Fixed a crash when the microphone in use was unplugged or turned off.
+- The recording pill now warns you when the microphone stops sending audio.
+- OpenAI's gpt-image-2.6 Flare and Sunburst now offer XHigh and Max quality, the 1K/2K/4K sizes and the 2:1, 1:2 and 9:21 ratios.
+
+## [1.123.425] - 2026-11-04
+
+- Built-in AI models reply sooner and finish faster when they run on the processor.
+- Fixed a rare crash when quitting VoiceWink.
+- The main window now stops at a minimum size, so dialogs no longer cut off their buttons.
+- A model download stopped by a full disk now picks up where it stopped.
+- Double-clicking Continue or Back in setup now moves one step, not two.
+
 ## [1.122.423] - 2026-11-01
 
 - On a PC with no microphone, recording now says "No microphone found" instead of "Recording failed".

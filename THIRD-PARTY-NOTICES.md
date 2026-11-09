@@ -144,7 +144,7 @@ weights inside it are the same © NVIDIA Parakeet TDT 0.6B v3 release under **CC
 
 ## llama-server (bundled)
 
-VoiceWink ships llama.cpp's **`llama-server`**, build **b11147** (win-vulkan-x64 release), in
+VoiceWink ships llama.cpp's **`llama-server`**, build **b11960** (win-vulkan-x64 release), in
 `runtimes\win-x64\llama\` — the local engine behind AI enhancement on this PC. The directory
 holds `llama-server.exe` and the libraries it loads: `llama-server-impl.dll`, `llama-common.dll`,
 `llama.dll`, `mtmd.dll`, `ggml.dll`, `ggml-base.dll`, `ggml-vulkan.dll`, fourteen
@@ -161,11 +161,11 @@ Visual C++ runtime DLLs. The licences below cover both directories.
 |---|---|---|
 | llama.cpp (incl. ggml) | **MIT** | https://github.com/ggml-org/llama.cpp |
 | LLVM OpenMP runtime (`libomp.dll`) | **Apache-2.0 WITH LLVM-exception** | https://github.com/llvm/llvm-project |
-| BoringSSL 0.20260903.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **Apache-2.0** | https://boringssl.googlesource.com/boringssl |
-| cpp-httplib 0.57.1 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
+| BoringSSL 0.20261020.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **Apache-2.0** | https://boringssl.googlesource.com/boringssl |
+| cpp-httplib 0.62.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
 | nlohmann/json 3.12.0 (in `llama-common.dll`) | **MIT** | https://github.com/nlohmann/json |
 | rotate-bits (in `llama-common.dll`, `mtmd.dll`) | **MIT** | https://github.com/jb55/rotate-bits.h |
-| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b11147/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
+| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b11960/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
 | nerdamer-prime (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/together-science/nerdamer-prime |
 | decimal.js (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/MikeMcl/decimal.js |
 
@@ -552,7 +552,7 @@ PARTICULAR PURPOSE.
 ## llama-server web UI (bundled npm packages)
 
 `llama-server-impl.dll` (both directories) carries llama.cpp's web UI, compiled from its
-`tools/ui` at build b11147 into one JavaScript bundle and one stylesheet. VoiceWink starts
+`tools/ui` at build b11960 into one JavaScript bundle and one stylesheet. VoiceWink starts
 llama-server with the UI switched off (`--no-webui`), but the UI still ships inside the binary.
 The first table lists the npm packages the UI's own code reaches at run time according to that
 build's `package-lock.json`: the packages it imports and their dependencies, without build tools
@@ -578,17 +578,17 @@ decimal.js and big-integer are listed under llama-server above.
 | `@jridgewell/gen-mapping` | 0.3.13 | MIT | © 2024 Justin Ridgewell |
 | `@jridgewell/remapping` | 2.3.5 | MIT | © 2024 Justin Ridgewell |
 | `@jridgewell/resolve-uri` | 3.1.2 | MIT | © 2019 Justin Ridgewell |
-| `@jridgewell/sourcemap-codec` | 1.5.5 | MIT | © 2024 Justin Ridgewell |
+| `@jridgewell/sourcemap-codec` | 1.6.0 | MIT | © 2024 Justin Ridgewell |
 | `@jridgewell/trace-mapping` | 0.3.31 | MIT | © 2024 Justin Ridgewell |
-| `@lucide/svelte` | 1.25.0 | ISC AND MIT | © 2026 Lucide Icons and Contributors (ISC); © 2013-present Cole Bemis, Feather icons (MIT) |
-| `@mermaid-js/parser` | 1.1.1 | MIT | © 2023 Yokozuna59 |
-| `@modelcontextprotocol/sdk` | 1.30.0 | MIT | © 2024 Anthropic, PBC |
+| `@lucide/svelte` | 1.46.0 | ISC AND MIT | © 2026 Lucide Icons and Contributors (ISC); © 2013-present Cole Bemis, Feather icons (MIT) |
+| `@mermaid-js/parser` | 1.2.1 | MIT | © 2023 Yokozuna59 |
+| `@modelcontextprotocol/sdk` | 1.32.1 | MIT | © 2024 Anthropic, PBC |
 | `@polka/url` | 1.0.0-next.29 | MIT | © Luke Edwards |
 | `@standard-schema/spec` | 1.1.0 | MIT | © 2024 Colin McDonnell |
 | `@sveltejs/acorn-typescript` | 1.0.10 | MIT | © 2022 Tyreal Hu; © 2025 The Svelte Team |
 | `@sveltejs/kit` | 2.70.2 | MIT | © 2020 [these people](https://github.com/sveltejs/kit/graphs/contributors) |
 | `@tailwindcss/forms` | 0.5.10 | MIT | © Tailwind Labs, Inc |
-| `@tailwindcss/typography` | 0.5.16 | MIT | © Tailwind Labs, Inc |
+| `@tailwindcss/typography` | 0.5.20 | MIT | © Tailwind Labs, Inc |
 | `@ungap/structured-clone` | 1.3.1 | ISC | © 2021, Andrea Giammarchi, @WebReflection |
 | `@upsetjs/venn.js` | 2.0.0 | MIT | © 2013 Ben Frederickson; © 2021 Samuel Gratzl |
 | `acorn` | 8.16.0 | MIT | © 2012-2022 by various contributors (see AUTHORS) |
@@ -604,7 +604,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `character-entities-legacy` | 3.0.0 | MIT | © 2015 Titus Wormer |
 | `clsx` | 2.1.1 | MIT | © Luke Edwards (lukeed.com) |
 | `comma-separated-tokens` | 2.0.3 | MIT | © 2016 Titus Wormer |
-| `commander` | 7.2.0, 8.3.0 | MIT | © 2011 TJ Holowaychuk |
+| `commander` | 15.0.0, 7.2.0 | MIT | © 2011 TJ Holowaychuk |
 | `content-type` | 1.0.5 | MIT | © 2015 Douglas Christopher Wilson |
 | `cookie` | 1.1.1 | MIT | © 2012-2014 Roman Shtylman; © 2015 Douglas Christopher Wilson |
 | `cose-base` | 1.0.3, 2.2.0 | MIT | © 2019 - present, iVis@Bilkent |
@@ -649,10 +649,10 @@ decimal.js and big-integer are listed under llama-server above.
 | `decode-named-character-reference` | 1.3.0 | MIT | © Titus Wormer |
 | `delaunator` | 5.1.0 | ISC | © 2026, Mapbox |
 | `dequal` | 2.0.3 | MIT | © Luke Edwards (lukeed.com) |
-| `devalue` | 5.8.1 | MIT | © 2018-19 [these people](https://github.com/rich-harris/devalue/graphs/contributors) |
+| `devalue` | 5.9.4 | MIT | © 2018-19 [these people](https://github.com/rich-harris/devalue/graphs/contributors) |
 | `devlop` | 1.1.0 | MIT | © 2023 Titus Wormer |
 | `dexie` | 4.4.3 | Apache-2.0 | © 2014-2017 David Fahlander (Dexie.js NOTICE) |
-| `dompurify` | 3.4.13 | Apache-2.0 (elected; MPL-2.0 OR Apache-2.0) | © Dr.-Ing. Mario Heiderich, Cure53 |
+| `dompurify` | 3.4.17 | Apache-2.0 (elected; MPL-2.0 OR Apache-2.0) | © Dr.-Ing. Mario Heiderich, Cure53 |
 | `entities` | 6.0.1 | BSD-2-Clause | © Felix Böhm |
 | `es-toolkit` | 1.47.0 | MIT | © 2024 Viva Republica, Inc; © OpenJS Foundation and other contributors |
 | `escape-string-regexp` | 5.0.0 | MIT | © Sindre Sorhus |
@@ -662,7 +662,8 @@ decimal.js and big-integer are listed under llama-server above.
 | `eventsource-parser` | 3.1.0 | MIT | © 2026 Espen Hovlandsdal |
 | `extend` | 3.0.2 | MIT | © 2014 Stefan Thomas |
 | `fast-deep-equal` | 3.1.3 | MIT | © 2017 Evgeny Poberezkin |
-| `fast-uri` | 3.1.5 | BSD-3-Clause | © 2011-2021 Gary Court; © 2021-present The Fastify team |
+| `fast-uri` | 3.1.8 | BSD-3-Clause | © 2011-2021 Gary Court; © 2021-present The Fastify team |
+| `fastdom` | 1.0.12 | MIT | © 2016 Wilson Page |
 | `fflate` | 0.8.3 | MIT | © 2026 Arjun Barrett |
 | `hachure-fill` | 0.5.2 | MIT | © 2023 Preet Shihn |
 | `hast-util-from-dom` | 5.0.1 | ISC | © Keith McKnight |
@@ -684,7 +685,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `is-plain-obj` | 4.1.0 | MIT | © Sindre Sorhus |
 | `is-reference` | 3.0.3 | MIT | © Rich Harris |
 | `json-schema-traverse` | 1.0.0 | MIT | © 2017 Evgeny Poberezkin |
-| `katex` | 0.16.47 | MIT | © 2013-2020 Khan Academy and other contributors |
+| `katex` | 0.18.11 | MIT | © 2013-2020 Khan Academy and other contributors |
 | `khroma` | 2.1.0 | MIT | © 2019-present Fabio Spampinato, Andrew Maney |
 | `kleur` | 4.1.5 | MIT | © Luke Edwards (lukeed.com) |
 | `layout-base` | 1.0.2, 2.0.1 | MIT | © 2019 iVis@Bilkent |
@@ -710,7 +711,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `mdast-util-to-hast` | 13.2.1 | MIT | © 2016 Titus Wormer |
 | `mdast-util-to-markdown` | 2.1.2 | MIT | © Titus Wormer |
 | `mdast-util-to-string` | 4.0.0 | MIT | © 2015 Titus Wormer |
-| `mermaid` | 11.15.0 | MIT | © 2014 - 2022 Knut Sveidqvist |
+| `mermaid` | 11.17.2 | MIT | © 2014 - 2022 Knut Sveidqvist |
 | `micromark` | 4.0.2 | MIT | © Titus Wormer |
 | `micromark-core-commonmark` | 2.0.3 | MIT | © Titus Wormer |
 | `micromark-extension-gfm` | 3.0.0 | MIT | © 2020 Titus Wormer |
@@ -770,6 +771,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `set-cookie-parser` | 3.1.0 | MIT | © 2015 Nathan Friedly |
 | `sirv` | 3.0.2 | MIT | © Luke Edwards |
 | `space-separated-tokens` | 2.0.2 | MIT | © 2016 Titus Wormer |
+| `strictdom` | 1.0.1 | MIT | © 2013 Wilson Page |
 | `stringify-entities` | 4.0.4 | MIT | © 2015 Titus Wormer |
 | `style-to-object` | 1.0.14 | MIT | © 2017 Menglin "Mark" Xu |
 | `stylis` | 4.4.0 | MIT | © 2016-present Sultan Tarimo |
@@ -778,7 +780,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `svelte-toolbelt` | 0.10.6, 0.7.1 | MIT | © 2024 Hunter Johnston; © 2024 Thomas G. Lopes |
 | `tabbable` | 6.4.0 | MIT | © 2015 David Clark |
 | `tailwind-merge` | 3.6.0 | MIT | © 2021 Dany Castillo |
-| `tailwind-variants` | 3.2.2 | MIT | © 2020 Tailwid Variants |
+| `tailwind-variants` | 3.3.1 | MIT | © 2020 Tailwid Variants |
 | `tailwindcss` | 4.3.0 | MIT | © Tailwind Labs, Inc |
 | `tinyexec` | 1.2.4 | MIT | © 2024 Tinylibs |
 | `totalist` | 3.0.1 | MIT | © Luke Edwards (lukeed.com) |
@@ -795,10 +797,11 @@ decimal.js and big-integer are listed under llama-server above.
 | `unist-util-visit` | 5.1.0 | MIT | © 2015 Titus Wormer |
 | `unist-util-visit-parents` | 6.0.2 | MIT | © 2016 Titus Wormer |
 | `uuid` | 13.0.2 | MIT | © 2010-2020 Robert Kieffer and other contributors |
+| `vaul-svelte` | 1.0.0-next.7 | MIT | © 2023 Hunter Johnston; © 2023 Emil Kowalski |
 | `vfile` | 6.0.3 | MIT | © 2015 Titus Wormer |
 | `vfile-location` | 5.0.3 | MIT | © 2016 Titus Wormer |
 | `vfile-message` | 4.0.3 | MIT | © Titus Wormer |
-| `vite` | 7.3.6 | MIT | © 2019-present, VoidZero Inc. and Vite contributors; © 2024 Justin Ridgewell; © 2019 Justin Ridgewell; © 2024-present VoidZero Inc. & Contributors; © 2019 RollupJS Plugin Contributors; © 2019 Elan Shanker, Paul Miller |
+| `vite` | 7.3.7 | MIT | © 2019-present, VoidZero Inc. and Vite contributors; © 2024 Justin Ridgewell; © 2019 Justin Ridgewell; © 2024-present VoidZero Inc. & Contributors; © 2019 RollupJS Plugin Contributors; © 2019 Elan Shanker, Paul Miller |
 | `web-namespaces` | 2.0.1 | MIT | © 2016 Titus Wormer |
 | `zimmerframe` | 1.1.4 | MIT | © 2023 [these people](https://github.com/Rich-Harris/zimmerframe/graphs/contributors) |
 | `zod` | 4.4.3 | MIT | © 2025 Colin McDonnell |
@@ -809,19 +812,19 @@ Packages carried pre-built inside other packages' published JavaScript:
 
 | Package | Version | Licence | Copyright | Inside |
 |---|---|---|---|---|
-| `@chevrotain/gast` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
-| `@chevrotain/regexp-to-ast` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
-| `@chevrotain/utils` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
-| `chevrotain` | 11.1.1 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `@chevrotain/gast` | 11.1.2 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `@chevrotain/regexp-to-ast` | 11.1.2 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `@chevrotain/utils` | 11.1.2 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
+| `chevrotain` | 11.1.2 | Apache-2.0 | © Shahar Soel | @mermaid-js/parser |
 | `chevrotain-allstar` | 0.3.1 | MIT | © 2022 TypeFox GmbH | @mermaid-js/parser |
-| `langium` | 4.2.0 | MIT | © 2021 TypeFox GmbH | @mermaid-js/parser |
+| `langium` | 4.2.1 | MIT | © 2021 TypeFox GmbH | @mermaid-js/parser |
 | `lodash-es` | 4.17.23 | MIT | © OpenJS Foundation and other contributors; based on Underscore.js, © Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors | @mermaid-js/parser |
 | `vscode-jsonrpc` | 8.2.0 | MIT | © Microsoft Corporation | @mermaid-js/parser, mermaid |
 | `vscode-languageserver-protocol` | 3.17.5 | MIT | © Microsoft Corporation | @mermaid-js/parser, mermaid |
 | `vscode-languageserver-textdocument` | 1.0.12 | MIT | © Microsoft Corporation | @mermaid-js/parser |
 | `vscode-languageserver-types` | 3.17.5 | MIT | © Microsoft Corporation | @mermaid-js/parser, mermaid |
 | `vscode-uri` | 3.1.0 | MIT | © Microsoft | @mermaid-js/parser |
-| `js-yaml` | 4.1.1 | MIT | © 2011-2015 Vitaly Puzrin | mermaid |
+| `js-yaml` | 4.3.0 | MIT | © 2011-2015 Vitaly Puzrin | mermaid |
 
 ## sherpa-onnx runtime (bundled via org.k2fsa.sherpa.onnx.runtime.win-x64)
 

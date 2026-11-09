@@ -62,4 +62,23 @@ public static class MainWindowPlacement
 
         return new WindowPlacement(width, height, x, y, ShouldMove: true);
     }
+
+    /// <summary>UI-28 the smallest size, in DIP, at which a page dialog still shows its title and buttons.</summary>
+    public const int MinimumWidthDip = 640;
+
+    /// <summary>UI-28 see <see cref="MinimumWidthDip"/>.</summary>
+    public const int MinimumHeightDip = 480;
+
+    /// <summary>UI-28 the minimum resize size in pixels, capped at a valid work area; a failed scale or work-area read never yields zero.</summary>
+    public static (int Width, int Height) MinimumSize(double scale, int workAreaWidth, int workAreaHeight)
+    {
+        var effectiveScale = double.IsFinite(scale) && scale > 0 ? scale : 1.0;
+        var width = (int)(MinimumWidthDip * effectiveScale);
+        var height = (int)(MinimumHeightDip * effectiveScale);
+        if (workAreaWidth <= 0 || workAreaHeight <= 0)
+            return (width, height);
+
+        return (global::System.Math.Min(width, workAreaWidth),
+                global::System.Math.Min(height, workAreaHeight));
+    }
 }
