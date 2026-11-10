@@ -1821,7 +1821,7 @@ public sealed class ClipboardService
 
         if (!NoEditableFocusGate.ShouldProbe(
                 route.Confident, route.Route, info.TargetClass, targetWindow, info.FocusHwnd, info.FocusClass))
-            return false;
+            return ShouldBlockShellSurface(targetWindow, route, context, info, rescueStage);
 
         // Net selection + verdict live in the pure gate (NoEditableFocusGate.EvaluatePostRestore):
         // after ANY overturned pre-restore block the broad shape predicate applies, but ONLY
@@ -1836,13 +1836,8 @@ public sealed class ClipboardService
             Helpers.UiaFocusBridge.TryGetFocusedElementShapeWithIdentity,
             Helpers.UiaFocusBridge.TryGetFocusedControlType);
 
-        if (block && NativeInterop.GetForegroundWindow() != targetWindow)
-        {
-            Logger.Information(
-                "{Context}: stale focus pairing (foreground moved off 0x{Target:X} since the snapshot) — failing open; drift recovery owns this case",
-                context, targetWindow);
+        if (block && IsStaleFocusPairing(targetWindow, context))
             return false;
-        }
         if (block)
         {
             Logger.Warning(
@@ -1856,6 +1851,43 @@ public sealed class ClipboardService
                 context, detail);
         }
         return block;
+    }
+
+    /// <summary>A block decided on a snapshot whose window is no longer foreground fails open (both gate arms).</summary>
+    private static bool IsStaleFocusPairing(IntPtr targetWindow, string context)
+    {
+        if (NativeInterop.GetForegroundWindow() == targetWindow)
+            return false;
+        Logger.Information(
+            "{Context}: stale focus pairing (foreground moved off 0x{Target:X} since the snapshot) — failing open; drift recovery owns this case",
+            context, targetWindow);
+        return true;
+    }
+
+    /// <summary>PST-5: the non-Chromium arm, consulted only when the Chromium arm declined; same stale-pairing guard.</summary>
+    private static bool ShouldBlockShellSurface(
+        IntPtr targetWindow, (Helpers.PasteFocusRoute.Route Route, bool Confident) route, string context,
+        FocusInfo info, Helpers.PreRestoreStage? rescueStage)
+    {
+        if (!Helpers.ShellSurfaceNoEditableGate.ShouldProbe(
+                route.Confident, route.Route, info.TargetClass, targetWindow, info.CaretHwnd))
+            return false;
+
+        var (block, detail) = Helpers.ShellSurfaceNoEditableGate.Evaluate(
+            rescueStage, Helpers.UiaFocusBridge.TryGetFocusedElementShapeWithIdentity);
+        if (!block)
+        {
+            Logger.Information(
+                "{Context}: shell surface (targetClass=\"{TargetClass}\") but {Detail} — paste proceeds",
+                context, info.TargetClass, detail);
+            return false;
+        }
+        if (IsStaleFocusPairing(targetWindow, context))
+            return false;
+        Logger.Warning(
+            "{Context}: no editable focused on shell surface 0x{Target:X} (targetClass=\"{TargetClass}\" focusClass=\"{FocusClass}\" {Detail}) — blocking Ctrl+V, content kept on clipboard",
+            context, targetWindow, info.TargetClass, info.FocusClass, detail);
+        return true;
     }
 
     /// <summary>

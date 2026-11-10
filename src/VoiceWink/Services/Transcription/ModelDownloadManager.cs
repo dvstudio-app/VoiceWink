@@ -725,7 +725,8 @@ public sealed class ModelDownloadManager
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
 
                 var fileStart = completedBytes;
-                var fileProgress = progress is null ? null : new Progress<double>(p =>
+                // LAI-16: inline, never posted — a posted member report could land after the commit's 1.0.
+                var fileProgress = progress is null ? null : new SynchronousProgress<double>(p =>
                     progress.Report(Math.Clamp((fileStart + (p * file.FileSizeBytes)) / totalBytes, 0, 0.99)));
 
                 await DownloadBundleFileAsync(model, file, target, fileProgress, ct).ConfigureAwait(false);

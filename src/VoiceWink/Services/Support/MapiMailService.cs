@@ -93,13 +93,16 @@ public static class MapiMailService
     /// offered as a retry before the <c>mailto:</c> fallback, except on a host this class refuses
     /// outright (REL-27), where the caller falls back directly.
     /// </summary>
-    public static bool TrySend(string recipientEmail, string subject, string body, string? attachmentPath)
+    /// <param name="onDecline">REL-25 item 2: gets one app-authored reason line on a decline (no path, address or message text).</param>
+    public static bool TrySend(
+        string recipientEmail, string subject, string body, string? attachmentPath, Action<string>? onDecline = null)
         => TrySend(recipientEmail, subject, body, attachmentPath,
-            RuntimeInformation.ProcessArchitecture, RuntimeInformation.OSArchitecture, SendViaSimpleMapi);
+            RuntimeInformation.ProcessArchitecture, RuntimeInformation.OSArchitecture,
+            (r, s, b, a) => SendPreferringUnicode(r, s, b, a, CallMapiSendMail, onDecline), onDecline);
 
     /// <summary>
     /// The native leg, as a delegate so a test can stand in for it. Same shape as
-    /// <see cref="TrySend(string,string,string,string?)"/>.
+    /// <see cref="TrySend(string,string,string,string?,Action{string}?)"/> without its decline callback.
     /// </summary>
     internal delegate bool NativeMapiSend(string recipientEmail, string subject, string body, string? attachmentPath);
 
@@ -113,7 +116,8 @@ public static class MapiMailService
     /// </summary>
     internal static bool TrySend(
         string recipientEmail, string subject, string body, string? attachmentPath,
-        Architecture processArchitecture, Architecture osArchitecture, NativeMapiSend nativeSend)
+        Architecture processArchitecture, Architecture osArchitecture, NativeMapiSend nativeSend,
+        Action<string>? onDecline = null)
     {
         // Ordering is the whole fix: MAPISendMail loads the default mail client's provider (plus,
         // for Office, its App-V shim) INTO this process, and on an emulated host that crashes the
@@ -134,14 +138,12 @@ public static class MapiMailService
                 MapiHostSupport.RefusalReason,
                 processArchitecture, osArchitecture,
                 attachmentPath != null);
+            onDecline?.Invoke($"Simple MAPI not attempted on this PC (process {processArchitecture}, OS {osArchitecture})");
             return false;
         }
 
         return nativeSend(recipientEmail, subject, body, attachmentPath);
     }
-
-    private static bool SendViaSimpleMapi(string recipientEmail, string subject, string body, string? attachmentPath)
-        => SendPreferringUnicode(recipientEmail, subject, body, attachmentPath, CallMapiSendMail);
 
     /// <summary>
     /// REL-40: which string encoding a Simple MAPI call carries. The ANSI <c>MAPISendMail</c>
@@ -168,9 +170,12 @@ public static class MapiMailService
         => tried == MapiEncoding.Unicode && (result is null || result == MAPI_E_UNICODE_NOT_SUPPORTED);
 
     internal static bool SendPreferringUnicode(
-        string recipientEmail, string subject, string body, string? attachmentPath, MapiNativeCall call)
+        string recipientEmail, string subject, string body, string? attachmentPath, MapiNativeCall call,
+        Action<string>? onDecline = null)
     {
         var encoding = MapiEncoding.Unicode;
+        // Invoked after the try/catch, so a throwing callback is never logged as a MAPI throw.
+        string declineReason;
         try
         {
             var result = SendOnce(encoding, recipientEmail, subject, body, attachmentPath, call);
@@ -198,19 +203,24 @@ public static class MapiMailService
             // "the caller decides" rather than "falling back to mailto" since REL-29: what follows
             // this line is the user's choice (retry, or the manual attach), and a log line that
             // asserts a path which no longer runs would mislead the next REL-25-style investigation.
+            var bytes = TryGetLength(attachmentPath);
             Logger.Warning(
                 "MAPISendMail failed with {MapiCode} ({MapiCodeValue}, {Encoding}); the bundle is kept and the caller decides (retry or mailto). "
                 + "Attachment: {AttachmentPresent}, {AttachmentBytes} bytes",
                 DescribeMapiCode(result ?? -1), result ?? -1, encoding,
-                attachmentPath != null, TryGetLength(attachmentPath));
-            return false;
+                attachmentPath != null, bytes);
+            declineReason = $"MAPISendMail returned {DescribeMapiCode(result ?? -1)} ({result ?? -1}, {encoding}); attachment {bytes} bytes";
         }
         catch (Exception ex)
         {
             Logger.Warning(ex, "MAPISendMail threw; the bundle is kept and the caller decides (retry or mailto). Attachment: {AttachmentBytes} bytes",
                 TryGetLength(attachmentPath));
-            return false;
+            // Type and HResult only: an exception message can name a path or carry mail-client text.
+            declineReason = $"MAPISendMail threw {ex.GetType().Name} (0x{ex.HResult:X8}, {encoding})";
         }
+
+        onDecline?.Invoke(declineReason);
+        return false;
     }
 
     /// <summary>Builds the message block in <paramref name="encoding"/>, makes one native call, and

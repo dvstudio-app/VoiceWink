@@ -76,7 +76,10 @@ public sealed class ReportSendFlow
     private static ILogger Logger => Log.ForContext<ReportSendFlow>();
 
     // Injectable seams — production defaults; tests substitute.
-    internal Func<string, string, string, string?, bool> SendViaMapi { get; set; } = MapiMailService.TrySend;
+    internal Func<string, string, string, string?, Action<string>, bool> SendViaMapi { get; set; } = MapiMailService.TrySend;
+    // REL-25 item 2: a decline's reason goes into the kept zip, so that zip carries its own verdict.
+    internal Action<string, string> RecordSendStatus { get; set; } =
+        (zipPath, line) => SupportBundle.TryAppendSendStatus(zipPath, line);
     // Still throws on a refused launch — the dialog's catch shows "Couldn't open your email app" — but
     // with a fixed message: the shell's own names the whole mailto, the user's description included.
     internal Action<string> LaunchMailto { get; set; } = uri =>
@@ -158,7 +161,8 @@ public sealed class ReportSendFlow
                 Logger.Warning("Report bundle refused: Reports directory could not be verified");
                 return new ReportSendResult(ReportSendOutcome.BundleFailed, null);
             }
-            zipPath = Path.Combine(reportsDir, $"voicewink-report-{Now():yyyyMMdd-HHmmss}.zip");
+            // REL-25 item 3: unique per report, so a cancelled report's late cleanup can never delete the next one.
+            zipPath = Path.Combine(reportsDir, $"voicewink-report-{Now():yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..8]}.zip");
             // Fail-closed: don't open an email referencing a bundle we couldn't create.
             if (!BuildBundle(logsDir, zipPath, bundleOptions))
                 return new ReportSendResult(ReportSendOutcome.BundleFailed, null);
@@ -274,6 +278,7 @@ public sealed class ReportSendFlow
         // and a pin that cannot be taken is the fail-closed refusal — the only File.Exists this
         // flow has. Released BEFORE the success-path delete, which needs the file unpinned.
         bool handedToMapi;
+        string? declineReason = null;
         using (var pin = PinBundle(zipPath))
         {
             if (zipPath != null && pin is null)
@@ -281,7 +286,7 @@ public sealed class ReportSendFlow
                 Logger.Warning("Report send refused: the kept bundle is no longer on disk");
                 return new ReportSendResult(ReportSendOutcome.BundleFailed, null);
             }
-            handedToMapi = SendViaMapi(recipient, subject, body, zipPath);
+            handedToMapi = SendViaMapi(recipient, subject, body, zipPath, reason => declineReason = reason);
         }
 
         if (handedToMapi)
@@ -293,8 +298,19 @@ public sealed class ReportSendFlow
         }
 
         // MapiMailService logged WHY at Warning (the named code, or the REL-27 refusal); this is
-        // the consequence beside it. The bundle is deliberately NOT touched: the user may retry.
+        // the consequence beside it. The bundle is KEPT for a retry or a manual attach; it only gains
+        // the reason, after the pin above is released (the append replaces the file).
         Logger.Warning("Report send declined by the mail client; the bundle is KEPT and the user is offered a retry");
+        if (zipPath != null)
+            RecordSendStatus(zipPath, declineReason ?? "declined; no reason reported");
         return new ReportSendResult(ReportSendOutcome.MapiDeclined, zipPath);
+    }
+
+    /// <summary>REL-25 item 3: delete a kept bundle nobody was told about — a first attempt's decline
+    /// that arrived after Cancel closed the dialog. Best-effort, like the post-hand-off delete.</summary>
+    public void DiscardKeptBundle(string bundlePath)
+    {
+        Logger.Information("Report dialog closed before the email app declined; deleting the kept bundle");
+        DeleteBundle(bundlePath);
     }
 }

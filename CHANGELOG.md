@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.125.427] - 2026-11-10
+
+- Fewer missed hotkey presses when you use touch or a pen.
+- Dictating with the taskbar, tray or desktop in front no longer shows Done when nothing was pasted.
+- You can now transcribe your last recording again with another model, from ↻ or the Redo last hotkey.
+
 ## [1.124.426] - 2026-11-09
 
 - Fixed a crash when the microphone in use was unplugged or turned off.

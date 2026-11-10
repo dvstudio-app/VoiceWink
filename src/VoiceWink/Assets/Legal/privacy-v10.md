@@ -1,10 +1,10 @@
 ---
-version: 9
-last-updated: 2026-10-25
+version: 10
+last-updated: 2026-11-09
 title: VoiceWink Privacy Policy
-changes: When you answer How did you find VoiceWink? on the License page, the app sends your answer, picked from a fixed list, and links you share from the app carry a tag saying so. A copy built for the Microsoft Store now sends its installation report once you accept this policy, like a copy from our website, instead of while it installs. None of this tells DV Studio who you are.
-changes-for: e44efa94f706
-changes-since: cd2e379eaa76
+changes: VoiceWink can now temporarily keep your most recent recording on the local hard drive so you can transcribe it again, until you start a new recording, dismiss it or close the app. The description of the optional prompt-trace log is now more exact.
+changes-for: cca2a7a0436a
+changes-since: e44efa94f706
 ---
 
 # VoiceWink Privacy Policy
@@ -36,7 +36,7 @@ DV Studio decides why and how the data in this policy is processed, which makes 
 
 VoiceWink stores its data under %LOCALAPPDATA%/VoiceWink on your PC. DV Studio does not upload any of it. VoiceWink is open source, so anyone can check how it handles data (see the EULA, section 2.1).
 
-- **Recordings.** Audio is written to a temporary file and deleted once it has been transcribed. If transcription fails or no speech is detected, the recording is kept so you can retry, until you retry, start a new recording or close the app. If you turn on the option to keep recordings for debugging (off by default), recordings are kept instead. While VoiceWink is open, a clean-up removes recordings older than 7 days, unless one is still kept for a retry. VoiceWink does not use your voice to identify you and creates no voiceprint.
+- **Recordings.** Audio is written to a temporary file. When the pill's ↻ or the Redo last hotkey can run a dictation again, its recording is kept so you can transcribe it again, until you start a new recording, dismiss it or close the app; otherwise it is deleted once it has been transcribed. If transcription fails or no speech is detected, the recording is kept so you can retry, until you retry, start a new recording or close the app. If a recording cannot be deleted right away, VoiceWink tries again while it is open. If you turn on the option to keep recordings for debugging (off by default), recordings are kept instead. While VoiceWink is open, a clean-up removes recordings older than 7 days, unless one is still kept for you to transcribe again. VoiceWink does not use your voice to identify you and creates no voiceprint.
 - **The microphone between recordings.** With "Instant recording" on (the default), VoiceWink keeps the microphone open while it runs, so that recording starts the moment you press the hotkey. That audio is kept only in memory, holds at most about the last 10 seconds and is constantly overwritten. It is never saved to disk or sent. The start point is approximate, so a recording can include a brief moment from just before the press. Windows shows its microphone indicator while the app runs. Turning the setting off releases the microphone between recordings.
 - **History.** Transcribed text is stored in a local database, only if History is on. Images you generate are placed on your clipboard, and saved only if History is on. With History on, VoiceWink also keeps a local copy of each reference image you attach, for as long as a History entry uses it.
 - **What you dictate.** What you dictate can include personal or sensitive information about you or other people, such as health, money or private matters. VoiceWink uses it only to do what you ask. It is processed on your PC, or by the provider or server you chose, and DV Studio does not receive it unless you send it to support yourself.
@@ -44,7 +44,7 @@ VoiceWink stores its data under %LOCALAPPDATA%/VoiceWink on your PC. DV Studio d
 - **Usage totals.** Word counts, time saved and days of use, shown on the Metrics page. They are kept even when History is off.
 - **Keys.** API keys and your license key are encrypted with the Windows Data Protection API (DPAPI), so only your Windows user account on this PC can read them.
 - **License data.** The state of your license and trial. To keep an activation on the PC it was made for, VoiceWink also stores one-way fingerprints (hashes) of three hardware identifiers: the Windows machine ID, the computer's hardware ID and the network card's address. The fingerprints are used only on your PC and are never sent.
-- **Logs.** App logs help diagnose problems. VoiceWink keeps the logs of the last 14 days it ran. Sensitive text is not removed from them, and they can contain responses from cloud providers and the names of other programs, such as the app you dictate into. A short summary of each AI request, without its text, is kept for 7 days. If you switch on the optional prompt-trace logging (off by default), the dictated text and AI prompts are additionally written to local log files, which are swept after 7 days.
+- **Logs.** App logs help diagnose problems. VoiceWink keeps the logs of the last 14 days it ran. Sensitive text is not removed from them, and they can contain responses from cloud providers and the names of other programs, such as the app you dictate into. A short summary of each AI request, without its text, is kept for 7 days. If you switch on the optional prompt-trace logging (off by default), the text transcribed from your dictation and from audio files you transcribe, AI prompts and responses, App Mode names, and Dictionary and trigger words are additionally written to local log files; image prompts only if you also switch on logging them. These files are swept after 7 days.
 - **Problem reports.** A report you build with "Report a problem" is saved locally and removed after 7 days if you never send it.
 - **Downloaded models**, and small files that record how fast they run on your PC.
 - **The clipboard.** To paste text, VoiceWink puts it on the Windows clipboard. The text stays there until something else is copied, unless you turn on "Restore clipboard" in Settings, which puts back what was there before. VoiceWink marks the text it pastes, and the text it copies for you automatically, so that Windows clipboard history and cloud clipboard do not keep or sync it. Generated images are placed on the clipboard for you to paste; if you use Windows clipboard history or cloud clipboard, Windows may keep or sync those under Microsoft's own terms.
@@ -107,7 +107,7 @@ When you use one, the audio, text or images it needs, and your API key, go from 
 
 While crash reporting is on, Sentry also receives errors that did not crash the app, technical details of your PC (processor type, Windows and runtime version, language and memory), and a notice when the app starts and stops. Before anything is sent, VoiceWink removes known sensitive fields, such as keys, authorization headers and transcribed text. To link reports and sessions from the same PC, Sentry's software also sends an identifier. It is normally a random value saved on your PC. If that value cannot be saved, the software can use your network card's address instead, or a one-way hash of your PC's name. Sentry stores the reports in the EU (Frankfurt) on DV Studio's behalf.
 
-**Support email and problem reports.** When you email support@dvstudio.app, we receive what you write and attach. A problem report is attached to an email you send yourself; the app never sends it. By default it is redacted: keys are removed and prompts appear only as their length. You can choose to add raw prompt logs (your dictated text, prompts and results) and your recordings, each behind its own checkbox. App logs in a report can contain provider responses.
+**Support email and problem reports.** When you email support@dvstudio.app, we receive what you write and attach. A problem report is attached to an email you send yourself; the app never sends it. By default it is redacted: keys are removed and prompts appear only as their length. You can choose to add raw prompt logs (text transcribed from your dictation and audio files, prompts and results, App Mode names, and Dictionary and trigger words) and your recordings, each behind its own checkbox. App logs in a report can contain provider responses.
 
 ## 6. Our websites
 

@@ -85,6 +85,9 @@ public sealed class TranscriptionCleanupService
         // starves the others.
         await Task.Run(() =>
         {
+            // REL-20: a kept recording whose removal failed earlier is retried every pass, whatever its age.
+            try { RetainedWavDisposal.RetryPending(_wavLedger, _settings.GetBool(AppDefaults.KeepRecordingsForDebug, false), RecordingsRoot); }
+            catch (Exception ex) { Logger.Warning(ex, "Pending recording removal retry failed"); }
             SweepDebugRecordings();
             SweepOrphanedRootRecordings();
             PromptTraceLog.SweepOldTraces();

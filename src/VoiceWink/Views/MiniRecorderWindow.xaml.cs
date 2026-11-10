@@ -125,9 +125,10 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
     //
     // TRN-17 made the retry copy name its picker too: the tap now opens a dialog choosing the
     // TRANSCRIPTION model and language, so "Retry transcription" understated it in exactly the
-    // direction the redo string had overstated. Both now say which model they choose, which is
-    // the only thing that ever distinguished them to a user.
-    private const string RedoTooltip = "Run again with a different AI model";
+    // direction the redo string had overstated.
+    // REL-20: after a dictation the button asks whether to transcribe again or run the AI again,
+    // so the redo tooltip names the dialog rather than one model.
+    private const string RedoTooltip = "Run again";
     private const string RetryTooltip = "Retry with a different transcription model";
     private bool _isOffScreen = true; // Parked (hidden) — see MiniRecorderShowTransition's three states
     private bool _closingForReplacement;
@@ -1637,7 +1638,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
             // visuals with no extra reset path.
             if (notice != null)
             {
-                var amber = AppTheme.AccentAmber;
+                var amber = AppTheme.AccentFor(MiniRecorderTone.Warning);
                 StatusText.Visibility = Visibility.Visible;
                 StatusText.Text = notice;
                 StatusText.Foreground = AppTheme.Brush(amber);
@@ -1992,7 +1993,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
                 // Whole pill goes amber with the notice (owner request 2026-07-17): amber
                 // text on blue chrome read as a mixed signal — match RenderMessage's Warning
                 // treatment (dot/glow/border) so the pill state is unambiguous.
-                var amber = AppTheme.AccentAmber;
+                var amber = AppTheme.AccentFor(MiniRecorderTone.Warning);
                 StatusText.Text = notice;
                 StatusText.Foreground = AppTheme.Brush(amber);
                 SetStopAccent(amber);

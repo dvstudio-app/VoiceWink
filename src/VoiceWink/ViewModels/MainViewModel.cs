@@ -51,6 +51,7 @@ public partial class MainViewModel : ObservableObject
     private readonly AppModeManager _appModeManager;
     private readonly RedoCoordinator _redoCoordinator;
     private readonly RetainedWavLedger _wavLedger;
+    private readonly LastRecordingSlot _lastRecording;
     private readonly LicenseService _license;
     private readonly Services.AIEnhancement.ImageGenerationJobService _imageJob;
     private readonly VoiceActivityDetectionService _voiceActivityDetection;
@@ -510,6 +511,13 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public event Func<bool, RedoContext, Task>? ShowModelPickerRequested;
 
+    /// <summary>REL-20: shows the two-choice dialog; null = cancelled.</summary>
+    public event Func<Task<Helpers.RedoChoice?>>? ShowRedoChoiceRequested;
+
+    // REL-20: the open AI picker's ticket (one picker at a time — the _enhancementPickerActive CAS).
+    private long _pickerGeneration;
+    private bool _pickerFromChooser;
+
     /// <summary>
     /// Raised when an image generation prompt has <c>AskImageSize</c> enabled. The handler shows
     /// the same rich dialog as the redo/regenerate flow — an editable input-text box pre-filled
@@ -573,6 +581,7 @@ public partial class MainViewModel : ObservableObject
         AppModeManager appModeManager,
         RedoCoordinator redoCoordinator,
         RetainedWavLedger wavLedger,
+        LastRecordingSlot lastRecording,
         LicenseService license,
         Services.AIEnhancement.ImageGenerationJobService imageJob,
         VoiceActivityDetectionService voiceActivityDetection,
@@ -608,6 +617,7 @@ public partial class MainViewModel : ObservableObject
         _appModeManager = appModeManager;
         _redoCoordinator = redoCoordinator;
         _wavLedger = wavLedger;
+        _lastRecording = lastRecording;
         _license = license;
         _imageJob = imageJob;
         _voiceActivityDetection = voiceActivityDetection;
@@ -1276,66 +1286,9 @@ public partial class MainViewModel : ObservableObject
         IsRetryAvailable = false;
 
         if (deleteWav && wavPath != null)
-        {
-            var ledger = _wavLedger;
-            // REL-17: the superseded retained WAV honors the keep-recordings setting too —
-            // it reached the pipeline and failed, exactly the audio worth diagnosing.
-            var keepForDebug = _settings.GetBool(AppDefaults.KeepRecordingsForDebug, false);
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    // What THIS task did to the bytes — reported only if it also wins the ledger
-                    // removal below. "already absent" is the honest answer when the file went
-                    // before we looked, which is a real close and not nothing.
-                    var outcome = "already absent (superseded)";
-                    if (File.Exists(wavPath))
-                    {
-                        // Write-side junction guard (diff round 5): unverifiable Debug
-                        // dir ⇒ delete fallback, same rule as every other move site.
-                        var debugDir = keepForDebug ? AppPaths.EnsureRecordingsDebug() : null;
-                        // Report what HAPPENED, not what was configured (the GainReason rule):
-                        // the junction guard can route a keep-recordings move into the delete
-                        // arm, so the branch that RAN chooses the line. Silence here was the
-                        // second half of the 2026-08-15 logging gap — a superseded retry WAV
-                        // moved to Debug or was deleted with no record either way, so a failed
-                        // recording could reach its final resting place having never been named.
-                        if (debugDir != null && !VerifiedFileAccess.IsReparsePointOrUnreadable(debugDir))
-                        {
-                            File.Move(wavPath, Path.Combine(debugDir, Path.GetFileName(wavPath)), overwrite: true);
-                            outcome = "kept for debugging (superseded)";
-                        }
-                        else
-                        {
-                            File.Delete(wavPath);
-                            // REL-23: this delete arm must take the raw sibling too, exactly as the
-                            // pipeline's own Delete disposition does. Both self-review lenses found
-                            // this independently: keep-recordings ON writes the PRE-GAIN original to
-                            // Debug, and if the user turns the setting OFF while a retry is armed,
-                            // superseding it deleted the gained WAV while the more sensitive
-                            // microphone copy survived — "a toggle-off delete promises to keep
-                            // nothing" binds here as strongly as it does there. Fail-soft, and it
-                            // refuses a junctioned Debug dir on its own, so the junction fallback
-                            // that lands us in this arm is safe.
-                            Services.Audio.RecordingAudioPreparation.DeleteRawSiblingFor(wavPath);
-                            outcome = "deleted (superseded)";
-                        }
-                    }
-                    // Log through the ledger, never independently (Codex diff round 1): this task
-                    // is fire-and-forget and races the shutdown drain. The drain can dispose of
-                    // the WAV between the File.Exists check and the delete, after which our
-                    // File.Delete succeeds as a missing-file no-op — and an unconditional line
-                    // here would then announce a deletion this task did not perform. Only the
-                    // winner of the removal reports.
-                    ledger.TryCloseRetention(wavPath, outcome);
-                }
-                catch (Exception ex)
-                {
-                    // Leave tracked — the shutdown drain / 7-day sweep are the backstops.
-                    Logger.Debug(ex, "Superseded retry WAV delete failed {Path}", wavPath);
-                }
-            });
-        }
+            // REL-17: the superseded retained WAV honors the keep-recordings setting too.
+            RetainedWavDisposal.DisposeInBackground(
+                wavPath, _wavLedger, _settings.GetBool(AppDefaults.KeepRecordingsForDebug, false), "superseded");
     }
 
     /// <summary>
@@ -1380,7 +1333,11 @@ public partial class MainViewModel : ObservableObject
                     Path.GetFileName(recordingPath));
                 _wavLedger.ConfirmDeleted(recordingPath);
             }
-            catch (Exception ex2) { Logger.Debug(ex2, "Failed to delete recording {Path}", recordingPath); }
+            catch (Exception ex2)
+            {
+                Logger.Debug(ex2, "Failed to delete recording {Path}", recordingPath);
+                _wavLedger.MarkFailedDisposal(recordingPath, mustDelete: false); // REL-20: retried while open
+            }
         }
     }
 
@@ -1436,7 +1393,9 @@ public partial class MainViewModel : ObservableObject
         int Count,
         IDisposable? ReferenceLease,
         // HIS-10: the dictation's recording length, persisted by BuildImageRow; 0 where nothing was recorded.
-        double DurationSeconds);
+        double DurationSeconds,
+        // REL-20: the held recording this job's redo pairs with on completion; null = none.
+        string? PairWithHeldWav = null);
 
     /// <summary>
     /// A finished job's presentation, waiting for the pipeline to be idle. OWNS the fresh-copy
@@ -1452,6 +1411,8 @@ public partial class MainViewModel : ObservableObject
         public required string StatusText { get; init; }
         public required MiniRecorderTone Tone { get; init; }
         public required RedoContext RedoContext { get; init; }
+        /// <summary>REL-20: the held recording this redo pairs with; null = none.</summary>
+        public string? PairWithHeldWav { get; init; }
         /// <summary>Null = leave <see cref="MainViewModel.LastTranscription"/> untouched.</summary>
         public required string? LastTranscriptionText { get; init; }
         public required int? HistoryId { get; init; }
@@ -1735,6 +1696,9 @@ public partial class MainViewModel : ObservableObject
             // ArmRedo advances the epoch and re-establishes the armed live claims — only
             // after that may the pending's fresh-copy claims release (the finally).
             ArmRedo(pending.RedoContext, pending.Tone);
+            // REL-20: the dispatching recording, if still held, now opens the chooser for this redo.
+            if (pending.PairWithHeldWav is { } jobWav)
+                _lastRecording.PairIfHeld(jobWav, pending.RedoContext);
         }
         finally
         {
@@ -1875,6 +1839,7 @@ public partial class MainViewModel : ObservableObject
                         StatusText = composition.StatusText,
                         Tone = composition.Tone,
                         RedoContext = composition.RedoContext,
+                        PairWithHeldWav = req.PairWithHeldWav,
                         LastTranscriptionText = composition.LastTranscriptionText,
                         HistoryId = composition.HistoryId,
                         AssignHistoryIdUnconditionally = composition.AssignHistoryIdUnconditionally,
@@ -2319,6 +2284,40 @@ public partial class MainViewModel : ObservableObject
             IsMiniRecorderVisible = false;
     }
 
+    /// <summary>REL-20: the AI picker's confirm. A recording started (or the pill dismissed) while
+    /// it was open makes it stale: the captured target is released and nothing else changes.</summary>
+    public Task ConfirmModelPickerAsync(string modelId, AIProvider? providerOverride, RedoContext ctx)
+    {
+        if (!_redoCoordinator.IsCurrent(_pickerGeneration))
+        {
+            Logger.Information("AI picker confirmed after a newer recording — abandoning");
+            ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
+            return Task.CompletedTask;
+        }
+        // The chooser's re-run arms a new redo; it stays paired with the held recording, so ↻ keeps the chooser.
+        var heldWav = _pickerFromChooser ? _lastRecording.Current?.WavPath : null;
+        return RedoEnhancementAsync(modelId, providerOverride, ctx, heldWav);
+    }
+
+    /// <summary>REL-20: pairs the redo just armed with the held recording it re-ran, if still held.</summary>
+    private void PairChooserRedo(string? heldWav)
+    {
+        if (heldWav != null && _redoCoordinator.LastContext is { } redo)
+            _lastRecording.PairIfHeld(heldWav, redo);
+    }
+
+    /// <summary>REL-20: the AI picker's cancel (or no root / no models / a fault). Backing out of the
+    /// chooser's second step, or a stale picker, changes nothing but the captured target.</summary>
+    public void CancelModelPicker()
+    {
+        if (_pickerFromChooser || !_redoCoordinator.IsCurrent(_pickerGeneration))
+        {
+            ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
+            return;
+        }
+        ClearRedoStatePublic();
+    }
+
     /// <summary>
     /// Pure rule for the picker-cancel teardown: hide the pill iff it is visible with
     /// nothing left to own it — pipeline idle AND no armed affordance (a retry that
@@ -2361,14 +2360,37 @@ public partial class MainViewModel : ObservableObject
     /// dialog is open for an unbounded time and a recording started under it deletes this WAV; and
     /// a CANCEL deliberately changes nothing at all.</para>
     /// </summary>
-    public async Task RetryTranscriptionAsync()
+    public Task RetryTranscriptionAsync() => RetryTranscriptionAsync(RetrySource.Failure, targetAlreadyCaptured: false);
+
+    /// <summary>REL-20: which retained recording a transcription re-run reads.</summary>
+    internal enum RetrySource { Failure, LastRecording }
+
+    /// <param name="targetAlreadyCaptured">The chooser captured the paste target before its own
+    /// dialog; every return before the confirm then releases that capture (REL-20).</param>
+    internal async Task RetryTranscriptionAsync(RetrySource source, bool targetAlreadyCaptured)
     {
-        var ctx = _redoCoordinator.LastRetryContext;
+        var fromFailure = source == RetrySource.Failure;
+        void ReleaseChooserCapture()
+        {
+            if (targetAlreadyCaptured) ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
+        }
+        // REL-20: a failure retry gives up its slot; the last recording is discarded (the file is gone).
+        void DropMissingRecording()
+        {
+            if (fromFailure) ClearRetryState(deleteWav: false);
+            else _lastRecording.Discard("missing");
+        }
+
+        var ctx = fromFailure ? _redoCoordinator.LastRetryContext : _lastRecording.Current;
         if (ctx == null)
         {
-            Logger.Information("Retry requested but no retry context is armed");
+            Logger.Information(fromFailure
+                ? "Retry requested but no retry context is armed"
+                : "Transcribe-again requested but no recording is kept");
+            ReleaseChooserCapture();
             return;
         }
+        var held = ctx;
 
         if (App.IsExclusiveMaintenanceActive())
         {
@@ -2376,6 +2398,7 @@ public partial class MainViewModel : ObservableObject
             Logger.Information("Retry blocked: an update is being applied.");
             // A transient maintenance refusal, not a failure — a Warning auto-hides so it can't
             // linger indefinitely if the apply ends without another pill (Codex review 2026-07-20).
+            ReleaseChooserCapture();
             EmitMiniRecorderError(updateMsg, MiniRecorderTone.Warning);
             return;
         }
@@ -2383,6 +2406,7 @@ public partial class MainViewModel : ObservableObject
         if (RecordingState != RecordingState.Idle)
         {
             Logger.Information("Retry blocked — pipeline is busy (state={State})", RecordingState);
+            ReleaseChooserCapture();
             return;
         }
 
@@ -2397,7 +2421,8 @@ public partial class MainViewModel : ObservableObject
         if (!File.Exists(ctx.WavPath))
         {
             Logger.Warning("Retry requested but the retained recording is gone");
-            ClearRetryState(deleteWav: false);
+            ReleaseChooserCapture();
+            DropMissingRecording();
             EmitMiniRecorderError("Recording no longer available", MiniRecorderTone.Error);
             return;
         }
@@ -2435,6 +2460,7 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             Logger.Error(ex, "Could not determine which transcription models can run — retry stays armed");
+            ReleaseChooserCapture();
             EmitMiniRecorderError("Couldn't list transcription models", MiniRecorderTone.Warning);
             return;
         }
@@ -2448,6 +2474,7 @@ public partial class MainViewModel : ObservableObject
             // (An earlier revision used Error and claimed parity with the maintenance refusal —
             // which is Warning. Kimi caught the comment asserting the opposite of the code.)
             Logger.Warning("Retry blocked — no transcription model can run (nothing runnable, no API key)");
+            ReleaseChooserCapture();
             EmitMiniRecorderError("No transcription model available", MiniRecorderTone.Warning);
             return;
         }
@@ -2459,6 +2486,7 @@ public partial class MainViewModel : ObservableObject
         if (Interlocked.CompareExchange(ref _enhancementPickerActive, 1, 0) != 0)
         {
             Logger.Information("Retry picker request ignored — another dialog is open");
+            ReleaseChooserCapture();
             return;
         }
 
@@ -2468,62 +2496,12 @@ public partial class MainViewModel : ObservableObject
             // Recency (REL-12): opening the retry picker IS the user's most recent intent, so the
             // redo-last hotkey routes here and then no-ops on the CAS above rather than launching
             // the OTHER affordance behind the open dialog. IsRetryAvailable stays true — unlike
-            // the redo path, nothing here is hiding a pill.
-            ArmedAffordance = ArmedAffordance.Retry;
+            // the redo path, nothing here is hiding a pill. A last-recording re-run arms nothing.
+            if (fromFailure) ArmedAffordance = ArmedAffordance.Retry;
 
-            // Capture BEFORE the dialog, and this ordering is the whole reason TRN-17 is a
-            // capture-and-paste change: showing it calls RestoreMainWindow(), and
-            // CaptureFreshPasteTarget is GetForegroundWindow() — captured after, every retry
-            // would paste into VoiceWink. The redo picker already captures ahead of its dialog
-            // for exactly this reason.
-            //
-            // REDO ownership, not Recording: a cancel then releases with Release(Redo), which
-            // no-ops if a real recording has since taken the slot. Recording ownership has no
-            // such release — a cancel would destroy the live recording's capture. Confirm
-            // retags it via AdoptForRecording so the pipeline's finally frees it.
-            if (ctx.TargetWindow != IntPtr.Zero)
-            {
-                // A FRESH capture is only meaningful while the user is somewhere else. After a
-                // CANCELLED picker VoiceWink is the foreground window — the dialog restored it and
-                // nothing put the editor back — so a second Retry tap would capture OURSELVES and
-                // paste the transcript into VoiceWink (Codex diff review; the cancel path had made
-                // "cancel changes nothing" false for the tap after it).
-                //
-                // The pill itself never causes this: it is WS_EX_NOACTIVATE, so tapping it cannot
-                // take the foreground and an ordinary first tap still captures the real editor.
-                // But the dialog is NOT the only route (Kimi verification) — the redo-last HOTKEY
-                // fires whatever is in front, so a user who browsed History after the failure and
-                // then pressed it lands here on a FIRST tap. The clipboard answer is right there
-                // too: we have no evidence about where they want the text, and guessing is what
-                // the branch below refuses to do.
-                if (IsForegroundOurOwnProcess())
-                {
-                    // Degrade to CLIPBOARD, and specifically do NOT re-adopt ctx.TargetWindow.
-                    // Two things are wrong with a stale handle and only one is obvious: the
-                    // window may be gone, but worse, Windows RECYCLES HWNDs — rebuilding an
-                    // identity snapshot around an old handle would hand PasteTargetValidation a
-                    // fresh, self-consistent identity for whatever now owns it, and it would
-                    // validate. That is a private dictation pasted into another application
-                    // (Codex verification round). A zero handle routes to the honest clipboard
-                    // fallback: the user gets "Text copied" and pastes it themselves.
-                    Logger.Information("Retry target: VoiceWink is foreground — no external target, using the clipboard");
-                    _targetWindowHandle = IntPtr.Zero;
-                    _pasteTargetSnapshot = null;
-                    ResetPasteTargetAppName();
-                }
-                else
-                {
-                    CaptureFocusedElementForRedo();
-                }
-            }
-            else
-            {
-                // Targetless capture (edge): zero handle → paste gates degrade to the
-                // clipboard fallback honestly.
-                _targetWindowHandle = IntPtr.Zero;
-                _pasteTargetSnapshot = null;
-                ResetPasteTargetAppName();
-            }
+            // Capture BEFORE the dialog: showing it calls RestoreMainWindow(), and the capture is
+            // GetForegroundWindow() (TRN-17). The chooser has already done this (REL-20).
+            if (!targetAlreadyCaptured) CapturePickerPasteTarget(ctx.TargetWindow);
 
             var attemptLanguage = Helpers.RetryAttemptResolution.Language(
                 userPick: ctx.UserLanguagePick,
@@ -2590,7 +2568,9 @@ public partial class MainViewModel : ObservableObject
         // recent failed dictation, and proceeding would run our audio against the newer retry's
         // paste target. Identity, not value equality — a re-armed value-equal context is a
         // different arming.
-        if (!ReferenceEquals(_redoCoordinator.LastRetryContext, ctx))
+        if (!(fromFailure
+                ? ReferenceEquals(_redoCoordinator.LastRetryContext, held)
+                : ReferenceEquals(_lastRecording.Current, held)))
         {
             Logger.Information("Retry picker completed for a superseded retry — abandoning");
             ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
@@ -2619,13 +2599,26 @@ public partial class MainViewModel : ObservableObject
         {
             Logger.Warning("The retained recording went away while the retry picker was open");
             ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
-            ClearRetryState(deleteWav: false);
+            DropMissingRecording();
             EmitMiniRecorderError("Recording no longer available", MiniRecorderTone.Error);
+            return;
+        }
+
+        // REL-20: the slot hands the recording over only while it still holds this exact context
+        // (read before the copy below); the run's own end-of-life disposition then decides its fate.
+        if (!fromFailure && !_lastRecording.TryTake(held))
+        {
+            Logger.Information("Transcribe-again completed for a superseded recording — abandoning");
+            ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
             return;
         }
 
         if (selection != null)
             ctx = ctx with { UserModelPick = selection.ModelName, UserLanguagePick = selection.Language };
+
+        // REL-20: a re-run of delivered text never sends Enter, like an AI redo (no second chat message).
+        if (!fromFailure)
+            ctx = ctx with { WasPushToTalk = false };
 
         // Hand the Redo-owned capture to the run that consumes it: the pipeline's finally does an
         // owner-scoped Release(Recording), which would not free a Redo-owned slot.
@@ -2635,7 +2628,7 @@ public partial class MainViewModel : ObservableObject
         // this pipeline run (deleteWav: false — the run's finally / catch decides its fate). The
         // dialog window itself is guarded by the CAS above, and _stopSingleFlight in
         // StopAndTranscribeAsync remains the backstop for overlapping stops.
-        ClearRetryState(deleteWav: false);
+        if (fromFailure) ClearRetryState(deleteWav: false);
 
         // UI-7: a retry never runs StartRecordingAsync, so the latch would still carry the PREVIOUS
         // recording's answer. The retry decides its own target above (TRN-17 zeroes it when
@@ -2644,7 +2637,9 @@ public partial class MainViewModel : ObservableObject
         // describes one capture; a capture that did not happen owns no value.
         _pasteSuppressedByPicker = false;
 
-        Logger.Information("Retrying transcription from retained recording");
+        Logger.Information(fromFailure
+            ? "Retrying transcription from retained recording"
+            : "Transcribing the last recording again");
         await StopAndTranscribeAsync(ctx);
     }
 
@@ -2657,17 +2652,114 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     public async Task RedoOrRetryLastAsync()
     {
-        var retryArmed = _redoCoordinator.LastRetryContext != null;
-        var redoArmed = _redoCoordinator.LastContext != null;
+        var redo = _redoCoordinator.LastContext;
+        var paired = _lastRecording.PairedRedo;
+        var action = Helpers.RedoLastRouting.Decide(
+            ArmedAffordance,
+            retryArmed: _redoCoordinator.LastRetryContext != null,
+            redoArmed: redo != null,
+            lastHeld: _lastRecording.Current != null,
+            redoPairedWithHeld: redo != null && ReferenceEquals(redo, paired));
 
-        if (ArmedAffordance == ArmedAffordance.Retry && retryArmed)
-            await RetryTranscriptionAsync();
-        else if (ArmedAffordance == ArmedAffordance.Redo && redoArmed)
+        switch (action)
+        {
+            case Helpers.RedoLastAction.Retry:
+                await RetryTranscriptionAsync();
+                break;
+            case Helpers.RedoLastAction.RetranscribeLast:
+                await RetryTranscriptionAsync(RetrySource.LastRecording, targetAlreadyCaptured: false);
+                break;
+            case Helpers.RedoLastAction.Chooser:
+                await OpenRedoChoiceAsync();
+                break;
+            default:
+                RequestModelPicker(); // logs "no recent enhancement" when nothing is armed
+                break;
+        }
+    }
+
+    /// <summary>
+    /// REL-20: after a delivered dictation whose run armed a redo, ask which re-run the user wants.
+    /// The paste target is captured once, before this dialog; the chosen entry inherits it and
+    /// re-checks its own ownership, since a recording can start while the dialog is open.
+    /// </summary>
+    private async Task OpenRedoChoiceAsync()
+    {
+        var held = _lastRecording.Current;
+        var pairedRedo = _lastRecording.PairedRedo;
+        if (held == null) return;
+        if (App.IsExclusiveMaintenanceActive())
+        {
+            EmitMiniRecorderError("Update in progress — please wait", MiniRecorderTone.Warning);
+            return;
+        }
+        if (RecordingState != RecordingState.Idle)
+        {
+            Logger.Information("Redo choice blocked — pipeline is busy (state={State})", RecordingState);
+            return;
+        }
+        if (!File.Exists(held.WavPath))
+        {
+            // The text re-run is still possible; only the audio choice is gone.
+            _lastRecording.Discard("missing");
             RequestModelPicker();
-        else if (retryArmed)
-            await RetryTranscriptionAsync();
-        else
-            RequestModelPicker(); // logs "no recent enhancement" when nothing is armed
+            return;
+        }
+        var handler = ShowRedoChoiceRequested;
+        if (handler == null)
+        {
+            RequestModelPicker();
+            return;
+        }
+        if (Interlocked.CompareExchange(ref _enhancementPickerActive, 1, 0) != 0)
+        {
+            Logger.Information("Redo choice ignored — another dialog is open");
+            return;
+        }
+
+        Helpers.RedoChoice? choice;
+        try
+        {
+            CapturePickerPasteTarget(held.TargetWindow);
+            choice = await handler.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex, "Redo choice dialog failed");
+            choice = null;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _enhancementPickerActive, 0);
+        }
+
+        // A recording finished while the dialog was open replaces the slot and the redo.
+        var stillHeld = ReferenceEquals(_lastRecording.Current, held);
+        switch (choice)
+        {
+            case Helpers.RedoChoice.Transcribe when stillHeld:
+                await RetryTranscriptionAsync(RetrySource.LastRecording, targetAlreadyCaptured: true);
+                break;
+            case Helpers.RedoChoice.Enhance when stillHeld
+                && _redoCoordinator.LastContext is { } redo && ReferenceEquals(redo, pairedRedo):
+                RequestModelPickerWithContext(redo, fromChooser: true, targetAlreadyCaptured: true);
+                break;
+            default:
+                Logger.Information(choice == null
+                    ? "Redo choice cancelled — both stay available"
+                    : "Redo choice abandoned — a newer recording replaced it");
+                ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
+                break;
+        }
+    }
+
+    /// <summary>REL-20: the pill's × on a success affordance — the kept recording goes, and an
+    /// open AI picker can no longer act on it.</summary>
+    public void DiscardLastRecording()
+    {
+        // Only the chooser's AI picker belongs to the dismissed recording; a History picker stays valid.
+        if (_pickerFromChooser) _redoCoordinator.InvalidatePending();
+        _lastRecording.Discard("dismissed");
     }
 
     /// <summary>
@@ -2834,13 +2926,22 @@ public partial class MainViewModel : ObservableObject
     /// Used by History page redo to share the same dialog as MiniRecorder/hotkey redo.
     /// </summary>
     public void RequestModelPickerWithContext(RedoContext ctx)
+        => RequestModelPickerWithContext(ctx, fromChooser: false, targetAlreadyCaptured: false);
+
+    private void RequestModelPickerWithContext(RedoContext ctx, bool fromChooser, bool targetAlreadyCaptured)
     {
+        void ReleaseChooserCapture()
+        {
+            if (targetAlreadyCaptured) ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
+        }
+
         // F19: redo / new-image generation writes SQLite rows, Images, and References —
         // refuse to START it while an exclusive maintenance op (update apply or data erasure)
         // is in flight, same as the recording/transcribe/model-download start paths.
         if (App.IsExclusiveMaintenanceActive())
         {
             Logger.Information("Redo/new-image blocked — exclusive maintenance in progress");
+            ReleaseChooserCapture();
             return;
         }
 
@@ -2848,6 +2949,7 @@ public partial class MainViewModel : ObservableObject
         if (RecordingState != RecordingState.Idle)
         {
             Logger.Information("Redo blocked — pipeline is busy (state={State})", RecordingState);
+            ReleaseChooserCapture();
             return;
         }
 
@@ -2857,6 +2959,7 @@ public partial class MainViewModel : ObservableObject
         // sits open is still refused there.
         if (ctx.WasImageGeneration && _imageJob.IsRunning)
         {
+            ReleaseChooserCapture();
             RequestImageJobRefusalNotice();
             return;
         }
@@ -2871,8 +2974,13 @@ public partial class MainViewModel : ObservableObject
         if (Interlocked.CompareExchange(ref _enhancementPickerActive, 1, 0) != 0)
         {
             Logger.Information("Model picker request ignored — another enhancement dialog is open");
+            ReleaseChooserCapture();
             return;
         }
+
+        // REL-20: the ticket the confirm and cancel are checked against (one picker at a time — the CAS above).
+        _pickerGeneration = _redoCoordinator.Generation;
+        _pickerFromChooser = fromChooser;
 
         // Set context so RedoEnhancementAsync can use it. (The pill's own dismiss timing is the
         // controller's now — if the picker sits open past the affordance's TimedVisible window the
@@ -2895,13 +3003,16 @@ public partial class MainViewModel : ObservableObject
         // still shows the pill (Enhancing) — it must not wear the PREVIOUS
         // recording's app name. Redo-with-target re-resolves inside the capture;
         // the generation bump fences out any still-running resolver.
-        ResetPasteTargetAppName();
-
         // Capture fresh UIA focus at redo invocation time. Redo pastes wherever the
         // user is now; this avoids threading the original recording focus through
-        // RedoContext and mirrors the normal recording-start capture.
-        if (ctx.TargetWindow != IntPtr.Zero)
-            CaptureFocusedElementForRedo();
+        // RedoContext and mirrors the normal recording-start capture. The chooser has
+        // already captured, label included (REL-20).
+        if (!targetAlreadyCaptured)
+        {
+            ResetPasteTargetAppName();
+            if (ctx.TargetWindow != IntPtr.Zero)
+                CapturePickerPasteTarget(ctx.TargetWindow);
+        }
 
         // Fire-and-forget: handler has its own try/catch.
         var handler = ShowModelPickerRequested;
@@ -2945,7 +3056,8 @@ public partial class MainViewModel : ObservableObject
     /// Re-run enhancement with a different model. Called from the model picker dialog.
     /// Accepts an optional captured context to avoid a timer race with the coordinator.
     /// </summary>
-    public async Task RedoEnhancementAsync(string modelId, AIProvider? providerOverride = null, RedoContext? capturedContext = null)
+    public async Task RedoEnhancementAsync(string modelId, AIProvider? providerOverride = null, RedoContext? capturedContext = null,
+        string? pairWithHeldWav = null)
     {
         var ctx = capturedContext ?? _redoCoordinator.LastContext;
         if (ctx == null)
@@ -2977,7 +3089,7 @@ public partial class MainViewModel : ObservableObject
         // F19 refusal above. Text redo continues below, unchanged and never job-gated.
         if (ctx.WasImageGeneration)
         {
-            DispatchImageRedo(ctx, modelId, providerOverride);
+            DispatchImageRedo(ctx, modelId, providerOverride, pairWithHeldWav);
             return;
         }
 
@@ -3149,6 +3261,7 @@ public partial class MainViewModel : ObservableObject
                 References: ctx.References,
                 PreviousImageThinking: ctx.Prompt?.ImageThinking
             ), redoToneResolved);
+            PairChooserRedo(pairWithHeldWav);
             Logger.Information("Redo enhancement completed with model {Model}", modelId);
         }
         catch (OperationCanceledException)
@@ -3244,6 +3357,7 @@ public partial class MainViewModel : ObservableObject
                     PreviousModel = modelId,
                 };
                 ArmRedo(rearmCtx, EnhancementFallbackTone(ex));
+                PairChooserRedo(pairWithHeldWav);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -3287,7 +3401,7 @@ public partial class MainViewModel : ObservableObject
     /// reset — a subsequent recording can no longer cancel/dispose the token under a running
     /// generation.
     /// </summary>
-    private void DispatchImageRedo(RedoContext ctx, string modelId, AIProvider? providerOverride)
+    private void DispatchImageRedo(RedoContext ctx, string modelId, AIProvider? providerOverride, string? pairWithHeldWav = null)
     {
         var reservation = _imageJob.TryReserve();
         if (reservation == null)
@@ -3343,6 +3457,7 @@ public partial class MainViewModel : ObservableObject
                 IsNewGeneration: ctx.IsNewGeneration,
                 Count: count,
                 ReferenceLease: referenceLease,
+                PairWithHeldWav: pairWithHeldWav,
                 DurationSeconds: 0); // HIS-10: redo, regenerate and new image record nothing, so there is no recording length
 
             reservation.Start(jobCt => RunImageGenerationJobAsync(request, jobCt));
@@ -3376,6 +3491,40 @@ public partial class MainViewModel : ObservableObject
     private void ReleaseCapturedFocusedElement(CapturedFocusOwner? expectedOwner = null)
     {
         _focusSlot.Release(expectedOwner);
+    }
+
+    /// <summary>
+    /// The paste target a picker re-run delivers to (TRN-17, shared by the retry, the AI picker and the
+    /// REL-20 chooser), captured BEFORE its dialog: showing it calls RestoreMainWindow(), and
+    /// <see cref="CaptureFreshPasteTarget"/> is GetForegroundWindow() — captured after, every re-run
+    /// would paste into VoiceWink.
+    ///
+    /// <para>REDO ownership, not Recording: a cancel then releases with Release(Redo), which no-ops if
+    /// a real recording has since taken the slot. Confirm retags it via AdoptForRecording so the
+    /// pipeline's finally frees it.</para>
+    ///
+    /// <para>A FRESH capture is only meaningful while the user is somewhere else. After a CANCELLED
+    /// picker VoiceWink is the foreground window, and the redo-last HOTKEY fires whatever is in front
+    /// (a user browsing History), so VoiceWink in front degrades to the CLIPBOARD — and specifically
+    /// does NOT re-adopt the original handle: Windows RECYCLES HWNDs, and an identity snapshot rebuilt
+    /// around an old handle would validate for whatever now owns it (Codex verification round). A zero
+    /// handle routes to the honest clipboard fallback.</para>
+    /// </summary>
+    private void CapturePickerPasteTarget(IntPtr originalTarget)
+    {
+        if (originalTarget != IntPtr.Zero)
+        {
+            if (!IsForegroundOurOwnProcess())
+            {
+                CaptureFocusedElementForRedo();
+                return;
+            }
+            Logger.Information("Picker target: VoiceWink is foreground — no external target, using the clipboard");
+        }
+        // Targetless (or VoiceWink in front): zero handle → paste gates degrade to the clipboard.
+        _targetWindowHandle = IntPtr.Zero;
+        _pasteTargetSnapshot = null;
+        ResetPasteTargetAppName();
     }
 
     /// <summary>
@@ -4109,6 +4258,9 @@ public partial class MainViewModel : ObservableObject
             // A new recording supersedes any failure-retained retry (REL-12) — the
             // retained WAV is deleted fire-and-forget (never sync IO on this hot path).
             ClearRetryState(deleteWav: true);
+            // REL-20: the new recording replaces the last one, and an open AI picker goes stale.
+            _redoCoordinator.InvalidatePending();
+            _lastRecording.Discard("superseded");
 
             // Capture the target app's window BEFORE any UI changes that could steal focus.
             // GetForegroundWindow is a fast kernel call (non-blocking even under contention).
@@ -5185,6 +5337,12 @@ public partial class MainViewModel : ObservableObject
         // is deleted even when the keep-recordings debug setting is on (disposition
         // precedence in RecordingDisposition.Decide).
         var userCancelledPipeline = false;
+        // REL-20: set only at a delivery commit (text on the clipboard or pasted, image job
+        // dispatched); the finally keeps this recording as the last recording.
+        TranscriptionRetryContext? deliveredRecording = null;
+        RedoContext? deliveredRedo = null;
+        // An image job arms its redo after this run ends; that redo is paired when it arrives.
+        var deliveredViaImage = false;
         // The pipeline token, hoisted so the OCE catch FILTER can tell a user cancel
         // (token cancelled) from a client-side HttpClient.Timeout expiry (surfaces as
         // TaskCanceledException with the caller token NOT cancelled — Codex diff review).
@@ -5948,7 +6106,13 @@ public partial class MainViewModel : ObservableObject
             {
                 var transcriptionModelNameForImage = attemptModel;
                 var handledByImageBranch = await TryRunImageGenerationAsync(
-                    text, rawText, prompt, transcriptionModelNameForImage, language, wasPushToTalk, recordingSeconds, ct);
+                    text, rawText, prompt, transcriptionModelNameForImage, language, wasPushToTalk, recordingSeconds, ct,
+                    onDispatched: () =>
+                    {
+                        deliveredRecording = echoRetryCandidate;
+                        deliveredViaImage = true;
+                    },
+                    pairWithHeldWav: recordingPath);
                 if (handledByImageBranch) return;
                 // IMG-BG: the ONLY fall-through is a REFUSAL (a background image job is
                 // already running, or exclusive maintenance). The words are handled as a
@@ -6123,6 +6287,9 @@ public partial class MainViewModel : ObservableObject
                     textToPaste, willSendEnter, _targetWindowHandle, pastedElement);
             }
             var pasteLanded = pasteResult.Succeeded;
+            // REL-20: the text reached the target or the clipboard — the delivery commit.
+            if (pasteResult.Outcome != PasteAttemptOutcome.ClipboardSetFailed)
+                deliveredRecording = echoRetryCandidate;
 
             // PST-11: hold the element this dictation actually pasted into, for the redo that may
             // follow. Taken HERE rather than in the finally for one reason worth stating: the
@@ -6277,6 +6444,10 @@ public partial class MainViewModel : ObservableObject
                     clipboardFallbackTone);
             }
 
+            // REL-20: the redo this run armed, so the chooser offers it for THIS recording only.
+            if (enhancementFailed || enhancedText != null)
+                deliveredRedo = _redoCoordinator.LastContext;
+
             if (pasteLanded)
                 Logger.Information("Transcription pasted ({Length} chars)", text.Length);
             else
@@ -6366,11 +6537,24 @@ public partial class MainViewModel : ObservableObject
             // deleting. Pure decision in RecordingDisposition.Decide.
             if (recordingPath != null)
             {
+                // Kept only where ↻ (an armed redo, or the image job's) or the Redo last hotkey can reach it.
+                var delivered = deliveredRecording != null && File.Exists(recordingPath)
+                    && (deliveredRedo != null || deliveredViaImage
+                        // The hook's own rule: a string it cannot parse is no hotkey.
+                        || Helpers.HotkeyBinding.TryParse(_settings.GetString(AppDefaults.RedoLastHotkeyModifier, ""), out _, out _));
                 var disposition = Helpers.RecordingDisposition.Decide(
                     keepWavForRetry,
                     userCancelledPipeline,
+                    delivered,
                     _settings.GetBool(AppDefaults.KeepRecordingsForDebug, false));
-                if (disposition == Helpers.RecordingEndDisposition.RetainForDebug)
+                if (disposition == Helpers.RecordingEndDisposition.RetainAsLast)
+                {
+                    // REL-20: the run already proved speech, so a re-run skips the no-speech gate.
+                    _lastRecording.Retain(
+                        deliveredRecording! with { SkipEchoGate = false, SkipNoSpeechGate = true },
+                        deliveredRedo);
+                }
+                else if (disposition == Helpers.RecordingEndDisposition.RetainForDebug)
                 {
                     MoveRecordingToDebugOrDelete(recordingPath);
                 }
@@ -6391,7 +6575,12 @@ public partial class MainViewModel : ObservableObject
                         // disk in Recordings\".
                         _wavLedger.TryCloseRetention(recordingPath, "deleted after its retry completed");
                     }
-                    catch (Exception ex) { Logger.Debug(ex, "Failed to delete recording {Path}", recordingPath); }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug(ex, "Failed to delete recording {Path}", recordingPath);
+                        // REL-20: retried while the app runs (hourly pass, next disposal, quit drain).
+                        _wavLedger.MarkFailedDisposal(recordingPath, mustDelete: userCancelledPipeline);
+                    }
 
                     // REL-23: the Delete disposition must also take the raw sibling the gain
                     // layer may have retained — "an explicit user cancel discards" binds the
@@ -6636,10 +6825,7 @@ public partial class MainViewModel : ObservableObject
             DownloadModelName = modelInfo.DisplayName;
             SetPreflightStatus($"Downloading {modelInfo.DisplayName}...");
 
-            // WinUI 3 has no SynchronizationContext, so Progress<T> posts callbacks
-            // to the thread pool — adding an extra hop that delays/batches updates.
-            // Use a synchronous IProgress implementation so the event fires directly
-            // on the download thread; ShowDownloadProgress marshals to UI via DispatcherQueue.
+            // Inline on the download thread, so a member fraction cannot queue behind the install's 1.0; the pill marshals itself.
             var displayName = modelInfo.DisplayName;
             var progress = new SynchronousProgress<double>(p =>
             {
@@ -6939,7 +7125,9 @@ public partial class MainViewModel : ObservableObject
         string language,
         bool wasPushToTalk, // resolved by the caller — a RETRY run must not read live hotkey state (REL-12)
         double recordingSeconds, // HIS-10: the dictation's length, read while its WAV still exists
-        CancellationToken ct)
+        CancellationToken ct,
+        Action? onDispatched = null, // REL-20: the delivery commit (a cancel also returns true)
+        string? pairWithHeldWav = null) // REL-20: the recording this job's redo pairs with
     {
         // Refusal BEFORE the options dialog and before ANY resource transfer
         // (reservation-before-resources, Codex plan round 2). The exclusivity re-check
@@ -7094,6 +7282,7 @@ public partial class MainViewModel : ObservableObject
                 IsNewGeneration: false,
                 Count: count,
                 ReferenceLease: referenceLease,
+                PairWithHeldWav: pairWithHeldWav,
                 DurationSeconds: recordingSeconds);
 
             // Pipeline exit state BEFORE Start (Codex diff review round 2): a PRE-CANCELLED
@@ -7123,6 +7312,7 @@ public partial class MainViewModel : ObservableObject
         // snapshot (that rehydration kind deliberately ignores IsMiniRecorderVisible), and a
         // dispatch is NOT a terminal presentation — an unapplied pending completion from an
         // earlier job must still present when the pipeline idles.
+        onDispatched?.Invoke();
         return true;
     }
 
@@ -7713,16 +7903,6 @@ public partial class MainViewModel : ObservableObject
         {
             Logger.Warning(ex, "Failed to synchronize last transcription with history");
         }
-    }
-
-    /// <summary>
-    /// IProgress implementation that invokes the callback synchronously on the calling thread.
-    /// Unlike <see cref="Progress{T}"/>, this avoids posting through SynchronizationContext,
-    /// which in WinUI 3 (no sync context) means an unnecessary thread pool hop.
-    /// </summary>
-    private sealed class SynchronousProgress<T>(Action<T> handler) : IProgress<T>
-    {
-        public void Report(T value) => handler(value);
     }
 
     /// <summary>

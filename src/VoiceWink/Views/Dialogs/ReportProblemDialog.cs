@@ -341,8 +341,11 @@ public sealed class ReportProblemDialog : ContentDialog
             if (_closed)
             {
                 // Cancel closed the dialog while the mail app had the hand-off. Nothing here may
-                // touch it now; a kept bundle is removed by the Reports sweep.
+                // touch it now.
                 Logger.Information("Report dialog closed before the email app answered ({Outcome})", result.Outcome);
+                // REL-25 item 3: the user never heard of a first attempt's zip; a retry's was promised 7 days.
+                if (!isRetry && result is { Outcome: ReportSendOutcome.MapiDeclined, BundlePath: { } kept })
+                    flow.DiscardKeptBundle(kept);
                 return;
             }
             IsPrimaryButtonEnabled = true;

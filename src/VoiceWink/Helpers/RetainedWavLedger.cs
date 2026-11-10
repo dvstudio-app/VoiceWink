@@ -18,8 +18,11 @@ namespace VoiceWink.Helpers;
 /// retry upload) or already gone is skipped; the 7-day recordings sweep remains the
 /// final backstop.</item>
 /// </list>
-/// Registered as a DI singleton. Steady-state size 0–1 (paths enter only on
-/// transcription failure and leave on confirmed deletion).
+/// Registered as a DI singleton. Steady-state size 0–2 (the failure-retained recording and,
+/// since REL-20, the most recent successful one; both leave on confirmed deletion).
+/// <para>REL-20: a tracked path is ACTIVE (still wanted, spared by the sweeps) or PENDING
+/// DISPOSAL (a delete was requested and has not succeeded yet, retried by
+/// <c>RetainedWavDisposal.RetryPending</c>).</para>
 /// </summary>
 public sealed class RetainedWavLedger
 {
@@ -27,6 +30,8 @@ public sealed class RetainedWavLedger
 
     private readonly object _lock = new();
     private readonly HashSet<string> _paths = new(StringComparer.OrdinalIgnoreCase);
+    // REL-20: pending path → must be deleted, never moved to Debug (an explicit cancel discards).
+    private readonly Dictionary<string, bool> _pending = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Record a retained WAV that now needs eventual deletion. Idempotent.
@@ -50,12 +55,17 @@ public sealed class RetainedWavLedger
     /// under the lock every other member contends on.
     /// </para>
     /// </summary>
-    public void Track(string path)
+    public void Track(string path, bool lastRecording = false)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         bool added;
-        lock (_lock) { added = _paths.Add(path); }
-        if (added)
+        // A pending path taken back into use is the same episode: no second announcement.
+        lock (_lock) { added = _paths.Add(path) && !_pending.Remove(path); }
+        if (!added) return;
+        // REL-20: a delivered recording is kept to run again, not because it failed.
+        if (lastRecording)
+            Logger.Information("Recording kept as the last recording: {Name}", Path.GetFileName(path));
+        else
             Logger.Information("Recording retained for retry: {Name}", Path.GetFileName(path));
     }
 
@@ -76,7 +86,39 @@ public sealed class RetainedWavLedger
     public bool ConfirmDeleted(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return false;
-        lock (_lock) { return _paths.Remove(path); }
+        lock (_lock) { return _paths.Remove(path) | _pending.Remove(path); }
+    }
+
+    /// <summary>REL-20: an active path whose disposal was requested becomes pending, so the sweeps
+    /// stop sparing it and a failed delete is retried. No-op for an untracked or pending path.</summary>
+    public void MarkPendingDisposal(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        lock (_lock) { if (_paths.Remove(path)) _pending.TryAdd(path, false); }
+    }
+
+    /// <summary>REL-20: any recording whose delete or move just failed, tracked or not, becomes pending
+    /// so it is retried while the app runs. <paramref name="mustDelete"/>: never move it to Debug.</summary>
+    public void MarkFailedDisposal(string path, bool mustDelete)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        lock (_lock)
+        {
+            _paths.Remove(path);
+            _pending[path] = mustDelete || (_pending.TryGetValue(path, out var was) && was);
+        }
+    }
+
+    /// <summary>REL-20: a pending path an explicit cancel discarded; disposal deletes it whatever the debug setting.</summary>
+    public bool MustDelete(string path)
+    {
+        lock (_lock) { return _pending.TryGetValue(path, out var mustDelete) && mustDelete; }
+    }
+
+    /// <summary>REL-20: paths whose disposal was requested and has not succeeded yet.</summary>
+    public IReadOnlyCollection<string> PendingSnapshot()
+    {
+        lock (_lock) { return _pending.Keys.ToArray(); }
     }
 
     /// <summary>
@@ -107,7 +149,8 @@ public sealed class RetainedWavLedger
         return true;
     }
 
-    /// <summary>Snapshot of currently tracked paths (tests + diagnostics).</summary>
+    /// <summary>Snapshot of ACTIVE tracked paths — what the recordings sweeps spare. Pending
+    /// paths are excluded on purpose (REL-20): a recording nobody wants any more is fair game.</summary>
     public IReadOnlyCollection<string> Snapshot()
     {
         lock (_lock) { return _paths.ToArray(); }
@@ -123,10 +166,10 @@ public sealed class RetainedWavLedger
     /// deleted/moved (in use) stays tracked and falls to the recordings sweep. Returns
     /// the number of files actually removed from their original location.
     /// </summary>
-    public int DrainBestEffort(bool keepForDebug = false, string? debugDir = null)
+    public int DrainBestEffort(bool keepForDebug = false, string? debugDir = null, string? rawSiblingDir = null)
     {
         string[] pending;
-        lock (_lock) { pending = _paths.ToArray(); }
+        lock (_lock) { pending = _paths.Concat(_pending.Keys).ToArray(); }
 
         // Write-side junction guard (diff round 5): a junctioned Debug dir would move
         // WAVs outside the app root, where the sweeps and erasure refuse to follow —
@@ -151,7 +194,7 @@ public sealed class RetainedWavLedger
                 string outcome;
                 if (File.Exists(path))
                 {
-                    if (moveDir != null)
+                    if (moveDir != null && !MustDelete(path))
                     {
                         File.Move(path, Path.Combine(moveDir, Path.GetFileName(path)), overwrite: true);
                         outcome = "kept for debugging at shutdown";
@@ -159,6 +202,9 @@ public sealed class RetainedWavLedger
                     else
                     {
                         File.Delete(path);
+                        // REL-23 raw sibling goes with its recording, as on every other delete arm (REL-20).
+                        if (rawSiblingDir != null)
+                            Services.Audio.RecordingAudioPreparation.DeleteRawSiblingFor(path, rawSiblingDir);
                         outcome = "deleted at shutdown";
                     }
                     drained++;

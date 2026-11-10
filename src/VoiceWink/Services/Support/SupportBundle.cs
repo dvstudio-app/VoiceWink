@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using Serilog;
@@ -300,6 +301,46 @@ public static class SupportBundle
         catch (Exception ex)
         {
             Logger.Warning(ex, "Failed to build support report bundle");
+            TryDeleteQuiet(tmpPath);
+            return false;
+        }
+    }
+
+    /// <summary>Name of the entry a declined hand-off appends to a kept report zip (REL-25 item 2).</summary>
+    internal const string SendStatusEntryName = "send-status.txt";
+
+    /// <summary>REL-25 item 2: records a declined hand-off in the kept zip; copy-on-write, so a failure leaves it untouched.</summary>
+    public static bool TryAppendSendStatus(string zipPath, string line)
+    {
+        var tmpPath = zipPath + ".tmp";
+        try
+        {
+            File.Copy(zipPath, tmpPath, overwrite: true);
+            using (var fs = new FileStream(tmpPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            using (var zip = new ZipArchive(fs, ZipArchiveMode.Update))
+            {
+                var text = new StringBuilder();
+                if (zip.GetEntry(SendStatusEntryName) is { } existing)
+                {
+                    using (var reader = new StreamReader(existing.Open(), Encoding.UTF8))
+                        text.Append(reader.ReadToEnd());
+                    existing.Delete();
+                }
+                else
+                {
+                    text.AppendLine("Email hand-offs that did not go through (local time, as in the log; oldest first):");
+                }
+                text.AppendLine(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture) + "  "
+                    + LogRedactionEnricher.RedactString(LogValueSanitizer.SingleLine(line)));
+                AddTextEntry(zip, SendStatusEntryName, text.ToString());
+            }
+            File.Move(tmpPath, zipPath, overwrite: true);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Could not add the send status to the report bundle ({ExceptionType}); the bundle is unchanged",
+                ex.GetType().Name);
             TryDeleteQuiet(tmpPath);
             return false;
         }

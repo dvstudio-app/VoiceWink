@@ -830,9 +830,11 @@ public partial class App : Application, Services.IAppLifetime
         // on the container resolving an optional parameter.
         services.AddSingleton(sp => new WatchdogForegroundObserver(
             sp.GetRequiredService<IActiveWindowService>()));
+        services.AddSingleton(_ => new RawKeyboardSink());
         services.AddSingleton(sp => new HotkeyService(
             sp.GetRequiredService<SettingsService>(),
-            sp.GetRequiredService<WatchdogForegroundObserver>()));
+            sp.GetRequiredService<WatchdogForegroundObserver>(),
+            sp.GetRequiredService<RawKeyboardSink>()));
 
         // System services (cont.)
         services.AddSingleton<DictionaryTransfer>();
@@ -1110,6 +1112,15 @@ public partial class App : Application, Services.IAppLifetime
         // REL-12: tracks failure-retained recording WAVs until deletion is confirmed;
         // drained at shutdown (Cleanup + the forced-exit flush).
         services.AddSingleton<Helpers.RetainedWavLedger>();
+        // REL-20: the one delivered recording kept for "Transcribe again"; ledger-tracked while held.
+        services.AddSingleton(sp =>
+        {
+            var ledger = sp.GetRequiredService<Helpers.RetainedWavLedger>();
+            var settings = sp.GetRequiredService<SettingsService>();
+            return new Helpers.LastRecordingSlot(ledger, (path, reason) =>
+                Helpers.RetainedWavDisposal.DisposeInBackground(
+                    path, ledger, settings.GetBool(AppDefaults.KeepRecordingsForDebug, false), reason));
+        });
 
         // ViewModels
         services.AddSingleton<MainViewModel>();
@@ -1453,61 +1464,21 @@ public partial class App : Application, Services.IAppLifetime
             // TRN-17: transcription-retry picker (model + recognition language, this run only).
             // Thin routing by design — the dialog is a real class in Views/Dialogs, and the
             // decisions stay in the ViewModel because REL-12's guard order belongs there.
-            viewModel.ShowTranscriptionRetryPickerRequested += async request =>
-            {
-                try
+            viewModel.ShowTranscriptionRetryPickerRequested += request =>
+                ShowPickerDialogAsync(viewModel, "Retry picker", async xamlRoot =>
                 {
-                    if (viewModel.IsPickerDialogVisible)
-                    {
-                        // TRN-64 (self-review): the restart offer can be on screen when the pill's
-                        // Retry is tapped — WinUI allows one ContentDialog per XamlRoot, and the
-                        // second ShowAsync throws (an Error, so a Sentry event). Null reads as
-                        // cancel: the retry stays armed for after the dialog closes.
-                        Log.Warning("Retry picker skipped — another dialog is open");
-                        return null;
-                    }
-                    // UI-7: before RestoreMainWindow, which is what makes VoiceWink the foreground.
-                    CapturePickerForeground();
-                    // UI-7: the scope opens BEFORE RestoreMainWindow — see the image handler above
-                    // for why the 100 ms below cannot be left outside it.
-                    ContentDialogResult result;
-                    using (viewModel.BeginPickerDialogVisible())
-                    {
-                        // The pill can be tapped with the main window minimized to tray; a
-                        // ContentDialog needs a XamlRoot to show on.
-                        RestoreMainWindow();
-                        await Task.Delay(100); // Let window activate before showing dialog
+                    var dialog = new Views.Dialogs.TranscriptionRetryOptionsDialog(request) { XamlRoot = xamlRoot };
+                    var result = await dialog.ShowAsync();
+                    return result == ContentDialogResult.Primary ? dialog.Selection : null;
+                });
 
-                        if (App.MainWindow?.Content is not FrameworkElement root || root.XamlRoot is null)
-                        {
-                            // The VM reads null as a cancel, so the retry stays armed and the
-                            // recording survives — the right failure for "we could not show it".
-                            Log.Warning("Retry picker skipped — no XamlRoot available");
-                            return null;
-                        }
-
-                        var dialog = new Views.Dialogs.TranscriptionRetryOptionsDialog(request)
-                        {
-                            XamlRoot = root.XamlRoot,
-                        };
-                        using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
-                            result = await dialog.ShowAsync();
-                        // Released here rather than only in the finally so the foreground goes back
-                        // the moment the dialog closes.
-                        ReleasePickerForeground();
-                        return result == ContentDialogResult.Primary ? dialog.Selection : null;
-                    }
-                }
-                catch (Exception ex)
+            // REL-20: the two-choice dialog after a delivered dictation; the same host as the retry picker.
+            viewModel.ShowRedoChoiceRequested += () =>
+                ShowPickerDialogAsync<Helpers.RedoChoice?>(viewModel, "Redo choice", async xamlRoot =>
                 {
-                    Log.Error(ex, "Failed to show the transcription retry picker");
-                    return null;
-                }
-                finally
-                {
-                    ReleasePickerForeground();
-                }
-            };
+                    var dialog = new Views.Dialogs.RedoChoiceDialog { XamlRoot = xamlRoot };
+                    return Views.Dialogs.RedoChoiceDialog.ChoiceFor(await dialog.ShowAsync());
+                });
 
             // Model picker dialog for redo — shown on main window which has XamlRoot
             viewModel.ShowModelPickerRequested += async (isImageGeneration, capturedContext) =>
@@ -1540,7 +1511,7 @@ public partial class App : Application, Services.IAppLifetime
                         var mainWindow = App.MainWindow;
                         if (mainWindow?.Content is not FrameworkElement root)
                         {
-                            viewModel.ClearRedoStatePublic();
+                            viewModel.CancelModelPicker();
                             return;
                         }
 
@@ -1567,7 +1538,7 @@ public partial class App : Application, Services.IAppLifetime
                     {
                         // User cancelled, or no model available — clear redo state
                         // (the dismiss timer was stopped in RequestModelPicker).
-                        viewModel.ClearRedoStatePublic();
+                        viewModel.CancelModelPicker();
                         return;
                     }
 
@@ -1640,12 +1611,12 @@ public partial class App : Application, Services.IAppLifetime
                         }
                     }
 
-                    await viewModel.RedoEnhancementAsync(selectedModel, selectedProvider, ctx);
+                    await viewModel.ConfirmModelPickerAsync(selectedModel, selectedProvider, ctx);
                 }
                 catch (Exception ex)
                 {
                     Log.Error(ex, "Failed to show model picker for redo");
-                    viewModel.ClearRedoStatePublic();
+                    viewModel.CancelModelPicker();
                 }
                 finally
                 {
@@ -2268,7 +2239,10 @@ public partial class App : Application, Services.IAppLifetime
                 _ = CancelFromPillAsync(vm);
                 return;
             }
-            c?.Dismiss(handle);
+            // REL-20: × on a redo/retry affordance also lets the kept recording go; the handle gate first.
+            var wasAffordance = c?.Current?.Content is PillContent.Affordance;
+            if (c?.Dismiss(handle) == true && wasAffordance)
+                vm?.DiscardLastRecording();
         });
 
     private static async Task CancelFromPillAsync(MainViewModel vm)
@@ -4747,6 +4721,54 @@ public partial class App : Application, Services.IAppLifetime
     private readonly Helpers.PickerForegroundHolder _pickerForeground = new();
 
     /// <summary>
+    /// The host steps a picker dialog shares (TRN-17 retry picker, REL-20 chooser): skip while another
+    /// dialog is on screen (one ContentDialog per XamlRoot — TRN-64), capture the prior foreground
+    /// BEFORE RestoreMainWindow (UI-7), open the picker-visible scope before the restore so the
+    /// 100 ms below is inside it, take the dialog slot (UI-5) and give the foreground back the moment
+    /// the dialog closes. Every failure returns <c>default</c>, which the ViewModel reads as a cancel.
+    /// </summary>
+    private async Task<T> ShowPickerDialogAsync<T>(MainViewModel viewModel, string name, Func<XamlRoot, Task<T>> show)
+    {
+        try
+        {
+            if (viewModel.IsPickerDialogVisible)
+            {
+                Log.Warning("{Picker} skipped — another dialog is open", name);
+                return default!;
+            }
+            CapturePickerForeground();
+            using (viewModel.BeginPickerDialogVisible())
+            {
+                // The pill can be tapped with the main window minimized to tray; a ContentDialog
+                // needs a XamlRoot to show on.
+                RestoreMainWindow();
+                await Task.Delay(100); // Let window activate before showing dialog
+
+                if (App.MainWindow?.Content is not FrameworkElement root || root.XamlRoot is null)
+                {
+                    Log.Warning("{Picker} skipped — no XamlRoot available", name);
+                    return default!;
+                }
+
+                T result;
+                using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
+                    result = await show(root.XamlRoot);
+                ReleasePickerForeground();
+                return result;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to show the {Picker}", name);
+            return default!;
+        }
+        finally
+        {
+            ReleasePickerForeground();
+        }
+    }
+
+    /// <summary>
     /// UI-7: remember where the user actually was, immediately before a picker dialog takes the
     /// foreground. Pairs with <see cref="ReleasePickerForeground"/> in the same handler's
     /// <c>finally</c> — never call one without the other.
@@ -5255,7 +5277,8 @@ public partial class App : Application, Services.IAppLifetime
         {
             (Services?.GetService(typeof(Helpers.RetainedWavLedger))
                 as Helpers.RetainedWavLedger)?.DrainBestEffort(
-                    ReadKeepRecordingsForDebugSafe(), AppPaths.RecordingsDebugDir);
+                    ReadKeepRecordingsForDebugSafe(), AppPaths.RecordingsDebugDir,
+                    rawSiblingDir: AppPaths.RecordingsDebugDir);
         }
         catch { /* best-effort */ }
 
@@ -5369,7 +5392,8 @@ public partial class App : Application, Services.IAppLifetime
         {
             (Services?.GetService(typeof(Helpers.RetainedWavLedger))
                 as Helpers.RetainedWavLedger)?.DrainBestEffort(
-                    ReadKeepRecordingsForDebugSafe(), AppPaths.RecordingsDebugDir);
+                    ReadKeepRecordingsForDebugSafe(), AppPaths.RecordingsDebugDir,
+                    rawSiblingDir: AppPaths.RecordingsDebugDir);
         }
         catch (Exception ex) { Log.Warning(ex, "Retained retry audio drain failed at shutdown"); }
 

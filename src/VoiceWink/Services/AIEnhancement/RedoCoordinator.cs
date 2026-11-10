@@ -38,4 +38,16 @@ public sealed class RedoCoordinator
     /// <summary>Retry teardown counterpart of <see cref="Clear"/>: null the RETRY context. WAV-file
     /// deletion is the caller's job (<c>MainViewModel.ClearRetryState</c> + <see cref="Helpers.RetainedWavLedger"/>).</summary>
     public void ClearRetry() => LastRetryContext = null;
+
+    private long _generation;
+
+    /// <summary>REL-20: bumped only by <see cref="InvalidatePending"/> (recording start, explicit
+    /// dismiss) — never by a re-arm, so an image job finishing cannot make an open picker stale.</summary>
+    public long Generation => Interlocked.Read(ref _generation);
+
+    /// <summary>REL-20: makes every open AI-picker ticket stale.</summary>
+    public void InvalidatePending() => Interlocked.Increment(ref _generation);
+
+    /// <summary>REL-20: whether a picker opened at <paramref name="generation"/> may still act.</summary>
+    public bool IsCurrent(long generation) => Generation == generation;
 }
