@@ -115,6 +115,13 @@ public interface IMaintenanceGate
     bool TryBeginLicenseRevalidation(out IDisposable? lease);
 
     /// <summary>
+    /// Atomically try to start a GDPR data export (LGL-8). Single holder; fails while an update
+    /// apply or erasure holds its lease. While held, <see cref="Check"/> reports "Data export", so an
+    /// update apply, a restart or an erasure refuses (an erasure after its poll) instead of quitting mid-write.
+    /// </summary>
+    bool TryBeginDataExport(out IDisposable? lease);
+
+    /// <summary>
     /// True while an update is being applied (one or more <see cref="TryBeginUpdateApply"/> handles
     /// are outstanding). Independent of <see cref="Check"/>, which reports only subsystem busy-state
     /// — so the apply path's own re-check via <see cref="Check"/> is not self-blocked by this flag.

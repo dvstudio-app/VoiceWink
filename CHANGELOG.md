@@ -17,6 +17,32 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.126.429] - 2026-11-14
+
+- A paste now tries once more when Windows briefly refuses the clipboard, instead of failing.
+- In setup, double-clicking Continue without an API key no longer skips the missing-key warning.
+- Exporting your data no longer freezes the window.
+- History search now finds words with accented capitals, like "Über".
+- A "Translate to…" enhancement whose reply comes back untranslated now shows as failed, and your own text is pasted.
+- The Dictionary no longer adds a word twice when it differs only in capital letters.
+- If your local AI server stops before it replies, the pill says "Local AI connection lost" within seconds, instead of "Enhancement timed out".
+- Exported history now labels its timestamps as UTC.
+- Leftover generated images with no History entry now go to the Recycle Bin, even with Auto-delete old transcriptions off.
+- Qwen3.5 2B is no longer recommended as a built-in AI model; where no other model suits the PC, a cloud provider is recommended.
+- AI Enhancement now says what each built-in AI model is recommended for.
+- The built-in AI models' Accuracy stars are re-measured.
+- The app now says "enhancement" instead of "prompt", except where you edit the prompt text.
+- The Trigger Words dialog of an image generation enhancement now says the trigger word goes at the start.
+- A damaged list of enhancements, such as one from a settings backup, is now kept in your settings file instead of being overwritten by the defaults.
+
+## [1.125.428] - 2026-11-11
+
+- Setup no longer finishes with AI enhancement on and no usable AI model.
+- Removed filler words such as "um" no longer leave a stray comma behind.
+- Filler word removal no longer capitalises words elsewhere in the text, such as "iPhone" becoming "IPhone".
+- With Restore clipboard on, two pastes close together now restore what you had copied, not the first transcript.
+- The Dictionary refuses a word replacement that undoes another and lists any that already do.
+
 ## [1.125.427] - 2026-11-10
 
 - Fewer missed hotkey presses when you use touch or a pen.

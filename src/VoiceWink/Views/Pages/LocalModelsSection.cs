@@ -28,10 +28,12 @@ internal static class LocalModelsSection
     /// <param name="notice">The page's "speed ratings were updated" tracker; null shows no line.</param>
     /// <param name="setupInUse">Setup's AI step: shows only the model for this PC plus the models this
     /// says are in use, not all four. Null shows every model.</param>
+    /// <param name="whenSetupOffersNothing">Setup's AI step: what to show under the note when no model is the pick and none is in use (LAI-19).</param>
     internal static UIElement Build(LocalModelStore store, LocalHardwareProfile profile,
         Func<string, bool> isSelected, Action<string> select,
         OnThisPcEngine? engine = null, Action<string?>? changed = null, Action? measured = null,
-        SpeedRatingsNotice.Tracker? notice = null, Func<string, bool>? setupInUse = null)
+        SpeedRatingsNotice.Tracker? notice = null, Func<string, bool>? setupInUse = null,
+        Func<UIElement>? whenSetupOffersNothing = null)
     {
         // Captured BEFORE the measurements are read, so a timing stored in between is not missed.
         var nextSpeedMeasured = engine?.NextSpeedMeasured;
@@ -58,12 +60,7 @@ internal static class LocalModelsSection
         }
         if (recommended is null)
         {
-            rows.Children.Add(Caption(
-                profile.TotalRamBytes is null ? "This PC's memory could not be read."
-                : LocalModelCatalog.All.Any(e => LocalModelRecommendation.Fits(e.Tier, profile))
-                    ? "Built-in AI is slow on this PC. A cloud provider is recommended."
-                    : "Not enough memory for built-in AI. A cloud provider is recommended.",
-                AppTheme.WarningText));
+            rows.Children.Add(Caption(LocalModelRecommendation.NoPickNote(profile, tier => measuredMs[tier]), AppTheme.WarningText));
         }
 
         if (measured is not null && nextSpeedMeasured is { } speedMeasured)
@@ -82,20 +79,21 @@ internal static class LocalModelsSection
                 ? (LocalModelRecommendation.IsTooSlow(speed.Ms) ? "Slow on this PC." : null)
                 : LocalModelRecommendation.FloorNote(entry.Tier, speedProfile)
                   ?? (LocalModelRecommendation.IsTooSlow(speed.Ms) ? "Likely slow on this PC." : null);
+            // Setup shows stars only, and a model this PC cannot run well shows its note alone (owner, LAI-19).
             rows.Children.Add(BuildRow(store, engine, changed, measured, entry, entry.Tier == recommended,
-                note, speed, isSelected, select));
+                note, setupInUse is null && note is null ? LocalModelAdvice.CardLine(entry) : null, speed, isSelected, select));
             if (measured is not null && runningChecks[entry.Tier] is { } running)
                 RefreshWhenMeasured(running, measured);
         }
+        if (setupInUse is not null && ordered.Count == 0 && whenSetupOffersNothing is not null)
+            rows.Children.Add(whenSetupOffersNothing());
         return rows;
     }
 
     /// <summary>
     /// The built-in model recommended for this PC, measured where a check ran — or null when none
-    /// fits (under the memory floor, or memory unreadable). Express setup downloads only this
-    /// (LNC-15): unlike the AI step, which offers the catalog default when nothing fits
-    /// (<see cref="LocalModelRecommendation.SetupOffer"/>), it does not ask, so it never puts a model
-    /// that does not fit on a PC.
+    /// is (under the memory floor, memory unreadable, or too slow). Express setup downloads only
+    /// this (LNC-15), so it never puts a model that does not fit on a PC.
     /// </summary>
     internal static string? RecommendedPick(OnThisPcEngine? engine, LocalHardwareProfile profile)
     {
@@ -138,7 +136,7 @@ internal static class LocalModelsSection
     };
 
     private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action<string?>? changed, Action? measured,
-        LocalModelEntry entry, bool isRecommended, string? floorNote, LocalModelRecommendation.TierSpeed tierSpeed,
+        LocalModelEntry entry, bool isRecommended, string? floorNote, string? adviceLine, LocalModelRecommendation.TierSpeed tierSpeed,
         Func<string, bool> isSelected, Action<string> select)
     {
         // ── Left: the Models page's status icon, then name + size and the stars line ──
@@ -196,6 +194,10 @@ internal static class LocalModelsSection
         if (floorNote is not null)
         {
             text.Children.Add(new TextBlock { Text = floorNote, FontSize = 12, Foreground = AppTheme.Brush(AppTheme.WarningText), TextWrapping = TextWrapping.Wrap });
+        }
+        if (adviceLine is not null)
+        {
+            text.Children.Add(new TextBlock { Text = adviceLine, FontSize = 12, Foreground = AppTheme.Brush(AppTheme.TextSecondary), TextWrapping = TextWrapping.Wrap });
         }
 
         var left = new Grid();

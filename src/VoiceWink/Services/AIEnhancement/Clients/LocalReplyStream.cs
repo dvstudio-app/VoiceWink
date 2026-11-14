@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using Serilog;
 using VoiceWink.Helpers;
 
 namespace VoiceWink.Services.AIEnhancement.Clients;
@@ -63,14 +64,19 @@ internal static class LocalReplyStream
         windows ??= LocalReplyWindows.Unarmed;
         progress ??= new LocalReplyProgress();
         using var stallCts = new CancellationTokenSource();
+        using var goneCts = new CancellationTokenSource();
         // Watch-only windows never reach the request: the clock only records that it ran out.
         using var linked = windows.Enforce
-            ? CancellationTokenSource.CreateLinkedTokenSource(ct, stallCts.Token)
-            : CancellationTokenSource.CreateLinkedTokenSource(ct);
+            ? CancellationTokenSource.CreateLinkedTokenSource(ct, stallCts.Token, goneCts.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(ct, goneCts.Token);
+        using var watchStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var watch = Task.CompletedTask;
         var clock = new Clock(stallCts, windows, progress);
         clock.Start(promptChars);
         try
         {
+            if (windows.Presence is { } presence && request.RequestUri is { } address)
+                watch = WatchPresenceAsync(presence, address, progress, goneCts, watchStop.Token);
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linked.Token).ConfigureAwait(false);
             await ensureSuccess(response, linked.Token).ConfigureAwait(false);
 
@@ -86,6 +92,13 @@ internal static class LocalReplyStream
             await ReadLinesAsync(stream, assembler.OnLine, malformed, linked.Token).ConfigureAwait(false);
             return new LocalReplyResult(assembler.Finish(), null);
         }
+        catch (Exception ex) when (goneCts.IsCancellationRequested && !ct.IsCancellationRequested
+                                   && ex is OperationCanceledException or IOException or HttpRequestException { StatusCode: null })
+        {
+            Logger.Warning("Local server refused new connections - reply ended after {ElapsedMs} ms, {TextChunks} text chunks",
+                clock.SinceSendMs, progress.TextChunks);
+            throw new HttpRequestException(ConnectionLostReason, ex);
+        }
         catch (OperationCanceledException) when (windows.Enforce && stallCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             throw new LocalReplyStalledException(clock.Phase, clock.SinceSendMs);
@@ -98,10 +111,56 @@ internal static class LocalReplyStream
             // that classifies a lost connection still does - and nothing that arrived is used.
             throw new HttpRequestException(ConnectionLostReason, ex);
         }
+        catch (HttpRequestException ex) when (!linked.IsCancellationRequested && ClosedBeforeReply(ex))
+        {
+            // LAI-18: the server closed the connection before its reply began, the same fact as a read failing mid-reply.
+            throw new HttpRequestException(ConnectionLostReason, ex);
+        }
+        finally
+        {
+            watchStop.Cancel();
+            await watch.ConfigureAwait(false);
+        }
     }
 
     /// <summary>A local server that went away mid-reply. 24 units, inside the pill's 26-unit reason budget.</summary>
     internal const string ConnectionLostReason = "Local AI connection lost";
+
+    private static ILogger Logger => Log.ForContext(typeof(LocalReplyStream));
+
+    /// <summary>LAI-18: an open connection that ended without a status; a connect that never succeeded keeps its own text (refused: "Local server not running").</summary>
+    private static bool ClosedBeforeReply(HttpRequestException ex)
+        => ex.StatusCode is null && ex.InnerException is IOException
+           && ex.HttpRequestError is HttpRequestError.ResponseEnded or HttpRequestError.Unknown;
+
+    /// <summary>LAI-18: checks the server every interval while the reply is outstanding; cancels <paramref name="gone"/> once it refuses enough times in a row with no new text between.</summary>
+    private static async Task WatchPresenceAsync(
+        LocalServerPresence presence, Uri address, LocalReplyProgress progress, CancellationTokenSource gone, CancellationToken stop)
+    {
+        try
+        {
+            var refusals = 0;
+            var chunksSeen = progress.TextChunks;
+            while (refusals < presence.RefusalsToLose)
+            {
+                await Task.Delay(presence.Interval, stop).ConfigureAwait(false);
+                var refused = await presence.IsRefused(address, stop).ConfigureAwait(false);
+                // A reply still arriving is served whatever new connections meet (a draining server, a firewall).
+                var chunks = progress.TextChunks;
+                refusals = refused && chunks == chunksSeen ? refusals + 1 : 0;
+                chunksSeen = chunks;
+            }
+            gone.Cancel();
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // A check that cannot run never ends a reply; the deadline still does.
+            Logger.Debug("Local server presence check stopped: {ErrorType}", ex.GetType().Name);
+        }
+    }
 
     /// <summary>A server that ignored <c>stream: true</c> answers one JSON object; event streams and
     /// NDJSON carry their own media types.</summary>

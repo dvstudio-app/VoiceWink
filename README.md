@@ -1,7 +1,7 @@
 # VoiceWink
 
-Voice-to-text for Windows 11 — press a hotkey, speak, and the transcribed text is pasted
-at your cursor. Built with .NET 10 + WinUI 3 by DV Studio, inspired by
+Voice-to-text for Windows 11. Press a hotkey, talk, and your words land at the cursor, in
+any app you can type in. Built with .NET 10 + WinUI 3 by DV Studio, inspired by
 [VoiceInk](https://github.com/Beingpax/VoiceInk) (macOS).
 
 Product information and downloads: <https://voicewink.app/?src=gh>
@@ -10,9 +10,33 @@ Product information and downloads: <https://voicewink.app/?src=gh>
 
 ![The VoiceWink home screen: the recording state and the last transcription](https://voicewink.app/assets/vw-main.webp)
 
-Download the signed installer from the site and try it free for 7 days, with no account or
-e-mail. A license covers the signed build, updates when released, and support. Or build it
-yourself from this repository, as described below.
+## What it does
+
+- **Dictation on your PC.** Speech is transcribed locally with Parakeet (25 European
+  languages, detected automatically) or Whisper (100 languages). A graphics card is optional
+  and makes it faster.
+- **AI enhancement on your PC.** Built-in models remove filler words and rewrite what you
+  said, with no API key and no account. They need at least 16 GB of memory.
+- **App Mode.** A different enhancement per app, chosen automatically: an email in Outlook, a
+  chat message in Slack.
+- **Dictionary and audio files.** Add names and jargon, set replacement rules, and transcribe
+  audio files.
+- **Optional cloud features, with your own API keys:** cloud transcription, cloud AI
+  enhancement and voice-to-image. Or use your own AI server.
+- **Tap or hold.** Tap the hotkey once to keep listening, or hold it while you talk.
+
+Recordings and history stay on your disk. The app goes online to check your license, look for
+updates and download the models you choose. Crash reports are opt-in.
+
+![The AI Enhancement page with the Built-in Models card](https://voicewink.app/assets/vw-ai.webp)
+
+![App Mode: a transcription model, a language and an AI enhancement per app](https://voicewink.app/assets/vw-appmode.webp)
+
+## Try it
+
+Download the signed installer from the site and try every feature free for 7 days, with no
+account or e-mail. A license is a one-time purchase and covers the signed build, updates when
+released, and support. Or build it yourself from this repository, as described below.
 
 ## What this repository is
 

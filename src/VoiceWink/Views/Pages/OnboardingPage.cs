@@ -1100,6 +1100,7 @@ public sealed class OnboardingPage : Page
             {
                 SetKeyStatus("\uE7BA", "No API key — press Continue again to proceed without one.", AppTheme.WarningText, true);
                 warnedNoKey = true;
+                HoldPointerClicksForDoubleClick();   // UI-30: the double-click's second click must not pass the warning unread
                 return;
             }
 
@@ -1738,9 +1739,8 @@ public sealed class OnboardingPage : Page
                 refreshBuiltInRows();
             }
 
-            // A finished download is taken into use unless a cloud provider WITH a key was chosen
-            // here, so the model the user just downloaded is the one setup ends on.
-            void AdoptDownloaded(string? downloadedId)
+            // Refresh only (the row then shows Select): this closure outlives Finish, which alone decides what setup ends on (ONB-14).
+            void RefreshAfterDownload(string? downloadedId)
             {
                 // The service directly, never the shared view model's refresh: setup writes the
                 // service, so that view model can still hold an older provider and would heal its
@@ -1748,25 +1748,7 @@ public sealed class OnboardingPage : Page
                 // written as the cloud provider's model).
                 enhancement.InvalidateModelLists(Services.AIEnhancement.AIProvider.OnThisPc);
                 enhancement.SyncOnThisPcResidency();
-                var stored = StoredTextProvider();
-                if (stored is { } cloud && cloud != Services.AIEnhancement.AIProvider.OnThisPc
-                    && _apiKeys.HasApiKey(cloud.ToString().ToLowerInvariant()))
-                {
-                    refreshBuiltInRows();
-                    return;
-                }
-                var installed = _enhancementModels.OnThisPc?.InstalledModelIds() ?? [];
-                var current = stored == Services.AIEnhancement.AIProvider.OnThisPc ? enhancement.SelectedModel : "";
-                // The model just downloaded here is the one setup ends on (Codex diff r1: a rerun kept
-                // the old selection, and with none the first installed model won).
-                if (downloadedId is { } downloaded && installed.Contains(downloaded))
-                    UseBuiltIn(downloaded);
-                else if (installed.Contains(current))
-                    refreshBuiltInRows();
-                else if (installed.Count > 0)
-                    UseBuiltIn(installed[0]);
-                else
-                    refreshBuiltInRows();
+                refreshBuiltInRows();
             }
 
             var rowsHost = new StackPanel();
@@ -1776,21 +1758,29 @@ public sealed class OnboardingPage : Page
             // the rows showing and every rebuild was skipped. Off this step nothing rebuilds: a
             // finished setup leaves the page on its last step, so its rows stop re-watching
             // downloads started later on the AI page (a finished one would be taken into use here).
+            // The user asked for the full list where setup had no model to offer (LAI-19).
+            var showAllBuiltIn = false;
             void RebuildRows()
             {
                 if (_step != AiEnhancementStepIndex) return;
                 rowsHost.Children.Clear();
+                // In use: the stored selection, or the active prompt's own model (Codex diff r1).
+                bool InUse(string id) => (StoredTextProvider() == Services.AIEnhancement.AIProvider.OnThisPc
+                                          && string.Equals(enhancement.SelectedModel, id, StringComparison.Ordinal))
+                                         || string.Equals(enhancement.ActiveBuiltInModel(), id, StringComparison.Ordinal);
                 rowsHost.Children.Add(LocalModelsSection.Build(localModels, LocalHardwareProfile.Read(),
                     id => StoredTextProvider() == Services.AIEnhancement.AIProvider.OnThisPc
                           && string.Equals(enhancement.SelectedModel, id, StringComparison.Ordinal),
                     UseBuiltIn,
                     _enhancementModels.OnThisPc,
-                    AdoptDownloaded,
+                    RefreshAfterDownload,
                     () => DispatcherQueue.TryEnqueue(RebuildRows),
-                    // In use: the stored selection, or the active prompt's own model (Codex diff r1).
-                    setupInUse: id => (StoredTextProvider() == Services.AIEnhancement.AIProvider.OnThisPc
-                                       && string.Equals(enhancement.SelectedModel, id, StringComparison.Ordinal))
-                                      || string.Equals(enhancement.ActiveBuiltInModel(), id, StringComparison.Ordinal)));
+                    setupInUse: showAllBuiltIn ? null : InUse,
+                    whenSetupOffersNothing: () => DisclosureLink("Show all models", 12, _ =>
+                    {
+                        showAllBuiltIn = true;
+                        RebuildRows();
+                    })));
             }
             refreshBuiltInRows = RebuildRows;
             rowsHost.Loaded += (_, _) => RebuildRows();
@@ -3156,14 +3146,6 @@ public sealed class OnboardingPage : Page
         var langDisplay = ModelManagementViewModel.GetLanguageDisplayName(_selectedLanguage);
         summaryPanel.Children.Add(CreateSummaryRow("\uE774", "Language", langDisplay));
 
-        // Enhancement. "ON" alone read as "ready" (launch defaults audit, 2026-09-13), but the AI
-        // step lets the user continue with the switch on and no key (its validator passes an empty
-        // box straight through — "adding a key later is a Settings task"), or with a key and no
-        // model — so the summary names those states instead of promising a feature that throws
-        // "No AI model selected" on the first dictation. "Usable" here means a key AND a model are
-        // stored for the selected text provider, read the way the AI step reads the provider
-        // (raw setting, parsed).
-        var enhancementOn = _settings.GetBool(AppDefaults.AiEnhancementEnabled, false);
         // Express: the built-in model is a switch here, so a user on a small disk or a metered
         // connection can skip its download (owner, 2026-10-16). The line under the card follows it.
         TextBlock? downloadNote = null;
@@ -3184,7 +3166,8 @@ public sealed class OnboardingPage : Page
         }
         else
         {
-            summaryPanel.Children.Add(CreateSummaryRow("\uE945", "AI enhancement", EnhancementSummary(enhancementOn)));
+            // The line Finish will make true: the same decision the finish click applies (ONB-14).
+            summaryPanel.Children.Add(CreateSummaryRow("\uE945", "AI enhancement", SetupAiFinish.Decide(ReadSetupAiState()).DoneText));
         }
 
         // Recording Hotkey \u2014 the fields hold canonical strings; the summary speaks display names,
@@ -3244,8 +3227,8 @@ public sealed class OnboardingPage : Page
                 return;
             }
 
-            // Express: the speech model and the built-in AI, before the AI provider seed below
-            // reads what is stored.
+            // Express: the speech model and the built-in AI, before the AI settle below reads what
+            // is stored.
             if (express is { } chosen)
                 ApplyExpress(chosen);
 
@@ -3263,15 +3246,8 @@ public sealed class OnboardingPage : Page
             App.Services.GetRequiredService<Services.System.AutostartRegistrationService>()
                 .Apply(_settings.GetBool(AppDefaults.LaunchAtLogin, true));
 
-            // A new install starts on the built-in models when no provider was chosen here (owner,
-            // 2026-09-30). Only a FIRST finish: a relaunched wizard already has the completion key.
-            if (AiProviderDefaultSeed.ForNewInstall(
-                    !_settings.Contains(AppDefaults.HasCompletedOnboarding),
-                    _settings.Contains(AppDefaults.AiProvider),
-                    Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered) is { } seeded)
-            {
-                _settings.SetString(AppDefaults.AiProvider, seeded.ToString());
-            }
+            // Setup never ends with AI enhancement ON and nothing able to run it (ONB-14).
+            SettleAiEnhancement();
 
             _settings.SetBool(AppDefaults.HasCompletedOnboarding, true);
             OnboardingCompleted?.Invoke();
@@ -3316,7 +3292,8 @@ public sealed class OnboardingPage : Page
             storedCannotRecogniseLanguage: ModelLanguageSupport.CannotRecognise(storedLocalRow, _selectedLanguage),
             recommendedModel: recommended,
             recommendedInstalled: OnDisk(recommended),
-            builtInOffered: pick is not null,
+            // A prompt with its own provider or model would not run on the pick: offer nothing (ONB-14).
+            builtInOffered: pick is not null && !PromptRouteThatWillRun().HasTextOverride,
             aiProviderStored: _settings.Contains(AppDefaults.AiProvider),
             aiSwitchedOff: _settings.Contains(AppDefaults.AiEnhancementEnabled)
                            && !_settings.GetBool(AppDefaults.AiEnhancementEnabled),
@@ -3585,41 +3562,41 @@ public sealed class OnboardingPage : Page
         }
     }
 
-    /// <summary>
-    /// The Done card's Enhancement value: OFF, ON, or ON with the provider setup named as
-    /// incomplete. The text is pure (<see cref="EnhancementSummaryText"/>); this reads the two
-    /// facts it needs — a stored key and a stored text model for the selected provider — the way
-    /// the AI step reads the provider (raw setting, parsed, OpenAI when unparseable, mirroring
-    /// <c>AIEnhancementService.ReadProviderSetting</c>) and the model the way the service does
-    /// (<c>TextModelFor</c>: the per-provider key, no implicit default).
-    /// </summary>
-    private string EnhancementSummary(bool enabled)
+    /// <summary>The route of the prompt AI will run, read as the adopter reads it (ONB-14).</summary>
+    private PromptRoute PromptRouteThatWillRun()
+        => PromptThatWillRun.Route(_enhancement, _settings, _enhancementModels.IsEnabled);
+
+    /// <summary>What the finish click and the Done card read about AI enhancement (ONB-14).</summary>
+    private SetupAiState ReadSetupAiState()
     {
-        if (!enabled)
-            return EnhancementSummaryText(enabled: false, hasKey: false, hasModel: false);
-        var raw = _settings.GetString(AppDefaults.AiProvider, "");
-        // Nothing stored on a first finish means the built-in models — the seed Finish applies.
-        var provider = AiProviderDefaultSeed.ForNewInstall(
-                           !_settings.Contains(AppDefaults.HasCompletedOnboarding),
-                           _settings.Contains(AppDefaults.AiProvider),
-                           Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered)
-                       ?? (Enum.TryParse<Services.AIEnhancement.AIProvider>(raw, out var p)
-                           ? p
-                           : Services.AIEnhancement.AIProvider.OpenAI);
-        // LAI-1/LAI-4: a keyless provider (Local server, On this PC) is never "incomplete" for want of a key.
-        var hasKey = provider is Services.AIEnhancement.AIProvider.LocalServer or Services.AIEnhancement.AIProvider.OnThisPc
-                     || !string.IsNullOrEmpty(_apiKeys.GetApiKey(provider.ToString().ToLowerInvariant()));
-        var hasModel = !string.IsNullOrEmpty(_settings.GetString(AppDefaults.AiModelKey(provider), ""));
-        return EnhancementSummaryText(enabled: true, hasKey, hasModel);
+        var store = _enhancementModels.LocalModels;
+        return SetupAiFinish.Read(_settings,
+            provider => _apiKeys.GetApiKey(provider.ToString().ToLowerInvariant()),
+            _enhancement.RequiresApiKey,
+            PromptRouteThatWillRun(),
+            Services.AIEnhancement.LocalEngine.OnThisPcAvailability.IsOffered,
+            _enhancementModels.OnThisPc?.InstalledModelIds() ?? [],
+            id => store?.ActiveDownload(id) is not null);
     }
 
-    /// <summary>Pure half of <see cref="EnhancementSummary"/>; pinned by <c>OnboardingSummaryTests</c>.
-    /// The key is named before the model: without a key the model list cannot even be fetched.</summary>
-    internal static string EnhancementSummaryText(bool enabled, bool hasKey, bool hasModel)
-        => !enabled ? "OFF"
-         : !hasKey ? "ON — provider setup incomplete (no API key)"
-         : !hasModel ? "ON — provider setup incomplete (no model selected)"
-         : "ON";
+    /// <summary>Carries out <see cref="SetupAiFinish.Decide"/> on the finish click: provider, then model (through the one adopter), then the switch (ONB-14).</summary>
+    private void SettleAiEnhancement()
+    {
+        var outcome = SetupAiFinish.Decide(ReadSetupAiState());
+        if (outcome.ProviderWrite is { } provider)
+            _settings.SetString(AppDefaults.AiProvider, provider.ToString());
+        if (outcome is { Action: SetupModelAction.UseNow, ModelId: { } use })
+            _builtInAdoption.UseNow(use);
+        else if (outcome is { Action: SetupModelAction.Track, ModelId: { } track })
+            _ = _builtInAdoption.Start(track);
+        if (outcome.RemoveSwitch)
+            _settings.Remove(AppDefaults.AiEnhancementEnabled);
+        // Always: the view model re-reads the switch (restoring the prompt its OFF deactivated) and a model warmed for a removed ON is released.
+        _enhancementModels.ReloadPrompts();
+        _enhancementModels.ReloadFromSettings();
+        _enhancement.SyncOnThisPcResidency();
+        _settings.Flush();
+    }
 
     /// <summary>
     /// The Done card's Updates value, one row for the two UPD-4b choices. Install is only ever

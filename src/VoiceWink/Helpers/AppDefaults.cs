@@ -519,6 +519,9 @@ public static class AppDefaults
     public const string LastActivePromptId = "lastActivePromptId";
     public const string CustomPrompts = "customPrompts";
 
+    /// <summary>ENH-35: the last unreadable <see cref="CustomPrompts"/> value, kept from overwrites; not in <see cref="Defaults"/>, so export/import skip it.</summary>
+    public const string CustomPromptsUnreadableCopy = "customPromptsUnreadableCopy";
+
     /// <summary>
     /// LAI-1: which protocol the Local server provider speaks — <c>"ollama"</c> or
     /// <c>"openai"</c> (<see cref="Services.AIEnhancement.LocalServerEndpoints"/>). Its address is

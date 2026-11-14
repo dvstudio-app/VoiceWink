@@ -73,6 +73,9 @@ public interface IParakeetServerChild : IDisposable
     /// <summary>TRN-68: the device rows this child printed so far (a snapshot, pipe order; parsed
     /// fields only).</summary>
     IReadOnlyList<GgmlVulkanDeviceLine> ObservedDevices { get; }
+
+    /// <summary>TRN-95: this child's output timing so far; null when the launcher does not observe it.</summary>
+    ParakeetChildOutputTrace? OutputTrace => null;
 }
 
 /// <summary>
@@ -116,6 +119,7 @@ public sealed class ParakeetServerProcess
     private IParakeetServerChild? _child;
     private IParakeetServerChild? _retiring;
     private int _generation;
+    private int _spawns; // TRN-95: launches this session, for the health-wait trace; written under _gate.
     private Uri? _baseUri;
     private string? _servedModelPath;
     private string? _servedInstallIdentity;
@@ -505,6 +509,8 @@ public sealed class ParakeetServerProcess
             // A cancelled acquire must not pay a ~1 GB spawn it will retire one line later — the
             // relaunches (pinned, CPU retry) re-enter here after a Retire that took real time.
             ct.ThrowIfCancellationRequested();
+            var priorThrowawayExit = ParakeetEphemeralChild.LastExit(); // TRN-95: read at spawn, so its age is "before spawn"
+            var spawnNumber = ++_spawns;
             var child = _launcher.TryLaunch(exePath, modelPath, mode, pin);
             if (child is null)
             {
@@ -520,6 +526,10 @@ public sealed class ParakeetServerProcess
             // further acquires spawn more.
             var spawnedUtc = _utcNow();
             Uri? baseUri = null;
+            TimeSpan? portSeenAfter = null; // TRN-95: these three feed the health-wait trace
+            var probesSent = 0;
+            var probeInFlight = false;
+            ParakeetHealthWaitTrace Trace() => new(spawnNumber, portSeenAfter, probesSent, probeInFlight, child?.OutputTrace, priorThrowawayExit);
             using var health = CancellationTokenSource.CreateLinkedTokenSource(ct);
             health.CancelAfter(_probeBudget);
             try
@@ -553,6 +563,7 @@ public sealed class ParakeetServerProcess
                     if (baseUri is null && child.TryReadListeningPort() is { } port)
                     {
                         baseUri = new Uri($"http://127.0.0.1:{port}/");
+                        portSeenAfter = _utcNow() - spawnedUtc;
                     }
                     // WaitAsync bounds the AWAIT itself: CancelAfter only cancels the TOKEN,
                     // and a probe that ignores it would otherwise block here forever holding
@@ -563,9 +574,12 @@ public sealed class ParakeetServerProcess
                     if (probeTask is not null)
                     {
                         bool healthy;
+                        probesSent++;
+                        probeInFlight = true;
                         try
                         {
                             healthy = await probeTask.WaitAsync(health.Token).ConfigureAwait(false);
+                            probeInFlight = false;
                         }
                         catch (OperationCanceledException)
                         {
@@ -633,10 +647,11 @@ public sealed class ParakeetServerProcess
                 // answers): a health failure, not a user cancel and not a crash - retire and
                 // fall back instead of propagating a cancellation nobody requested.
                 attempts.Add(DescribeAttempt(child, mode, pin, ParakeetAttemptOutcome.HungProbe, spawnedUtc));
+                var trace = Trace(); // before the retire, whose kill wait would age every timing
                 Retire(child);
                 RefusePinIfPinned(pin, "hung before health");
-                Logger.Warning("parakeet-server: health wait exceeded {Budget} (hung probe, launch mode {Mode}) - serving sherpa this preparation",
-                    _probeBudget, mode);
+                Logger.Warning("parakeet-server: health wait exceeded {Budget} (hung probe, launch mode {Mode}; {HealthWait}) - serving sherpa this preparation",
+                    _probeBudget, mode, trace.Render());
                 return Failed(ParakeetAcquireFailureKind.AttemptsFailed, attempts);
             }
             catch (Exception ex)
@@ -674,6 +689,7 @@ public sealed class ParakeetServerProcess
                 exitedOnItsOwn ? ParakeetAttemptOutcome.ExitedBeforeHealth : ParakeetAttemptOutcome.NeverHealthy,
                 spawnedUtc);
             attempts.Add(attempt);
+            var healthWait = Trace();
             Retire(child);
             // TRN-68: a PINNED attempt that failed in ANY way — died, or sat there without ever
             // reaching health — refuses the pin for the session BEFORE the retry decision below
@@ -715,8 +731,8 @@ public sealed class ParakeetServerProcess
             // itself or the log holds no Parakeet-side evidence of the OFF state.
             // Since 2026-10-17 the line names the attempt itself — exit code and lifetime — because
             // "not healthy within 30s" read as a 30 s wait when the child had died after 3 s.
-            Logger.Warning("parakeet-server: not healthy ({Attempt}, budget {Budget}, childExited={Exited}, launch mode {Mode}) - serving sherpa this preparation",
-                attempt.Render(), ParakeetServerPolicy.HealthBudget, exitedOnItsOwn, mode);
+            Logger.Warning("parakeet-server: not healthy ({Attempt}, budget {Budget}, childExited={Exited}, launch mode {Mode}; {HealthWait}) - serving sherpa this preparation",
+                attempt.Render(), ParakeetServerPolicy.HealthBudget, exitedOnItsOwn, mode, healthWait.Render());
             return Failed(ParakeetAcquireFailureKind.AttemptsFailed, attempts);
             }
         }

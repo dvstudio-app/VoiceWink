@@ -18,7 +18,13 @@ public sealed class TranscriptionOutputFilter
     private static readonly Regex ParenPattern = new(@"\(\s*(?:silence|music|applause|laughter|blank[_ ]?audio|inaudible|background noise|no speech)\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline, RegexTimeout);
     private static readonly Regex BracePattern = new(@"\{.*?\}", RegexOptions.Compiled | RegexOptions.Singleline, RegexTimeout);
     private static readonly Regex XmlTagPattern = new(@"<[^>]+>.*?</[^>]+>|<[^>]+/?>", RegexOptions.Compiled | RegexOptions.Singleline, RegexTimeout);
-    private static readonly Regex MultiSpacePattern = new(@"\s{2,}", RegexOptions.Compiled, RegexTimeout);
+    // Spaces and tabs only, so a line break from the engine survives (TRN-93).
+    private static readonly Regex MultiSpacePattern = new(@"[ \t]{2,}", RegexOptions.Compiled, RegexTimeout);
+    private static readonly Regex LineEdgeSpacePattern = new(@"[ \t]+(?=\r?\n)|(?<=\n)[ \t]+", RegexOptions.Compiled, RegexTimeout);
+
+    /// <summary>Runs of spaces and tabs become one space and none sits at a line's edge; line breaks stay (TRN-93).</summary>
+    internal static string CollapseHorizontalSpace(string text)
+        => LineEdgeSpacePattern.Replace(MultiSpacePattern.Replace(text, " "), "").Trim();
 
     public string Filter(string text)
     {
@@ -34,10 +40,7 @@ public sealed class TranscriptionOutputFilter
             result = BracePattern.Replace(result, " ");
             result = XmlTagPattern.Replace(result, " ");
 
-            // Collapse multiple whitespace to single space
-            result = MultiSpacePattern.Replace(result, " ");
-
-            result = result.Trim();
+            result = CollapseHorizontalSpace(result);
 
             if (result != text.Trim())
             {

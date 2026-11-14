@@ -63,9 +63,9 @@ public static class AppModeAddNotice
             DefaultEnhancementOutcome.Added =>
                 $"Added the “{r.EnhancementTitle}” enhancement and linked it to the {r.AppModeName} app mode.",
             DefaultEnhancementOutcome.TitleConflict =>
-                $"{r.AppModeName} was added, but its default “{r.EnhancementTitle}” enhancement wasn’t added because a prompt with that name already exists.",
+                $"{r.AppModeName} was added, but its default “{r.EnhancementTitle}” enhancement wasn’t added because an enhancement with that name already exists.",
             DefaultEnhancementOutcome.AmbiguousSeedKey =>
-                $"{r.AppModeName} was added, but its default enhancement couldn’t be linked because more than one prompt uses its key.",
+                $"{r.AppModeName} was added, but its default enhancement couldn’t be linked because more than one enhancement uses its key.",
             _ => null,
         };
     }

@@ -13,6 +13,8 @@ public enum LocalOutputVerdict
     Replaced,
     /// <summary>2026-10-21: an E-mail or Chat reply in English to a dictation that was not.</summary>
     SwitchedToEnglish,
+    /// <summary>LAI-19: a translation that is the dictation left in its own language.</summary>
+    NotInTargetLanguage,
 }
 
 /// <summary>
@@ -95,6 +97,8 @@ public enum LocalOutputVerdict
 /// replies keep few words; the owner accepted them, and they are pinned as a known residual. Prompt
 /// wording was measured first and rejected: no rewording lowered the 2B's switches reliably, and the
 /// strongest made them more frequent (bench README, "Language retention").</para>
+///
+/// <para>LAI-19: a fifth rule, Translate only — a reply of five words or more that is the dictation left in its own language (near-verbatim, same detected language, not the target) is refused, scripts without spaces included.</para>
 /// </remarks>
 internal static class LocalOutputGuard
 {
@@ -112,31 +116,35 @@ internal static class LocalOutputGuard
     internal const int NewWordFloor = 6;
 
     /// <summary>The class's checks over <paramref name="input"/> → <paramref name="output"/>:
-    /// the two length lines first, then the new-word rule (Clean-up) or the language rule
-    /// (E-mail / Chat, judged only with a <paramref name="topLanguage"/> detector).</summary>
+    /// the two length lines first, then the untranslated rule (a shipped translation, <paramref name="targetLanguage"/>),
+    /// the new-word rule (Clean-up) or the language rule (E-mail / Chat); both language rules need <paramref name="topLanguage"/>.</summary>
     internal static LocalOutputVerdict Check(LocalPromptClass promptClass, string input, string output,
-        Func<string, string?>? topLanguage = null)
+        Func<string, string?>? topLanguage = null, string? targetLanguage = null)
     {
         // An answer has no length relation to its question (LAI-12): "366" answers a 16-word
         // question, and a request for a list can run to paragraphs.
         if (promptClass is LocalPromptClass.Custom or LocalPromptClass.Assistant)
             return LocalOutputVerdict.Pass;
-        // A translation to or from a script counted per character has no comparable word count.
-        if (promptClass == LocalPromptClass.Translate && (HasUnspacedScript(input) || HasUnspacedScript(output)))
-            return LocalOutputVerdict.Pass;
-        long inWords = CountWords(input);
-        long outWords = CountWords(output);
-        var grew = promptClass switch
+        // A translation to or from a script counted per character has no comparable word count: its length lines are skipped.
+        if (promptClass != LocalPromptClass.Translate || !(HasUnspacedScript(input) || HasUnspacedScript(output)))
         {
-            LocalPromptClass.Cleanup => 2 * outWords > 3 * inWords + 16,
-            LocalPromptClass.EmailChat => outWords > 4 * inWords + 60,
-            LocalPromptClass.Translate => outWords > 3 * inWords + 30,
-            _ => false,
-        };
-        if (grew)
-            return LocalOutputVerdict.Grew;
-        if (inWords >= 16 && 8 * outWords < inWords)
-            return LocalOutputVerdict.Shrank;
+            long inWords = CountWords(input);
+            long outWords = CountWords(output);
+            var grew = promptClass switch
+            {
+                LocalPromptClass.Cleanup => 2 * outWords > 3 * inWords + 16,
+                LocalPromptClass.EmailChat => outWords > 4 * inWords + 60,
+                LocalPromptClass.Translate => outWords > 3 * inWords + 30,
+                _ => false,
+            };
+            if (grew)
+                return LocalOutputVerdict.Grew;
+            if (inWords >= 16 && 8 * outWords < inWords)
+                return LocalOutputVerdict.Shrank;
+        }
+        if (promptClass is LocalPromptClass.Translate
+            && MeasureTranslation(input, output, topLanguage, targetLanguage).Untranslated)
+            return LocalOutputVerdict.NotInTargetLanguage;
         // Clean-up only: its rules keep the speaker's words. E-mail and Chat legitimately rewrite —
         // a greeting and closing around a short dictation, or a formal note made casual, can be
         // mostly new words (self-review: a 9-word "tell Anna the parcel arrived…" e-mail).
@@ -149,6 +157,38 @@ internal static class LocalOutputGuard
         if (promptClass is LocalPromptClass.EmailChat && MeasureLanguage(input, output, topLanguage).SwitchedToEnglish)
             return LocalOutputVerdict.SwitchedToEnglish;
         return LocalOutputVerdict.Pass;
+    }
+
+    /// <summary>LAI-19: the most reply words outside the dictation an untranslated reply had on baseline-v2 (correct translations: 5 or more).</summary>
+    internal const int EchoNewWordCeiling = 3;
+
+    /// <summary>LAI-19: a shorter reply gives the detector too little to read.</summary>
+    internal const int TranslationWordFloor = 5;
+
+    /// <summary>LAI-19: the facts behind the Translate rule, also what its log line reports; a language is null when the detector was not asked or gave no answer.</summary>
+    internal readonly record struct TranslationMeasure(
+        int NewWords, int ReplyWords, string? DictationLanguage, string? ReplyLanguage, string? TargetLanguage)
+    {
+        // At least 6/7 of the reply's words are the dictation's: baseline-v2's untranslated replies kept 6/7 to all, correct translations at most 6/11.
+        internal bool NearVerbatim =>
+            ReplyWords > 0 && NewWords <= EchoNewWordCeiling && 7 * (ReplyWords - NewWords) >= 6 * ReplyWords;
+
+        internal bool Untranslated =>
+            NearVerbatim && ReplyLanguage is { } reply && reply == DictationLanguage && reply != TargetLanguage;
+    }
+
+    /// <summary>LAI-19: measures a translation; the detector reads only a near-verbatim reply of <see cref="TranslationWordFloor"/> counted words or more, and the dictation only when that reply is not in the target.</summary>
+    internal static TranslationMeasure MeasureTranslation(string? input, string? output,
+        Func<string, string?>? topLanguage, string? targetLanguage)
+    {
+        var (newWords, replyWords) = CountNewWords(input, output);
+        var measure = new TranslationMeasure(newWords, replyWords, null, null, targetLanguage);
+        if (targetLanguage is null || topLanguage is null || !measure.NearVerbatim || replyWords < TranslationWordFloor)
+            return measure;
+        measure = measure with { ReplyLanguage = topLanguage(output ?? "") };
+        return measure.ReplyLanguage is null || measure.ReplyLanguage == targetLanguage
+            ? measure
+            : measure with { DictationLanguage = topLanguage(DedupeForDetection(input)) };
     }
 
     /// <summary>The fewest distinct dictation words the language rule judges: a shorter dictation keeps

@@ -25,10 +25,13 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 /// <see cref="ResumePending"/> runs once per launch from <c>App.StartGatedRuntimeServices</c>
 /// (the UI thread, behind the legal gate — the LIC-23 scheduler's seat). The built-in models are
 /// bundles, which <c>ModelDownloadManager</c> restarts from zero rather than resuming. A Cancel (the
-/// AI Enhancement page, the Downloads card) ends the job for good, and turns off an AI switch that
-/// would otherwise fail every dictation. A failure keeps it for ONE more attempt at the next
-/// start; a resumed attempt that fails too drops it, so a model that cannot be fetched is not
-/// downloaded again at every launch.</para>
+/// AI Enhancement page, the Downloads card) ends the job for good. A failure keeps it for ONE more
+/// attempt at the next start; a resumed attempt that fails too drops it, so a model that cannot be
+/// fetched is not downloaded again at every launch. A Cancel or a failure also removes an AI switch
+/// stored ON that nothing can serve — removed, never stored OFF, so a later download still adopts
+/// (ONB-14).</para>
+///
+/// <para><b>One job, one owner (ONB-14).</b> Only the watch holding the stored model id AND the newest start's generation adopts, clears the job or touches the switch.</para>
 ///
 /// <para>Call <see cref="Start"/> and <see cref="ResumePending"/> on the UI thread:
 /// <see cref="LocalModelStore.StartDownload"/> reports progress on the thread that started it, and
@@ -44,46 +47,56 @@ internal sealed class BuiltInModelAdoption
     private readonly Func<string, bool> _isInstalled;
     private readonly Action<string> _useModel;
     private readonly Action<string>? _startFirstUseCheck;
-    private readonly Action? _switchAiOff;
+    private readonly Action? _aiSwitchRemoved;
     private readonly Func<AIProvider>? _activeTextProvider;
     private readonly Func<string?>? _activeBuiltInModel;
     private readonly Func<bool>? _activePromptIsImage;
-    private readonly HashSet<LocalModelDownloadAttempt> _watched = new();
+    private readonly Func<PromptRoute>? _promptThatWillRun;
+    private readonly Func<bool>? _setupOpen;
+    // Each watched attempt's newest generation: a start that rejoins a running attempt hands its watch the new one.
+    private readonly Dictionary<LocalModelDownloadAttempt, long> _watched = new();
+    private long _generation;
     private bool _resumed;
 
     /// <param name="useModel">Takes the model into use: provider, model, the AI switch ON, residency.</param>
     /// <param name="startFirstUseCheck">The engine's first-use GPU check, as a finished download on the AI page runs it.</param>
-    /// <param name="switchAiOff">Turns the AI switch off, as the AI page's switch does.</param>
+    /// <param name="aiSwitchRemoved">Runs after a stored ON was removed: the AI page's view model re-reads the switch.</param>
     /// <param name="activeTextProvider">The provider the ACTIVE prompt cleans with (its override first).</param>
     /// <param name="activeBuiltInModel">The built-in model the active prompt would use, or null.</param>
     /// <param name="activePromptIsImage">Whether the active prompt generates images (it uses no text model).</param>
+    /// <param name="promptThatWillRun">The route of the prompt AI will run (<see cref="PromptThatWillRun"/>).</param>
+    /// <param name="setupOpen">Whether setup is on screen: its Finish decides the switch then.</param>
     internal BuiltInModelAdoption(SettingsService settings, LocalModelStore store,
-        Action<string> useModel, Action<string>? startFirstUseCheck, Action? switchAiOff = null,
+        Action<string> useModel, Action<string>? startFirstUseCheck, Action? aiSwitchRemoved = null,
         Func<AIProvider>? activeTextProvider = null, Func<string?>? activeBuiltInModel = null,
-        Func<bool>? activePromptIsImage = null)
-        : this(settings, store.StartDownload, store.IsInstalled, useModel, startFirstUseCheck, switchAiOff,
-               activeTextProvider, activeBuiltInModel, activePromptIsImage)
+        Func<bool>? activePromptIsImage = null, Func<PromptRoute>? promptThatWillRun = null,
+        Func<bool>? setupOpen = null)
+        : this(settings, store.StartDownload, store.IsInstalled, useModel, startFirstUseCheck, aiSwitchRemoved,
+               activeTextProvider, activeBuiltInModel, activePromptIsImage, promptThatWillRun, setupOpen)
     {
         // Every Cancel, not only of the Express job's download (Codex diff r1).
-        store.DownloadCancelled += _ => SwitchAiOffIfNothingCanServe();
+        store.DownloadCancelled += _ => RemoveAiOnIfNothingCanServe();
     }
 
     /// <summary>Test seam: the store's two members as delegates, so an attempt's outcome can be set.</summary>
     internal BuiltInModelAdoption(SettingsService settings,
         Func<string, LocalModelDownloadAttempt> startDownload, Func<string, bool> isInstalled,
-        Action<string> useModel, Action<string>? startFirstUseCheck, Action? switchAiOff = null,
+        Action<string> useModel, Action<string>? startFirstUseCheck, Action? aiSwitchRemoved = null,
         Func<AIProvider>? activeTextProvider = null, Func<string?>? activeBuiltInModel = null,
-        Func<bool>? activePromptIsImage = null)
+        Func<bool>? activePromptIsImage = null, Func<PromptRoute>? promptThatWillRun = null,
+        Func<bool>? setupOpen = null)
     {
         _settings = settings;
         _activeTextProvider = activeTextProvider;
         _activeBuiltInModel = activeBuiltInModel;
         _activePromptIsImage = activePromptIsImage;
+        _promptThatWillRun = promptThatWillRun;
+        _setupOpen = setupOpen;
         _startDownload = startDownload;
         _isInstalled = isInstalled;
         _useModel = useModel;
         _startFirstUseCheck = startFirstUseCheck;
-        _switchAiOff = switchAiOff;
+        _aiSwitchRemoved = aiSwitchRemoved;
     }
 
     /// <summary>Takes an installed model into use now — Express setup when the pick is already on disk.</summary>
@@ -105,8 +118,22 @@ internal sealed class BuiltInModelAdoption
         if (_settings.GetBool(AppDefaults.AiEnhancementEnabled))
             _settings.Remove(AppDefaults.AiEnhancementEnabled);
         _settings.Flush();
+        var generation = ++_generation;
+        // Already on disk (it finished between the offer and the click): adopt now, download nothing.
+        if (_isInstalled(id))
+        {
+            if (ShouldAdopt())
+            {
+                _useModel(id);
+                Logger.Information("Express setup: built-in model {LocalModelId} already installed; in use, AI clean-up on", id);
+            }
+            ClearPending();
+            return Task.CompletedTask;
+        }
         var attempt = _startDownload(id);
-        if (!_watched.Add(attempt))
+        var alreadyWatched = _watched.ContainsKey(attempt);
+        _watched[attempt] = generation;
+        if (alreadyWatched)
         {
             return Task.CompletedTask;
         }
@@ -134,33 +161,47 @@ internal sealed class BuiltInModelAdoption
         if (LocalModelCatalog.Find(id) is null || !ShouldAdopt())
         {
             Logger.Information("Express setup: dropping the pending built-in model download (no longer wanted)");
-            Clear();
+            ClearPending();
             return Task.CompletedTask;
         }
         Logger.Information("Express setup: restarting the built-in model download {LocalModelId}", id);
         return StartCore(id, resumed: true);
     }
 
-    /// <summary>The user has not chosen anything about AI since Express started the job.</summary>
+    /// <summary>The user has not chosen anything about AI since the pending job started.</summary>
     internal bool ShouldAdopt()
     {
-        if (!string.Equals(_settings.GetString(AppDefaults.AiProvider, ""), nameof(AIProvider.OnThisPc), StringComparison.Ordinal))
-        {
-            return false;
-        }
-        if (_settings.Contains(AppDefaults.AiEnhancementEnabled) && !_settings.GetBool(AppDefaults.AiEnhancementEnabled))
-        {
-            return false;
-        }
-        var current = _settings.GetString(AppDefaults.AiModelKey(AIProvider.OnThisPc), "");
-        return string.IsNullOrEmpty(current) || !_isInstalled(current);
+        var pending = _settings.GetString(AppDefaults.ExpressBuiltInPending, "");
+        return SetupAiFinish.AdoptionHolds(
+            providerIsBuiltIn: string.Equals(_settings.GetString(AppDefaults.AiProvider, ""), nameof(AIProvider.OnThisPc), StringComparison.Ordinal),
+            storedOff: _settings.Contains(AppDefaults.AiEnhancementEnabled) && !_settings.GetBool(AppDefaults.AiEnhancementEnabled),
+            engineOffered: OnThisPcAvailability.IsOffered,
+            pendingKnown: LocalModelCatalog.Find(pending) is not null,
+            // The prompt AI will run, never the active built-in model: that reads null while the switch is off.
+            serves: SetupAiFinish.Serves(_promptThatWillRun?.Invoke() ?? default, pending),
+            storedModel: _settings.GetString(AppDefaults.AiModelKey(AIProvider.OnThisPc), ""),
+            pending, _isInstalled);
     }
 
-    private bool IsPending(string id)
-        => string.Equals(_settings.GetString(AppDefaults.ExpressBuiltInPending, ""), id, StringComparison.Ordinal);
+    private bool IsPending(string id, long generation)
+        => generation == _generation
+           && string.Equals(_settings.GetString(AppDefaults.ExpressBuiltInPending, ""), id, StringComparison.Ordinal);
 
     private async Task WatchAsync(string id, LocalModelDownloadAttempt attempt, bool resumed)
     {
+        // Read when the attempt settles: a later start that rejoined it handed this watch its generation.
+        bool Owns() => _watched.TryGetValue(attempt, out var generation) && IsPending(id, generation);
+        void Cancelled()
+        {
+            if (!Owns())
+                return;
+            // A Cancel (the AI page, the Downloads card): the user ended it, so it is not restarted
+            // at the next launch.
+            Logger.Information("Express setup: built-in model download cancelled; not restarted");
+            RemoveAiOnIfNothingCanServe();
+            ClearPending();
+        }
+
         try
         {
             // The same outcome contract the AI page's rows read (LocalModelsSection.Watch): an
@@ -170,16 +211,19 @@ internal sealed class BuiltInModelAdoption
             // runs, and the attempt still completes Installed (Codex diff r1): the Cancel decides.
             if (attempt.IsCancellationRequested)
             {
-                Logger.Information("Express setup: built-in model download cancelled; not restarted");
-                SwitchAiOffIfNothingCanServe();
-                Clear();
+                Cancelled();
                 return;
             }
             switch (outcome)
             {
                 case LocalModelDownloadOutcome.Installed:
                     _startFirstUseCheck?.Invoke(id);
-                    if (IsPending(id) && ShouldAdopt())
+                    if (!Owns())
+                    {
+                        Logger.Information("Express setup: built-in model {LocalModelId} downloaded; not the pending job, nothing switched", id);
+                        break;
+                    }
+                    if (ShouldAdopt())
                     {
                         _useModel(id);
                         Logger.Information("Express setup: built-in model {LocalModelId} in use, AI clean-up on", id);
@@ -188,32 +232,38 @@ internal sealed class BuiltInModelAdoption
                     {
                         Logger.Information("Express setup: built-in model {LocalModelId} downloaded; AI was chosen meanwhile, left as chosen", id);
                     }
-                    Clear();
+                    ClearPending();
                     break;
                 case LocalModelDownloadOutcome.RefusedDuringMaintenance:
                     // An update or erasure held the lease; the next launch tries again.
+                    if (Owns())
+                        RemoveAiOnIfNothingCanServe();
                     break;
                 default:
-                    Clear();
+                    if (Owns())
+                    {
+                        RemoveAiOnIfNothingCanServe();
+                        ClearPending();
+                    }
                     break;
             }
         }
         catch (OperationCanceledException) when (attempt.IsCancellationRequested)
         {
-            // A Cancel (the AI page, the Downloads card): the user ended it, so it is not restarted
-            // at the next launch.
-            Logger.Information("Express setup: built-in model download cancelled; not restarted");
-            SwitchAiOffIfNothingCanServe();
-            Clear();
+            Cancelled();
         }
         catch (Exception ex)
         {
             // The store has logged the cause once.
+            var owns = Owns();
+            if (owns)
+                RemoveAiOnIfNothingCanServe();
             if (resumed)
             {
                 Logger.Warning("Express setup: built-in model download failed again ({ErrorType}); not retried",
                     ex.GetType().Name);
-                Clear();
+                if (owns)
+                    ClearPending();
             }
             else
             {
@@ -228,13 +278,15 @@ internal sealed class BuiltInModelAdoption
     }
 
     /// <summary>
-    /// After a Cancel: an AI switch turned ON meanwhile (the AI page's, during the download) is
-    /// turned off when the built-in models are the provider and no installed one is selected —
-    /// left on, every dictation would fail "No AI model selected" (owner, 2026-10-17). A switch
-    /// that is off, another provider, or an installed model in use is left as it is.
+    /// After a Cancel or a failed download: an AI switch stored ON is REMOVED when the built-in
+    /// models are the provider and no installed one is selected. Never stored OFF, which nobody
+    /// chose and which would stop a later download's adoption (ONB-14).
     /// </summary>
-    internal void SwitchAiOffIfNothingCanServe()
+    internal void RemoveAiOnIfNothingCanServe()
     {
+        // While setup is on screen its Finish decides the switch.
+        if (_setupOpen?.Invoke() == true)
+            return;
         // An active image prompt uses no text model, so a text model's Cancel cannot fail it (Codex r2).
         if (!_settings.GetBool(AppDefaults.AiEnhancementEnabled) || _activePromptIsImage?.Invoke() == true)
             return;
@@ -250,13 +302,16 @@ internal sealed class BuiltInModelAdoption
         var current = _activeBuiltInModel is not null
             ? _activeBuiltInModel() ?? ""
             : _settings.GetString(AppDefaults.AiModelKey(AIProvider.OnThisPc), "");
-        if (!string.IsNullOrEmpty(current) && _isInstalled(current))
+        if (TextModelReadiness.Of(requiresKey: false, key: null, current, builtIn: true,
+                OnThisPcAvailability.IsOffered, _isInstalled) == TextReadiness.Ready)
             return;
-        Logger.Information("Express setup: AI enhancement switched off; its model download was cancelled");
-        _switchAiOff?.Invoke();
+        Logger.Information("Express setup: AI enhancement switch removed; no installed built-in model can serve it");
+        _settings.Remove(AppDefaults.AiEnhancementEnabled);
+        _settings.Flush();
+        _aiSwitchRemoved?.Invoke();
     }
 
-    private void Clear()
+    private void ClearPending()
     {
         _settings.Remove(AppDefaults.ExpressBuiltInPending);
         _settings.Flush();

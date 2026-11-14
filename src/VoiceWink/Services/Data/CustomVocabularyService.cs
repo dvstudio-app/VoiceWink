@@ -34,11 +34,13 @@ public sealed class CustomVocabularyService
     public async Task AddAsync(string word, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(word)) return;
-        var normalizedWord = word.Trim();
 
         using var db = _dbFactory.CreateDbContext();
-        var exists = await db.VocabularyWords.AnyAsync(w => w.Word == normalizedWord, ct).ConfigureAwait(false);
-        if (exists) return;
+        // DCT-3: the seed's and the import's case-insensitive rule, so "openai" beside "OpenAI" adds nothing.
+        var present = await db.VocabularyWords.Select(w => w.Word).ToListAsync(ct).ConfigureAwait(false);
+        var plan = DictionaryMerge.Decide(present, [], [word], []);
+        if (plan.WordsToAdd.Count == 0) return;
+        var normalizedWord = plan.WordsToAdd[0];
 
         db.VocabularyWords.Add(new VocabularyWord { Word = normalizedWord });
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

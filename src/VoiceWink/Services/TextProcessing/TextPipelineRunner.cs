@@ -47,8 +47,7 @@ public sealed class TextPipelineRunner
     /// null and <c>auto</c> both mean "unknown, apply".</param>
     public string Run(string rawText, string? language = null)
     {
-        var text = _outputFilter.Filter(rawText);
-        text = _fillerWordManager.Filter(text, language);
+        var text = MachineClean(rawText, language);
         try
         {
             text = _textFormatter.Format(text);
@@ -89,5 +88,19 @@ public sealed class TextPipelineRunner
             Logger.Warning(ex, "Word replacement failed, continuing with unmodified text");
         }
         return text;
+    }
+
+    /// <summary>The removal-only stages (output filter, then filler words) without the formatter or the user's word replacements — what the trigger-image gate checks, so a leading "um" no longer hides the trigger while a replacement-made trigger still fails (IMG-29).</summary>
+    public string MachineClean(string rawText, string? language = null)
+        => _fillerWordManager.Filter(_outputFilter.Filter(rawText), language);
+
+    /// <summary>The terms plus each term's <see cref="MachineClean"/> form, so a filler cut out of a hint ("C" from "C++") cannot leave a fragment that passes as a new word (IMG-29).</summary>
+    public IReadOnlyList<string> WithMachineCleanedTerms(IReadOnlyList<string> terms, string? language = null)
+    {
+        var all = new List<string>(terms.Count * 2);
+        all.AddRange(terms);
+        foreach (var term in terms)
+            all.Add(MachineClean(term, language));
+        return all;
     }
 }

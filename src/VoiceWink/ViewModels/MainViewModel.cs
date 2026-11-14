@@ -6057,8 +6057,8 @@ public partial class MainViewModel : ObservableObject
                     promptSource, prompt.IsImageGeneration, Helpers.LogValueSanitizer.SingleLine(prompt.Title));
 
             // PRM-4 Option B: a TRIGGER-SELECTED image generation is FAIL-CLOSED — it
-            // fires only when the detected trigger boundary-matches the RAW transcript
-            // AND the raw remainder carries a token outside the hint-word union (a
+            // fires only when the detected trigger boundary-matches the pre-replacement transcript
+            // AND that remainder carries a token outside the hint-word union (a
             // word the recognizer wasn't biased toward = a real description). Blocks a
             // word-replacement-created trigger and hint-fragment echo residue from
             // starting a costly, irreversible generation. Gated on the SOURCE (not
@@ -6069,13 +6069,16 @@ public partial class MainViewModel : ObservableObject
             // that the blocked path arms a gate-bypassing Retry).
             if (prompt?.IsImageGeneration == true && promptSource == Helpers.PromptSource.Trigger &&
                 !skipEchoGates &&
-                !Helpers.TriggerEchoGate.ImageActivationAllowed(rawText, detection.DetectedTriggerWord, hintTerms))
+                // IMG-29: the same filler stage detection saw, without replacements, so a rule-made trigger still fails.
+                !Helpers.TriggerEchoGate.ImageActivationAllowed(
+                    _textPipeline.MachineClean(rawText, requestedLanguage), detection.DetectedTriggerWord,
+                    _textPipeline.WithMachineCleanedTerms(hintTerms, requestedLanguage)))
             {
                 // Intent IS resolved here and it IS an image generation — the refusal means the
                 // transcript looked like echo residue, but a real description is exactly what
                 // the gate could not rule out, so this entry rides the image gate.
                 transcriptionTrace.Resolve(isImagePrompt: true);
-                Logger.Information("Trigger-selected image generation refused — no boundary-valid raw trigger with a real description (likely echo); Retry armed when possible");
+                Logger.Information("Trigger-selected image generation refused — no boundary-valid pre-replacement trigger with a real description (likely echo); Retry armed when possible");
                 HandleBlockedLikelyEcho();
                 return;
             }

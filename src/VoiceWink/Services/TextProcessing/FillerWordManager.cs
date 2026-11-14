@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using Serilog;
 using VoiceWink.Helpers;
@@ -23,9 +24,6 @@ public sealed class FillerWordManager
 {
     private static ILogger Logger => Log.ForContext<FillerWordManager>();
     private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(5);
-
-    private static readonly Regex MultiSpaceRegex = new(@"\s{2,}", RegexOptions.Compiled, RegexTimeout);
-    private static readonly Regex SentenceStartRegex = new(@"(?<=^|[.!?]\s+)[a-z]", RegexOptions.Compiled, RegexTimeout);
 
     private readonly SettingsService _settings;
     private readonly object _regexLock = new();
@@ -129,13 +127,7 @@ public sealed class FillerWordManager
         if (regex == null)
             return text;
 
-        var result = regex.Replace(text, " ");
-
-        // Collapse multiple spaces
-        result = MultiSpaceRegex.Replace(result, " ").Trim();
-
-        // Fix capitalization after removal at sentence start
-        result = SentenceStartRegex.Replace(result, m => m.Value.ToUpperInvariant());
+        var result = TranscriptionOutputFilter.CollapseHorizontalSpace(RemoveFillers(regex, text));
 
         if (result != text.Trim())
         {
@@ -143,6 +135,56 @@ public sealed class FillerWordManager
         }
 
         return result;
+    }
+
+    /// <summary>Removes every filler; only the word after a filler that opened a sentence is capitalised (TRN-94).</summary>
+    private static string RemoveFillers(Regex regex, string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        var capitalizeNext = false;
+        var last = 0;
+        foreach (Match m in regex.Matches(text))
+        {
+            AppendSegment(sb, text.AsSpan(last, m.Index - last), ref capitalizeNext);
+            if (EndsAtSentenceStart(sb))
+                capitalizeNext = true;
+            // A filler before . ! ? goes with no gap ("yes, um." → "yes."); elsewhere a space keeps the words apart.
+            if (!m.Groups["end"].Success)
+                sb.Append(' ');
+            last = m.Index + m.Length;
+        }
+        AppendSegment(sb, text.AsSpan(last), ref capitalizeNext);
+        return sb.ToString();
+    }
+
+    /// <summary>Appends <paramref name="segment"/>, upper-casing its first letter when a removed filler opened the sentence.</summary>
+    private static void AppendSegment(StringBuilder sb, ReadOnlySpan<char> segment, ref bool capitalizeNext)
+    {
+        if (capitalizeNext)
+        {
+            var i = 0;
+            while (i < segment.Length && char.IsWhiteSpace(segment[i]))
+                i++;
+            if (i < segment.Length)
+            {
+                capitalizeNext = false;
+                if (char.IsLower(segment[i]))
+                {
+                    sb.Append(segment[..i]).Append(char.ToUpperInvariant(segment[i]));
+                    segment = segment[(i + 1)..];
+                }
+            }
+        }
+        sb.Append(segment);
+    }
+
+    /// <summary>True when the text so far is empty or ends with . ! ? (trailing whitespace ignored).</summary>
+    private static bool EndsAtSentenceStart(StringBuilder sb)
+    {
+        var i = sb.Length - 1;
+        while (i >= 0 && char.IsWhiteSpace(sb[i]))
+            i--;
+        return i < 0 || sb[i] is '.' or '!' or '?';
     }
 
     private void EnsureRegex(string wordList)
@@ -164,9 +206,9 @@ public sealed class FillerWordManager
             return;
         }
 
-        // Build word-boundary regex: \b(word1|word2)\b with case insensitive
-        var escaped = words.Select(Regex.Escape);
-        var pattern = $@"\b({string.Join("|", escaped)})\b";
+        // Each match takes only the commas and gaps touching that filler, never punctuation elsewhere (TRN-93).
+        var alternation = string.Join("|", words.Select(Regex.Escape));
+        var pattern = $@"(?:[ \t]*,)?[ \t]*\b(?:{alternation})\b[ \t]*(?=[.!?])(?<end>)|\b(?:{alternation})\b[ \t]*,?";
 
         try
         {

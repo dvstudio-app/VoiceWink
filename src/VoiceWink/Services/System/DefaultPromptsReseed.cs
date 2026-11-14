@@ -78,7 +78,9 @@ public static class DefaultPromptsReseed
 
         // Parse raw blobs strictly. A present-but-not-an-array blob is malformed → leave EVERYTHING
         // untouched (never let a save destroy an unreadable-but-recoverable user blob).
-        if (!TryParseArray(settings, AppDefaults.CustomPrompts, promptsPresent, out var promptArr))
+        // ENH-35: an array that does not read as a prompt list (wrong field types, null entries) is malformed too.
+        if (!TryParseArray(settings, AppDefaults.CustomPrompts, promptsPresent, out var promptArr)
+            || (promptArr is { Count: > 0 } && !CustomPrompt.TryReadList(settings.GetString(AppDefaults.CustomPrompts, ""), out _, out _)))
         {
             Logger.Warning("Custom prompts JSON is malformed — default re-seed skipped, blob left intact");
             return;

@@ -62,8 +62,7 @@ public static class SupportBundle
 {
     private static ILogger Logger => Log.ForContext(typeof(SupportBundle));
 
-    /// <summary>Conservative cap on the raw subject+body length to keep the mailto URI within
-    /// the limits common mail clients impose (~2000 chars after URL-encoding).</summary>
+    /// <summary>Cap on the URL-encoded subject+body length, which mail clients limit to ~2000 chars; only the body is trimmed (REL-46).</summary>
     public const int MaxMailtoChars = 1800;
 
     /// <summary>REL-36: names no attachment — the bundle never holds the description, and a mailto may attach nothing.</summary>
@@ -457,7 +456,7 @@ public static class SupportBundle
     }
 
     /// <summary>
-    /// Build a <c>mailto:</c> URI, truncating the body if subject+body would exceed
+    /// Build a <c>mailto:</c> URI, truncating the body if the URL-encoded subject+body would exceed
     /// <see cref="MaxMailtoChars"/> (appending <see cref="OverflowNote"/> so the recipient knows
     /// the text was cut). Subject and body are URL-encoded.
     /// </summary>
@@ -478,14 +477,28 @@ public static class SupportBundle
         body ??= string.Empty;
         tail ??= string.Empty;
 
-        var budget = MaxMailtoChars - subject.Length;
-        if (budget < 0) budget = 0;
-        if (body.Length + tail.Length > budget)
+        // REL-46: measured after escaping — a space escapes to 3 chars, a CJK letter to 9.
+        var budget = MaxMailtoChars - Uri.EscapeDataString(subject).Length;
+        if (body.Length + tail.Length > budget || Uri.EscapeDataString(body + tail).Length > budget)
         {
-            var keep = Math.Max(0, budget - tail.Length - OverflowNote.Length);
-            body = body.Substring(0, Math.Min(body.Length, keep)) + OverflowNote;
+            // Longest whole-character prefix that fits; a char escapes to at least one, so no prefix past the budget can.
+            int lo = 0, hi = Math.Min(body.Length, Math.Max(0, budget));
+            while (lo < hi)
+            {
+                var mid = (lo + hi + 1) / 2;
+                if (Uri.EscapeDataString(TruncatedBody(body, mid) + tail).Length <= budget) lo = mid;
+                else hi = mid - 1;
+            }
+            body = TruncatedBody(body, lo);
         }
 
         return $"mailto:{email}?subject={Uri.EscapeDataString(subject)}&body={Uri.EscapeDataString(body + tail)}";
+    }
+
+    /// <summary>The first <paramref name="keep"/> chars plus the overflow note, never ending on half a surrogate pair.</summary>
+    private static string TruncatedBody(string body, int keep)
+    {
+        if (keep > 0 && char.IsHighSurrogate(body[keep - 1])) keep--;
+        return body.Substring(0, keep) + OverflowNote;
     }
 }

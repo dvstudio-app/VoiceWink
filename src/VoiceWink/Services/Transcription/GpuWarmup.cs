@@ -213,6 +213,9 @@ internal sealed class GpuWarmup
     /// the next preparation.</summary>
     internal static readonly TimeSpan QuiesceConfirmBudget = ParakeetServerPolicy.RetireWait + TimeSpan.FromSeconds(1);
 
+    /// <summary>The warm child's log prefix and TRN-95 exit-stamp label.</summary>
+    internal const string WarmupLabel = "parakeet GPU warm-up";
+
     /// <summary>Publishes <c>_parakeetQueued</c> and <c>_parakeetTask</c> atomically: a
     /// quiesce landing between "flag set" and "task assigned" would await the stale completed
     /// task and return while this run's kill-confirm is still pending — the exact spawn race
@@ -709,6 +712,7 @@ internal sealed class GpuWarmup
         }
         if (mine)
         {
+            ParakeetEphemeralChild.RecordLateConfirm(WarmupLabel); // TRN-95: the resident spawn's trace reads this stamp
             lingering.Child.Dispose();
             if (lingering.MarkOnConfirm is { } marker)
             {
@@ -1595,7 +1599,7 @@ internal sealed class GpuWarmup
         }
 
         var result = await ParakeetEphemeralChild.RunAsync(
-            "parakeet GPU warm-up",
+            WarmupLabel,
             plan.Launcher, plan.Client, plan.ExePath, plan.ExpectedExeSha256, ggufPath,
             ParakeetLaunchMode.Auto,
             (child, baseUri, token) => DecodeWarmShapesAsync(marker, plan, clip, child, baseUri, token),

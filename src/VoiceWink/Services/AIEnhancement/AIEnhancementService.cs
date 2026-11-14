@@ -1503,10 +1503,16 @@ public sealed class AIEnhancementService
         if (!IsEnabled)
             return null;
         var prompt = GetActivePrompt() ?? PredefinedPrompts.Default;
+        return BuiltInModelFor(prompt) is { } model ? (prompt, model) : null;
+    }
+
+    /// <summary>The built-in model a text prompt runs on (its own override first, else the global selection); null when it runs elsewhere.</summary>
+    internal string? BuiltInModelFor(CustomPrompt prompt)
+    {
         if (prompt.IsImageGeneration || EffectiveTextProvider(prompt) != AIProvider.OnThisPc)
             return null;
         var model = ResolveModelForPrompt(prompt);
-        return string.IsNullOrWhiteSpace(model) ? null : (prompt, model);
+        return string.IsNullOrWhiteSpace(model) ? null : model;
     }
 
     /// <summary>The provider a text prompt runs on: its own override first, else the global one.</summary>
@@ -2069,33 +2075,51 @@ public sealed class AIEnhancementService
         if (_cachedPrompts != null)
             return _cachedPrompts;
 
-        var json = _settings.GetString(AppDefaults.CustomPrompts, "");
-        if (string.IsNullOrEmpty(json))
-        {
-            _cachedPrompts = new List<CustomPrompt>(PredefinedPrompts.All);
-            return _cachedPrompts;
-        }
-
-        try
-        {
-            var prompts = global::System.Text.Json.JsonSerializer.Deserialize<List<CustomPrompt>>(json)
-                ?? new List<CustomPrompt>(PredefinedPrompts.All);
-
-            _cachedPrompts = prompts;
-            return _cachedPrompts;
-        }
-        catch
-        {
-            _cachedPrompts = new List<CustomPrompt>(PredefinedPrompts.All);
-            return _cachedPrompts;
-        }
+        return _cachedPrompts = ReadStoredPrompts() ?? new List<CustomPrompt>(PredefinedPrompts.All);
     }
 
     public void SavePrompts(List<CustomPrompt> prompts)
     {
+        ReadStoredPrompts(); // ENH-35: keep an unreadable stored list aside before this write replaces it, cache or not
         var json = global::System.Text.Json.JsonSerializer.Serialize(prompts);
         _settings.SetString(AppDefaults.CustomPrompts, json);
         _cachedPrompts = null; // invalidate cache so next GetPrompts() re-reads
+    }
+
+    /// <summary>ENH-35: the stored list, or null when nothing usable is stored; an unreadable value is copied aside first.</summary>
+    private List<CustomPrompt>? ReadStoredPrompts()
+    {
+        var kind = _settings.GetValueKind(AppDefaults.CustomPrompts);
+        if (kind is global::System.Text.Json.JsonValueKind.Undefined or global::System.Text.Json.JsonValueKind.Null)
+            return null;
+        if (kind != global::System.Text.Json.JsonValueKind.String)
+        {
+            var raw = _settings.Get(AppDefaults.CustomPrompts, default(global::System.Text.Json.JsonElement)).GetRawText();
+            KeepUnreadablePrompts(raw, "not a string");
+            return null;
+        }
+
+        var json = _settings.GetString(AppDefaults.CustomPrompts, "");
+        if (string.IsNullOrEmpty(json))
+            return null;
+        if (CustomPrompt.TryReadList(json, out var prompts, out var failure))
+            return prompts;
+        KeepUnreadablePrompts(json, failure);
+        return null;
+    }
+
+    private string? _reportedUnreadablePrompts;
+
+    // ENH-35: failure kind and length only, never the text (prompt titles are user data, SEC-4).
+    private void KeepUnreadablePrompts(string raw, string failure)
+    {
+        if (_settings.GetString(AppDefaults.CustomPromptsUnreadableCopy, "") != raw)
+            _settings.SetString(AppDefaults.CustomPromptsUnreadableCopy, raw);
+        if (_reportedUnreadablePrompts == raw)
+            return;
+        _reportedUnreadablePrompts = raw;
+        Logger.Warning("Custom prompts could not be read ({Failure}, {JsonLength} chars); the stored text is kept aside",
+            failure, raw.Length);
     }
 
     public CustomPrompt? GetActivePrompt()
@@ -2402,7 +2426,8 @@ public sealed class AIEnhancementService
     {
         var promptClass = Helpers.LocalPromptClassifier.Classify(prompt);
         Func<string, string?>? topLanguage = _languageDetector is { } detector ? detector.TopLanguage : null;
-        var verdict = Helpers.LocalOutputGuard.Check(promptClass, input, output, topLanguage);
+        var targetLanguage = Helpers.LocalPromptClassifier.TargetLanguage(prompt);
+        var verdict = Helpers.LocalOutputGuard.Check(promptClass, input, output, topLanguage, targetLanguage);
         if (verdict == Helpers.LocalOutputVerdict.Pass)
             return;
         if (verdict == Helpers.LocalOutputVerdict.Replaced)
@@ -2421,6 +2446,14 @@ public sealed class AIEnhancementService
             Logger.Warning("AI enhancement not used: the {Provider} reply to a {PromptClass} prompt reads as English where the dictation read as "
                 + "{DictationLanguage}, and kept {KeptWords} of its {DistinctWords} distinct words; the transcription was used unchanged",
                 provider, promptClass, m.DictationLanguage, m.KeptWords, m.DistinctWords);
+        }
+        else if (verdict == Helpers.LocalOutputVerdict.NotInTargetLanguage)
+        {
+            // LAI-19: language tags and counts only — never the reply or the dictation.
+            var m = Helpers.LocalOutputGuard.MeasureTranslation(input, output, topLanguage, targetLanguage);
+            Logger.Warning("AI enhancement not used: the {Provider} reply to a {PromptClass} prompt reads as {ReplyLanguage}, the dictation's language, "
+                + "not {TargetLanguage}, and {NewWords} of its {OutputWords} words are not in the dictation; the transcription was used unchanged",
+                provider, promptClass, m.ReplyLanguage, m.TargetLanguage, m.NewWords, m.ReplyWords);
         }
         else
         {

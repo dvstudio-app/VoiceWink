@@ -30,6 +30,30 @@ internal static class ParakeetEphemeralChild
 {
     private static ILogger Logger => Log.ForContext(typeof(ParakeetEphemeralChild));
 
+    private sealed record ExitStamp(string Label, bool Confirmed, long Tick);
+    private static ExitStamp? s_lastExit;
+
+    /// <summary>TRN-95: the most recent throwaway child's end, as an age, for the resident spawn's health-wait trace.</summary>
+    internal static ParakeetThrowawayExit? LastExit()
+        => Volatile.Read(ref s_lastExit) is { } s
+            ? new ParakeetThrowawayExit(s.Label, s.Confirmed, TimeSpan.FromMilliseconds(Environment.TickCount64 - s.Tick))
+            : null;
+
+    internal static void RecordExit(string label, bool confirmed)
+        => Volatile.Write(ref s_lastExit, new ExitStamp(label, confirmed, Environment.TickCount64));
+
+    /// <summary>TRN-95: a later observer confirmed that child's exit; replaces only its own unconfirmed stamp, never a newer child's.</summary>
+    internal static void RecordLateConfirm(string label)
+    {
+        var current = Volatile.Read(ref s_lastExit);
+        if (current is { Confirmed: false } && current.Label == label)
+        {
+            Interlocked.CompareExchange(ref s_lastExit, new ExitStamp(label, true, Environment.TickCount64), current);
+        }
+    }
+
+    internal static void ResetLastExitForTests() => Volatile.Write(ref s_lastExit, null);
+
     internal enum Outcome
     {
         /// <summary>The provenance gate refused the exe; nothing spawned.</summary>
@@ -108,7 +132,9 @@ internal static class ParakeetEphemeralChild
                 // must never initialize against ~1 GB of dying predecessor. Dispose alone only
                 // closes handles and lets KILL_ON_JOB_CLOSE race the successor.
                 child.Kill();
-                if (child.WaitForExit(ParakeetServerPolicy.RetireWait))
+                var confirmed = child.WaitForExit(ParakeetServerPolicy.RetireWait);
+                RecordExit(label, confirmed);
+                if (confirmed)
                 {
                     child.Dispose();
                 }
@@ -198,7 +224,9 @@ internal static class ParakeetEphemeralChild
                                     LogValueSanitizer.SingleLine(decision.PinnedName ?? "?"),
                                     pin);
                                 child.Kill();
-                                if (!child.WaitForExit(ParakeetServerPolicy.RetireWait))
+                                var exitConfirmed = child.WaitForExit(ParakeetServerPolicy.RetireWait);
+                                RecordExit(label, exitConfirmed);
+                                if (!exitConfirmed)
                                 {
                                     // Hand the UNCONFIRMED child back here and detach it from the finally,
                                     // which would otherwise kill-and-wait it a second time (another

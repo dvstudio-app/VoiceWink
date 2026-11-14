@@ -23,8 +23,8 @@ namespace VoiceWink.Services.Data;
 /// <para><b>Existing installs get the seed once on upgrade</b>, deliberately: no default existed
 /// before this, so there is no earlier deletion an absent row could stand for (the reason the
 /// prompt re-seed treats its first run as a baseline does not apply here). Dedupe is against the
-/// rows actually present, case-insensitively — <c>CustomVocabularyService.AddAsync</c> compares
-/// exact strings, and an install carrying "Openrouter" must not be doubled by "OpenRouter". A
+/// rows actually present, case-insensitively (the rule <c>CustomVocabularyService.AddAsync</c>
+/// also applies since DCT-3) — an install carrying "Openrouter" must not be doubled by "OpenRouter". A
 /// shipped rule arrives WITHOUT the variants a rule of the user's own already matches: the user
 /// has an opinion about those spellings (the owner's "voice wing → VoiceWink", someone's
 /// "deepgram → DeepGram"), and a shipped rule added later in row order would silently win over

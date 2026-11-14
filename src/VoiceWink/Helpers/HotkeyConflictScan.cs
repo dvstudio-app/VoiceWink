@@ -28,7 +28,7 @@ internal readonly record struct HotkeyCollision(
 
     /// <summary>What this collision is called in front of a user.</summary>
     public string Describe() => IsPrompt
-        ? $"enhancement prompt \"{PromptTitle}\""
+        ? $"enhancement \"{PromptTitle}\""
         : HotkeyConflictScan.DescribeRole(Role!.Value);
 }
 

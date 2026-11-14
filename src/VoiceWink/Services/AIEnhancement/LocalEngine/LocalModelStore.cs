@@ -161,7 +161,7 @@ public sealed class LocalModelStore
     /// <summary>
     /// Raised when the user cancels a download, wherever the Cancel came from (the AI page, the
     /// Downloads card, setup's AI step) — on the thread that started it, like progress.
-    /// <see cref="BuiltInModelAdoption"/> turns off an AI switch that would otherwise fail
+    /// <see cref="BuiltInModelAdoption"/> removes an AI switch stored ON that would otherwise fail
     /// (Codex diff r1: a custom-setup download has no Express job watching it).
     /// </summary>
     internal event Action<string>? DownloadCancelled;

@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using VoiceWink.Helpers;
 using VoiceWink.Models.Entities;
 using VoiceWink.Services.Data;
 using VoiceWink.Services.System;
@@ -26,6 +27,9 @@ public partial class DictionaryViewModel : ObservableObject
     [ObservableProperty] private string _newVocabularyWord = "";
     [ObservableProperty] private string _newReplacementOriginal = "";
     [ObservableProperty] private string _newReplacementText = "";
+
+    /// <summary>DCT-5: ids of the rules that form a loop with other rules, refreshed on load and delete; listed, never deleted.</summary>
+    public IReadOnlySet<int> LoopingReplacementIds { get; private set; } = new HashSet<int>();
 
     private readonly ImportExportService? _backup;
 
@@ -68,6 +72,8 @@ public partial class DictionaryViewModel : ObservableObject
         using var db = _dbFactory.CreateDbContext();
         var replacements = await db.WordReplacements.AsNoTracking().ToListAsync();
         replacements.Sort((a, b) => string.Compare(a.OriginalText, b.OriginalText, StringComparison.OrdinalIgnoreCase));
+        // Set before the collection changes, so the page's rebuild reads the set for these rows.
+        LoopingReplacementIds = ReplacementLoops.LoopingRuleIds(replacements.Select(ToRule).ToList());
         WordReplacements.Clear();
         foreach (var r in replacements) WordReplacements.Add(r);
     }
@@ -94,7 +100,7 @@ public partial class DictionaryViewModel : ObservableObject
     [RelayCommand]
     public async Task AddReplacementAsync()
     {
-        if (await AddReplacementAsync(NewReplacementOriginal, NewReplacementText))
+        if ((await AddReplacementAsync(NewReplacementOriginal, NewReplacementText)).Saved)
         {
             NewReplacementOriginal = "";
             NewReplacementText = "";
@@ -102,20 +108,24 @@ public partial class DictionaryViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Add a replacement from the given text. Returns false and writes nothing when a field is
-    /// blank. Takes its inputs as ARGUMENTS on purpose (DCT-2 self-review, lens A): this view model
+    /// Add a replacement from the given text. Writes nothing when a field is blank or the rule
+    /// would loop (DCT-5). Takes its inputs as ARGUMENTS on purpose (DCT-2 self-review, lens A): this view model
     /// is a DI singleton while the page is created per navigation, so text mirrored into
     /// <see cref="NewReplacementOriginal"/> / <see cref="NewReplacementText"/> outlived the page
     /// that typed it — navigate away with the boxes filled (or an edit loaded), come back to empty
     /// boxes, press Add, and a row with the stale text appeared from a visibly empty input. The
     /// page no longer mirrors its boxes into the properties at all.
     /// </summary>
-    public async Task<bool> AddReplacementAsync(string original, string replacementText)
+    public async Task<ReplacementSaveResult> AddReplacementAsync(string original, string replacementText)
     {
         if (string.IsNullOrWhiteSpace(original) || string.IsNullOrWhiteSpace(replacementText))
-            return false;
+            return ReplacementSaveResult.NotSaved;
 
         using var db = _dbFactory.CreateDbContext();
+        var loop = await FindLoopAsync(db, original, replacementText, excludeId: null);
+        if (loop.Count > 0)
+            return new ReplacementSaveResult(false, loop);
+
         db.WordReplacements.Add(new WordReplacement
         {
             OriginalText = original.Trim(),
@@ -125,7 +135,7 @@ public partial class DictionaryViewModel : ObservableObject
         _wordReplacementService.InvalidateCache();
 
         await LoadAsync();
-        return true;
+        return ReplacementSaveResult.Done;
     }
 
     /// <summary>
@@ -133,21 +143,25 @@ public partial class DictionaryViewModel : ObservableObject
     /// toggle and a delete, so changing one variant of a six-variant rule meant retyping the row.
     /// Same validation as <see cref="AddReplacementAsync"/> (both fields non-blank, trimmed), same
     /// cache invalidation, same reload (the list is sorted by original, so an edit may move the
-    /// row). Returns false and changes nothing when a field is blank or the row no longer exists
+    /// row). Changes nothing when a field is blank, the edit would loop (DCT-5) or the row no longer exists
     /// (deleted elsewhere between the edit starting and Save) — the page keeps the boxes filled
     /// so the user's typing is not lost. A plain method rather than a command: the page needs
     /// the verdict to decide whether to leave edit mode. <c>IsEnabled</c> is untouched — editing
     /// a switched-off rule leaves it off.
     /// </summary>
-    public async Task<bool> UpdateReplacementAsync(WordReplacement replacement, string original, string replacementText)
+    public async Task<ReplacementSaveResult> UpdateReplacementAsync(WordReplacement replacement, string original, string replacementText)
     {
         if (string.IsNullOrWhiteSpace(original) || string.IsNullOrWhiteSpace(replacementText))
-            return false;
+            return ReplacementSaveResult.NotSaved;
 
         using var db = _dbFactory.CreateDbContext();
         var entity = await db.WordReplacements.FindAsync(replacement.Id);
         if (entity == null)
-            return false;
+            return ReplacementSaveResult.NotSaved;
+
+        var loop = await FindLoopAsync(db, original, replacementText, excludeId: entity.Id);
+        if (loop.Count > 0)
+            return new ReplacementSaveResult(false, loop);
 
         entity.OriginalText = original.Trim();
         entity.ReplacementText = replacementText.Trim();
@@ -155,8 +169,22 @@ public partial class DictionaryViewModel : ObservableObject
         _wordReplacementService.InvalidateCache();
 
         await LoadAsync();
-        return true;
+        return ReplacementSaveResult.Done;
     }
+
+    /// <summary>DCT-5: the stored rules a new or edited rule would loop through; switched-off rules count, so switching one on needs no check.</summary>
+    private static async Task<IReadOnlyList<WordReplacement>> FindLoopAsync(
+        VoiceWinkDbContext db, string original, string replacementText, int? excludeId)
+    {
+        var rows = await db.WordReplacements.AsNoTracking().ToListAsync();
+        var byId = rows.ToDictionary(r => r.Id);
+        return ReplacementLoops.FindLoop(rows.Select(ToRule), original, replacementText, excludeId)
+            .Select(rule => byId[rule.Id])
+            .Distinct()
+            .ToList();
+    }
+
+    private static ReplacementLoops.Rule ToRule(WordReplacement r) => new(r.Id, r.OriginalText, r.ReplacementText);
 
     [RelayCommand]
     public async Task DeleteReplacementAsync(WordReplacement replacement)
@@ -169,6 +197,9 @@ public partial class DictionaryViewModel : ObservableObject
             await db.SaveChangesAsync();
             _wordReplacementService.InvalidateCache();
         }
+        // A deleted rule may have been the one closing a loop; set before the collection changes.
+        LoopingReplacementIds = ReplacementLoops.LoopingRuleIds(
+            WordReplacements.Where(r => r.Id != replacement.Id).Select(ToRule).ToList());
         WordReplacements.Remove(replacement);
     }
 
@@ -199,4 +230,11 @@ public partial class DictionaryViewModel : ObservableObject
             throw; // Re-throw so the UI layer can show feedback
         }
     }
+}
+
+/// <summary>DCT-5: a save's outcome; <see cref="LoopsWith"/> names the rules a refused rule would loop through.</summary>
+public sealed record ReplacementSaveResult(bool Saved, IReadOnlyList<WordReplacement> LoopsWith)
+{
+    public static ReplacementSaveResult Done { get; } = new(true, []);
+    public static ReplacementSaveResult NotSaved { get; } = new(false, []);
 }

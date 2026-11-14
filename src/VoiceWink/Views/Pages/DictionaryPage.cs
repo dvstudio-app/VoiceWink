@@ -38,6 +38,7 @@ public sealed class DictionaryPage : Page
     private TextBox? _replacementTargetBox;
     private TextBlock? _replacementSubmitLabel;
     private Button? _replacementCancelButton;
+    private TextBlock? _replacementLoopNote; // DCT-5: names the stored rules that loop
     // One submit at a time (Codex + Gemini diff r1): Enter then a click on Add before the
     // database await returned inserted the boxes' text twice. Set for the whole async span.
     private bool _replacementSubmitPending;
@@ -410,12 +411,21 @@ public sealed class DictionaryPage : Page
         inputRow.Children.Add(replBox);
         inputRow.Children.Add(buttons);
 
+        _replacementLoopNote = new TextBlock
+        {
+            FontSize = 13,
+            Foreground = AppTheme.Brush(AppTheme.WarningText),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 12),
+            Visibility = Visibility.Collapsed
+        };
+
         // Replacement items list
         _replacementList = new StackPanel { Spacing = 6 };
 
         var cardContent = new StackPanel
         {
-            Children = { sectionHeader, infoText, inputRow, _replacementList }
+            Children = { sectionHeader, infoText, inputRow, _replacementLoopNote, _replacementList }
         };
 
         return AppTheme.CreateCard(cardContent);
@@ -427,7 +437,7 @@ public sealed class DictionaryPage : Page
 
     /// <summary>Add a new row, or save the row under edit — whichever the input row is in. The
     /// boxes clear only when the write actually happened, so a refused submit (a blank field, a
-    /// row deleted meanwhile) never throws the user's typing away.</summary>
+    /// rule that would loop, a row deleted meanwhile) never throws the user's typing away.</summary>
     private async Task SubmitReplacementAsync()
     {
         if (_replacementOriginalBox == null || _replacementTargetBox == null) return;
@@ -443,13 +453,17 @@ public sealed class DictionaryPage : Page
                 // A pencil clicked on another row while this save was in flight has already
                 // moved the edit there; this continuation must not end THAT edit (lens A).
                 var stillThisEdit = ReferenceEquals(_editingReplacement, editing);
-                if (saved)
+                if (saved.Saved)
                 {
                     if (stillThisEdit) EndEditReplacement(clearBoxes: true);
                 }
+                else if (saved.LoopsWith.Count > 0)
+                {
+                    ShowLoopRefusal(saved.LoopsWith);
+                }
                 else if (string.IsNullOrWhiteSpace(_replacementOriginalBox.Text) || string.IsNullOrWhiteSpace(_replacementTargetBox.Text))
                 {
-                    // The view model refuses for exactly two reasons; a blank field is the first.
+                    // The two other refusals: a blank field is the first.
                     _statusMessage?.Show("Both fields are needed to save the replacement.");
                 }
                 else
@@ -471,10 +485,14 @@ public sealed class DictionaryPage : Page
             if (_isUnloaded) return;
             // Clear only if no pencil was clicked while the add was in flight — the boxes would
             // then hold the row just loaded for editing, not the text just added (Gemini diff r1).
-            if (added && _editingReplacement == null)
+            if (added.Saved && _editingReplacement == null)
             {
                 _replacementOriginalBox.Text = "";
                 _replacementTargetBox.Text = "";
+            }
+            else if (added.LoopsWith.Count > 0)
+            {
+                ShowLoopRefusal(added.LoopsWith);
             }
         }
         catch (Exception ex)
@@ -491,6 +509,13 @@ public sealed class DictionaryPage : Page
             _replacementSubmitPending = false;
         }
     }
+
+    /// <summary>DCT-5: a refused rule keeps the boxes filled; the message names the rules it loops through.</summary>
+    private void ShowLoopRefusal(IReadOnlyList<Models.Entities.WordReplacement> loopsWith)
+        => _statusMessage?.Show($"Not saved: loops with {DescribeRules(loopsWith)}.", durationMs: 8000);
+
+    private static string DescribeRules(IEnumerable<Models.Entities.WordReplacement> rules)
+        => string.Join(", ", rules.Select(r => $"\"{r.OriginalText} → {r.ReplacementText}\""));
 
     /// <summary>Load a row into the input boxes and switch the row to Save / Cancel. Starting
     /// an edit while another is open simply moves the edit — nothing was written yet.</summary>
@@ -573,6 +598,13 @@ public sealed class DictionaryPage : Page
     {
         if (_replacementList == null) return;
         _replacementList.Children.Clear();
+
+        if (_replacementLoopNote != null)
+        {
+            var looping = _viewModel.WordReplacements.Where(r => _viewModel.LoopingReplacementIds.Contains(r.Id)).ToList();
+            _replacementLoopNote.Text = looping.Count > 0 ? $"These rules loop: {DescribeRules(looping)}." : "";
+            _replacementLoopNote.Visibility = looping.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
 
         if (_viewModel.WordReplacements.Count == 0)
         {

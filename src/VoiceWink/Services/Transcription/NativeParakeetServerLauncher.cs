@@ -123,7 +123,7 @@ public sealed class NativeParakeetServerLauncher : IParakeetServerLauncher
             {
                 observation.Observe(line);
                 OnDeviceLine(pid, line);
-            }));
+            }, observation.OnRawLine));
         return handle is null ? null : new NativeChild(handle, observation);
     }
 
@@ -174,8 +174,31 @@ public sealed class NativeParakeetServerLauncher : IParakeetServerLauncher
         private volatile int _observedDeviceCount = -1;
         private readonly object _observeLock = new();
         private readonly List<GgmlVulkanDeviceLine> _devices = [];
+        // TRN-95: output timing on TickCount64; a torn read across the fields only blurs a diagnostic.
+        private int _rawLines;
+        private long _lastRawLineTick;
+        private int _lastDeviceKind = -1;
+        private long _lastDeviceTick;
 
         public string? ObservedBackend => _observedBackend;
+
+        public void OnRawLine()
+        {
+            Volatile.Write(ref _lastRawLineTick, Environment.TickCount64); // tick first: a count without its tick reads as uptime
+            Interlocked.Increment(ref _rawLines);
+        }
+
+        public ParakeetChildOutputTrace OutputTrace
+        {
+            get
+            {
+                var lines = Volatile.Read(ref _rawLines);
+                var lineTick = Volatile.Read(ref _lastRawLineTick);
+                var kind = Volatile.Read(ref _lastDeviceKind);
+                var deviceTick = Volatile.Read(ref _lastDeviceTick);
+                return ParakeetChildOutputTrace.From(lines, lineTick, kind, deviceTick, Environment.TickCount64); // TRN-95: now read last
+            }
+        }
         public string? ObservedGpuName => _observedGpuName;
         public int ObservedDeviceCount => _observedDeviceCount;
 
@@ -194,6 +217,8 @@ public sealed class NativeParakeetServerLauncher : IParakeetServerLauncher
         /// rows on a byte-mode pipe, so the name is (re)resolved on both.</summary>
         public void Observe(GgmlVulkanDeviceLine line)
         {
+            Volatile.Write(ref _lastDeviceTick, Environment.TickCount64);
+            Volatile.Write(ref _lastDeviceKind, (int)line.Kind);
             lock (_observeLock)
             {
                 switch (line.Kind)
@@ -236,6 +261,7 @@ public sealed class NativeParakeetServerLauncher : IParakeetServerLauncher
         public string? ObservedBackend => observation.ObservedBackend;
         public string? ObservedGpuName => observation.ObservedGpuName;
         public int ObservedDeviceCount => observation.ObservedDeviceCount;
+        public ParakeetChildOutputTrace? OutputTrace => observation.OutputTrace;
 
         /// <summary>TRN-68: a snapshot of the device rows this child printed, in pipe order —
         /// parsed fields only, bounded by the parser. The adapter decision reads these together

@@ -22,6 +22,9 @@ public sealed class ClipboardService
     // PasteRestoreMaintenanceSource so the update/reset gate waits for an in-flight restore.
     private int _pendingRestores;
 
+    // PST-19: the newest scheduled restore, borrowed by a paste inside its delay. Touched under _writeLease.
+    private readonly PendingClipboardRestore _pendingRestore = new();
+
     // IMG-BG (2026-07-16): serializes every in-process clipboard MUTATION flow. Until image
     // generation was backgrounded exactly one paste/copy could be in flight at a time (the
     // recording state machine serialized them); now a background job's image copy can overlap a
@@ -99,54 +102,6 @@ public sealed class ClipboardService
     }
 
     /// <summary>
-    /// Try to open the clipboard with retries and exponential backoff.
-    /// OpenClipboard fails when another process holds it (e.g. clipboard managers, RDP).
-    /// </summary>
-    private static bool TryOpenClipboard(int maxRetries = 3)
-    {
-        int lastError = 0;
-        for (int i = 0; i < maxRetries; i++)
-        {
-            if (NativeInterop.OpenClipboard(IntPtr.Zero)) return true;
-            // Read before the sleep: any later Win32 call may overwrite it.
-            lastError = Marshal.GetLastWin32Error();
-            global::System.Threading.Thread.Sleep(50 * (i + 1));
-        }
-
-        // Name the contender so clipboard contention is attributable (RDP bridges,
-        // clipboard managers, Office apps) instead of reading as an API flake.
-        try
-        {
-            var owner = NativeInterop.GetClipboardOwner();
-            NativeInterop.GetWindowThreadProcessId(owner, out var ownerPid);
-            string ownerName = "";
-            if (ownerPid != 0)
-            {
-                try
-                {
-                    using var p = global::System.Diagnostics.Process.GetProcessById((int)ownerPid);
-                    ownerName = p.ProcessName;
-                }
-                catch { /* process exited / access denied */ }
-            }
-            // SEC-3: this is the clipboard OWNER's process name — the exact value {OwnerProcess}
-            // and the `ownerProc="…"` rendered token already exist for, on the allowlist since
-            // REL-16. It was logged under the generic {Name} with a `process="…"` token, so BOTH
-            // redaction layers missed it. Reuse the established contract rather than adding a
-            // third spelling; a quoted shape is safe here because a Windows process name cannot
-            // contain a quote (unlike the device names above, which is why those use EOL).
-            Logger.Warning(
-                "OpenClipboard failed after {Retries} retries (win32 error {Win32Error}); clipboard owner=0x{Owner:X} pid={Pid} ownerProc=\"{OwnerProcess}\"",
-                maxRetries, lastError, owner, ownerPid, global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(ownerName));
-        }
-        catch (Exception ex)
-        {
-            Logger.Debug(ex, "Clipboard-owner diagnostic failed");
-        }
-        return false;
-    }
-
-    /// <summary>
     /// Value-based clipboard snapshot. Captures raw bytes for each clipboard format
     /// so the data survives clipboard ownership changes (unlike OLE IDataObject references
     /// which are invalidated when another process sets the clipboard).
@@ -184,7 +139,7 @@ public sealed class ClipboardService
                 return false;
             }
 
-            if (!TryOpenClipboard())
+            if (!ClipboardAccess.TryOpen())
             {
                 return false;
             }
@@ -195,7 +150,7 @@ public sealed class ClipboardService
             }
             finally
             {
-                NativeInterop.CloseClipboard();
+                ClipboardAccess.Close();
             }
         }
 
@@ -206,7 +161,12 @@ public sealed class ClipboardService
         /// </summary>
         public bool RestoreUnderOpenClipboard()
         {
-            NativeInterop.EmptyClipboard();
+            // PST-22: a clipboard that was not emptied is not ours to write; shortcut: no 1418 retry here, add one if restores are seen failing.
+            if (!NativeInterop.EmptyClipboard())
+            {
+                Log.ForContext<ClipboardService>().Warning("EmptyClipboard failed for restore (win32 error {Win32Error})", Marshal.GetLastWin32Error());
+                return false;
+            }
 
             if (IsEmpty)
             {
@@ -262,6 +222,23 @@ public sealed class ClipboardService
             if (NativeInterop.SetClipboardData(format, hGlobal) != IntPtr.Zero) return true;
             NativeInterop.GlobalFree(hGlobal);
             return false;
+        }
+
+        /// <summary>PST-19: the captured CF_UNICODETEXT up to its first NUL (as PtrToStringUni reads it); null when absent.</summary>
+        internal string? UnicodeText
+        {
+            get
+            {
+                if (_formats == null) return null;
+                foreach (var (format, data) in _formats)
+                {
+                    if (format != NativeInterop.CF_UNICODETEXT) continue;
+                    var text = global::System.Text.Encoding.Unicode.GetString(data, 0, data.Length & ~1);
+                    var nul = text.IndexOf('\0');
+                    return nul < 0 ? text : text[..nul];
+                }
+                return null;
+            }
         }
 
         public void Dispose()
@@ -356,9 +333,14 @@ public sealed class ClipboardService
         return presentMarkers.All(captured.Contains);
     }
 
-    /// <summary>One registered format set to a DWORD 0. Call only with the clipboard open.</summary>
-    private static bool SetDwordZeroUnderOpenClipboard(uint format)
+    /// <summary>PST-19: true when the clipboard offered CF_UNICODETEXT and the capture did not get it.</summary>
+    internal static bool SnapshotLostText(bool textAdvertised, IEnumerable<uint> capturedFormats)
+        => textAdvertised && !capturedFormats.Contains(NativeInterop.CF_UNICODETEXT);
+
+    /// <summary>One registered format set to a DWORD 0. Call only with the clipboard open. <paramref name="win32Error"/> is 0 for an allocation failure (never retried).</summary>
+    private static bool SetDwordZeroUnderOpenClipboard(uint format, out int win32Error)
     {
+        win32Error = 0;
         var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)sizeof(int));
         var ptr = hGlobal == IntPtr.Zero ? IntPtr.Zero : NativeInterop.GlobalLock(hGlobal);
         if (ptr == IntPtr.Zero)
@@ -371,8 +353,8 @@ public sealed class ClipboardService
         }
         Marshal.WriteInt32(ptr, 0);
         NativeInterop.GlobalUnlock(hGlobal);
-        // SetClipboardHandle logs a SetClipboardData failure with its own error code.
-        return SetClipboardHandle(format, hGlobal, "history marker");
+        // SetHandle logs a SetClipboardData failure with its own error code.
+        return ClipboardAccess.SetHandle(format, hGlobal, "history marker", out win32Error);
     }
 
     /// <summary>
@@ -381,7 +363,12 @@ public sealed class ClipboardService
     /// marks text VoiceWink pastes, or leaves in place of a paste (A42 D4).
     /// </summary>
     private bool SetClipboardCoreUnderLease(string text, bool excludeFromHistory)
+        => SetClipboardCoreUnderLease(text, excludeFromHistory, out _);
+
+    /// <param name="clipboardEmptied">PST-19: true once this write emptied the clipboard, so a failure after it changed the clipboard.</param>
+    private bool SetClipboardCoreUnderLease(string text, bool excludeFromHistory, out bool clipboardEmptied)
     {
+        clipboardEmptied = false;
         try
         {
             uint[]? markers = null;
@@ -389,48 +376,12 @@ public sealed class ClipboardService
                 && (markers = RegisterHistoryExclusionFormats(NativeInterop.RegisterClipboardFormat)) is null)
                 return false;
 
-            if (!TryOpenClipboard())
-            {
-                Logger.Warning("Failed to open clipboard after retries");
-                return false;
-            }
+            var bytes = global::System.Text.Encoding.Unicode.GetBytes(text + "\0");
 
-            try
-            {
-                NativeInterop.EmptyClipboard();
-
-                // A42 D4: the markers go on FIRST and must all succeed, so the text is never published
-                // unmarked (fail closed). A snapshot restore puts captured markers back with the rest,
-                // because CaptureSnapshotCore keeps every HGLOBAL format.
-                if (markers is not null && !TrySetHistoryExclusionMarkers(markers, SetDwordZeroUnderOpenClipboard))
-                    return false;
-
-                var bytes = global::System.Text.Encoding.Unicode.GetBytes(text + "\0");
-                var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)bytes.Length);
-                if (hGlobal == IntPtr.Zero)
-                {
-                    Logger.Warning("GlobalAlloc failed (win32 error {Win32Error}, {Bytes} bytes)",
-                        Marshal.GetLastWin32Error(), bytes.Length);
-                    return false;
-                }
-
-                var ptr = NativeInterop.GlobalLock(hGlobal);
-                if (ptr == IntPtr.Zero)
-                {
-                    var lockError = Marshal.GetLastWin32Error();
-                    NativeInterop.GlobalFree(hGlobal);
-                    Logger.Warning("GlobalLock failed (win32 error {Win32Error}, {Bytes} bytes)", lockError, bytes.Length);
-                    return false;
-                }
-
-                Marshal.Copy(bytes, 0, ptr, bytes.Length);
-                NativeInterop.GlobalUnlock(hGlobal);
-                return SetClipboardHandle(NativeInterop.CF_UNICODETEXT, hGlobal, "text");
-            }
-            finally
-            {
-                NativeInterop.CloseClipboard();
-            }
+            // PST-22: open → empty → markers → text, the whole sequence run once more on a 1418 refusal.
+            // PST-19: new text replaces the pending paste's, so its restore must not land over it.
+            return ClipboardAccess.RunWrite(ClipboardAccess.Native, "text", onEmptied: _pendingRestore.Clear,
+                () => WriteTextUnderOpenClipboard(bytes, markers), out clipboardEmptied);
         }
         catch (Exception ex)
         {
@@ -442,6 +393,40 @@ public sealed class ClipboardService
         }
     }
 
+    /// <summary>The markers (when given) then the UTF-16 text, on a clipboard this thread opened and emptied.</summary>
+    private static ClipboardWriteStep WriteTextUnderOpenClipboard(byte[] bytes, uint[]? markers)
+    {
+        // A42 D4: the markers go on FIRST and must all succeed, so the text is never published
+        // unmarked (fail closed). A snapshot restore puts captured markers back with the rest,
+        // because CaptureSnapshotCore keeps every HGLOBAL format.
+        var markerError = 0;
+        if (markers is not null && !TrySetHistoryExclusionMarkers(markers, f => SetDwordZeroUnderOpenClipboard(f, out markerError)))
+            return ClipboardWriteStep.Failed(markerError);
+
+        var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)bytes.Length);
+        if (hGlobal == IntPtr.Zero)
+        {
+            Logger.Warning("GlobalAlloc failed (win32 error {Win32Error}, {Bytes} bytes)",
+                Marshal.GetLastWin32Error(), bytes.Length);
+            return ClipboardWriteStep.Failed(0);
+        }
+
+        var ptr = NativeInterop.GlobalLock(hGlobal);
+        if (ptr == IntPtr.Zero)
+        {
+            var lockError = Marshal.GetLastWin32Error();
+            NativeInterop.GlobalFree(hGlobal);
+            Logger.Warning("GlobalLock failed (win32 error {Win32Error}, {Bytes} bytes)", lockError, bytes.Length);
+            return ClipboardWriteStep.Failed(0);
+        }
+
+        Marshal.Copy(bytes, 0, ptr, bytes.Length);
+        NativeInterop.GlobalUnlock(hGlobal);
+        return ClipboardAccess.SetHandle(NativeInterop.CF_UNICODETEXT, hGlobal, "text", out var textError)
+            ? ClipboardWriteStep.Succeeded
+            : ClipboardWriteStep.Failed(textError);
+    }
+
     /// <summary>
     /// Get clipboard text.
     /// </summary>
@@ -449,7 +434,7 @@ public sealed class ClipboardService
     {
         try
         {
-            if (!TryOpenClipboard())
+            if (!ClipboardAccess.TryOpen())
                 return null;
 
             try
@@ -458,7 +443,7 @@ public sealed class ClipboardService
             }
             finally
             {
-                NativeInterop.CloseClipboard();
+                ClipboardAccess.Close();
             }
         }
         catch (Exception ex)
@@ -527,54 +512,47 @@ public sealed class ClipboardService
                 () => Helpers.ClipboardDibConverter.ConvertAsync(imageBytes)).ConfigureAwait(false);
             var (dibBytes, width, height) = (dib.Bytes, dib.Width, dib.Height);
 
-            // Clipboard operations must happen on the calling thread
-            if (!TryOpenClipboard())
-            {
-                Logger.Warning("Failed to open clipboard for image after retries");
+            // Clipboard operations must happen on the calling thread.
+            // PST-19: the image replaces the pending paste's text too.
+            if (!ClipboardAccess.RunWrite(ClipboardAccess.Native, "image", onEmptied: _pendingRestore.Clear,
+                    () => WriteImageUnderOpenClipboard(dibBytes), out _))
                 return false;
-            }
 
-            try
-            {
-                NativeInterop.EmptyClipboard();
-
-                var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)dibBytes.Length);
-                if (hGlobal == IntPtr.Zero)
-                {
-                    Logger.Warning("GlobalAlloc failed for image");
-                    return false;
-                }
-
-                var ptr = NativeInterop.GlobalLock(hGlobal);
-                if (ptr == IntPtr.Zero)
-                {
-                    NativeInterop.GlobalFree(hGlobal);
-                    return false;
-                }
-
-                Marshal.Copy(dibBytes, 0, ptr, dibBytes.Length);
-                NativeInterop.GlobalUnlock(hGlobal);
-                if (!SetClipboardHandle(NativeInterop.CF_DIB, hGlobal, "image"))
-                {
-                    return false;
-                }
-
-                // seq= best-effort-tags this write for REL-16 probe correlation (manual —
-                // a text attempt's verdict line is matched against this by hand in the log).
-                Logger.Information("Image set on clipboard ({Width}x{Height}, {Size} bytes DIB, seq={Seq})",
-                    width, height, dibBytes.Length, SafeClipboardSequence());
-                return true;
-            }
-            finally
-            {
-                NativeInterop.CloseClipboard();
-            }
+            // seq= best-effort-tags this write for REL-16 probe correlation (manual —
+            // a text attempt's verdict line is matched against this by hand in the log).
+            Logger.Information("Image set on clipboard ({Width}x{Height}, {Size} bytes DIB, seq={Seq})",
+                width, height, dibBytes.Length, SafeClipboardSequence());
+            return true;
         }
         catch (Exception ex)
         {
             Logger.Error(ex, "Failed to set clipboard image");
             return false;
         }
+    }
+
+    /// <summary>The CF_DIB image, on a clipboard this thread opened and emptied.</summary>
+    private static ClipboardWriteStep WriteImageUnderOpenClipboard(byte[] dibBytes)
+    {
+        var hGlobal = NativeInterop.GlobalAlloc(NativeInterop.GMEM_MOVEABLE, (UIntPtr)dibBytes.Length);
+        if (hGlobal == IntPtr.Zero)
+        {
+            Logger.Warning("GlobalAlloc failed for image");
+            return ClipboardWriteStep.Failed(0);
+        }
+
+        var ptr = NativeInterop.GlobalLock(hGlobal);
+        if (ptr == IntPtr.Zero)
+        {
+            NativeInterop.GlobalFree(hGlobal);
+            return ClipboardWriteStep.Failed(0);
+        }
+
+        Marshal.Copy(dibBytes, 0, ptr, dibBytes.Length);
+        NativeInterop.GlobalUnlock(hGlobal);
+        return ClipboardAccess.SetHandle(NativeInterop.CF_DIB, hGlobal, "image", out var error)
+            ? ClipboardWriteStep.Succeeded
+            : ClipboardWriteStep.Failed(error);
     }
 
     /// <summary>
@@ -942,10 +920,16 @@ public sealed class ClipboardService
     {
         var shouldRestore = _settings.GetBool(AppDefaults.RestoreClipboardAfterPaste, false);
         ClipboardSnapshot? savedClipboard = null;
+        ClipboardSnapshot? fresh = null;
 
         if (shouldRestore)
         {
-            savedClipboard = await CaptureSnapshotAsync().ConfigureAwait(false);
+            // PST-19: keep a pending restore's original (shared safely: ClipboardSnapshot.Dispose is a no-op).
+            fresh = await CaptureSnapshotAsync().ConfigureAwait(false);
+            savedClipboard = _pendingRestore.ChooseOriginal(fresh);
+            if (savedClipboard != null && !ReferenceEquals(savedClipboard, fresh))
+                Logger.Debug("Clipboard restore: keeping the original from the pending restore (fresh capture {Captured})",
+                    fresh != null ? "matched the earlier paste" : "failed");
             if (savedClipboard == null)
             {
                 Logger.Warning("Clipboard backup failed; original clipboard contents may not be restorable");
@@ -954,13 +938,14 @@ public sealed class ClipboardService
 
         // The clipboard is set BEFORE any target gate below, so every gated exit keeps the
         // "text left on clipboard for manual Ctrl+V" guarantee.
-        if (!SetClipboardCoreUnderLease(text, excludeFromHistory: true))
+        if (!SetClipboardCoreUnderLease(text, excludeFromHistory: true, out var clipboardEmptied))
         {
             // One event per run: the lines above name the cause, and a PC that refuses every
             // clipboard write would otherwise file one Sentry event per dictation.
             Logger.Write(global::VoiceWink.Helpers.SessionErrorBudget.LevelFor("clipboard-set"),
                 "Failed to set clipboard for paste");
-            if (savedClipboard != null)
+            // PST-19: roll back only a clipboard this write emptied; one it never opened still holds what it held.
+            if (savedClipboard != null && clipboardEmptied)
             {
                 try
                 {
@@ -1323,7 +1308,8 @@ public sealed class ClipboardService
                 var restoreDelay = _settings.GetDouble(AppDefaults.ClipboardRestoreDelay, 2.0);
                 restoreDelay = Math.Max(restoreDelay, 0.25);
 
-                _ = RestoreSnapshotAfterDelayAsync(savedClipboard, TimeSpan.FromSeconds(restoreDelay), text);
+                var restoreId = _pendingRestore.Park(savedClipboard, text);
+                _ = RestoreSnapshotAfterDelayAsync(restoreId, savedClipboard, TimeSpan.FromSeconds(restoreDelay), text);
                 savedClipboard = null; // transfer ownership — do not dispose in finally
             }
 
@@ -2154,24 +2140,9 @@ public sealed class ClipboardService
         }
     }
 
-    private static bool SetClipboardHandle(uint format, IntPtr handle, string description)
-    {
-        var result = NativeInterop.SetClipboardData(format, handle);
-        if (result != IntPtr.Zero)
-        {
-            // After SetClipboardData succeeds, the system owns the handle.
-            return true;
-        }
-
-        var error = Marshal.GetLastWin32Error();
-        NativeInterop.GlobalFree(handle);
-        Logger.Warning("SetClipboardData failed for {Description}, Win32={Error}", description, error);
-        return false;
-    }
-
     private static bool ClearClipboardContents()
     {
-        if (!TryOpenClipboard())
+        if (!ClipboardAccess.TryOpen())
         {
             return false;
         }
@@ -2182,7 +2153,7 @@ public sealed class ClipboardService
         }
         finally
         {
-            NativeInterop.CloseClipboard();
+            ClipboardAccess.Close();
         }
     }
 
@@ -2195,7 +2166,7 @@ public sealed class ClipboardService
                 return ClipboardSnapshot.Empty;
             }
 
-            if (!TryOpenClipboard())
+            if (!ClipboardAccess.TryOpen())
             {
                 Logger.Warning("Failed to open clipboard for snapshot capture");
                 return null;
@@ -2209,6 +2180,7 @@ public sealed class ClipboardService
                 var markers = RegisterHistoryExclusionFormats(NativeInterop.RegisterClipboardFormat);
                 if (markers is null) return null;
                 var presentMarkers = markers.Where(NativeInterop.IsClipboardFormatAvailable).ToArray();
+                var textAdvertised = NativeInterop.IsClipboardFormatAvailable(NativeInterop.CF_UNICODETEXT);
 
                 // Standard formats that return GDI/OS handles instead of HGLOBAL.
                 // Calling GlobalLock on these causes a native access violation.
@@ -2251,6 +2223,13 @@ public sealed class ClipboardService
                     }
                 }
 
+                // PST-19: a snapshot missing the text the clipboard holds would read as "the clipboard changed".
+                if (SnapshotLostText(textAdvertised, formats.Select(f => f.format)))
+                {
+                    Logger.Warning("Clipboard snapshot: the clipboard text could not be captured; no snapshot");
+                    return null;
+                }
+
                 if (formats.Count == 0)
                 {
                     Logger.Debug("Clipboard snapshot: no formats captured (all had zero-size handles)");
@@ -2268,7 +2247,7 @@ public sealed class ClipboardService
             }
             finally
             {
-                NativeInterop.CloseClipboard();
+                ClipboardAccess.Close();
             }
         }
         catch (Exception ex)
@@ -2297,7 +2276,7 @@ public sealed class ClipboardService
         }
     }
 
-    private async Task RestoreSnapshotAfterDelayAsync(ClipboardSnapshot snapshot, TimeSpan delay, string pastedText)
+    private async Task RestoreSnapshotAfterDelayAsync(long restoreId, ClipboardSnapshot snapshot, TimeSpan delay, string pastedText)
     {
         global::System.Threading.Interlocked.Increment(ref _pendingRestores);
         try
@@ -2313,6 +2292,13 @@ public sealed class ClipboardService
             bool? restored;
             try
             {
+                // PST-19: a later paste took this original over; its own restore puts it back.
+                if (!_pendingRestore.TryClaim(restoreId))
+                {
+                    Logger.Debug("Clipboard restore handed to a later paste");
+                    return;
+                }
+
                 restored = await RunOnMainDispatcherAsync(() => CompareAndRestoreCoreUnderLease(snapshot, pastedText))
                     .ConfigureAwait(false);
             }
@@ -2348,7 +2334,7 @@ public sealed class ClipboardService
     /// </summary>
     private static bool? CompareAndRestoreCoreUnderLease(ClipboardSnapshot snapshot, string pastedText)
     {
-        if (!TryOpenClipboard())
+        if (!ClipboardAccess.TryOpen())
             return false;
 
         try
@@ -2366,7 +2352,7 @@ public sealed class ClipboardService
         }
         finally
         {
-            NativeInterop.CloseClipboard();
+            ClipboardAccess.Close();
         }
     }
 

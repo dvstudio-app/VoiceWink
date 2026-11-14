@@ -21,22 +21,36 @@ internal sealed record LocalModelFile(
     string Sha256,
     string UpstreamUrl);
 
+/// <summary>LAI-19: how many of a model's measured replies were bad or refused.</summary>
+internal readonly record struct LocalModelBad(int Failed, int Of);
+
+/// <summary>LAI-19: a model's bad or refused benchmark replies per shipped prompt class.</summary>
+internal sealed record LocalModelBadRates(LocalModelBad Cleanup, LocalModelBad EmailChat, LocalModelBad Translate, LocalModelBad Assistant);
+
 /// <summary>One catalog model: the GGUF, its licence file, what the tier recommendation needs, and
 /// its Accuracy / Speed stars (1-5, the Models page's scale).</summary>
-/// <remarks><b>Where the stars come from</b> (the local AI plan's bench, `30-claude-revised-plan.md`,
-/// one desktop, the owner's 40-case dictation corpus, the shipped envelope): Accuracy follows the
-/// pass score — Gemma 4 12B 40/40 (★5), Qwen3.5 9B 37/40 (★5), Qwen3.5 4B 35/40 (★4), Qwen3.5 2B 28/40 (★3). Speed follows
+/// <remarks><b>Where the stars come from.</b> Accuracy and <c>BadRates</c> (LAI-19): the enhancement
+/// benchmark's two desktop runs of 2026-11-11 and 2026-11-12 (<c>tools/VoiceWink.AsrBench/enhancement/results/</c>,
+/// labels baseline-v2 and post-w3). A refused reply counts as bad, and so does an e-mail left as one
+/// block where the benchmark expects paragraphs. <c>BadRates</c>: Improve Transcription on the held-out
+/// cases of both runs; E-mail and Chat, and Assistant, on every case of both runs (their held-out sets
+/// are too small); translation on every case of the later run (the output guard changed between them).
+/// Accuracy bands the share of good held-out replies of the later run across every shipped prompt: 95%
+/// and up ★5 (where the best cloud models measured, and no built-in model; owner 2026-11-12), 80% ★4,
+/// 70% ★3, 60% ★2 — Gemma 4 12B 92%, Qwen3.5 9B 76%, Qwen3.5 4B 68%, Qwen3.5 2B 52%. Speed (the local
+/// AI plan's bench, one desktop) follows
 /// the measured cleanup times, relative to one another — the 2B about twice as fast as the 4B on the
 /// same CPU (★5 / ★4), the 9B between the 4B and the 12B on a graphics card (★3), and the 12B two to
 /// five times slower than the 4B on the same graphics card (★2).
-/// A model or engine change re-runs the bench and revisits these. No language is named: the bench
-/// measured four, and the per-language line waits for more (owner decision 2026-09-30).</remarks>
+/// A model or engine change re-runs the bench and revisits these. No language is named (owner
+/// decisions 2026-09-30 and 2026-11-12).</remarks>
 internal sealed record LocalModelEntry(
     string Id,
     string DisplayName,
     LocalModelTier Tier,
     int Accuracy,
     int Speed,
+    LocalModelBadRates BadRates,
     string Licence,
     LocalModelFile Model,
     LocalModelFile LicenceFile,
@@ -85,8 +99,9 @@ internal static class LocalModelCatalog
         Id: "qwen3.5-2b-q4km",
         DisplayName: "Qwen3.5 2B",
         Tier: LocalModelTier.Light,
-        Accuracy: 3,
+        Accuracy: 1,
         Speed: 5,
+        BadRates: new(Cleanup: new(231, 426), EmailChat: new(114, 360), Translate: new(111, 225), Assistant: new(32, 180)),
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "Qwen3.5-2B-Q4_K_M.gguf",
@@ -106,8 +121,9 @@ internal static class LocalModelCatalog
         Id: "qwen3.5-4b-q4km",
         DisplayName: "Qwen3.5 4B",
         Tier: LocalModelTier.Standard,
-        Accuracy: 4,
+        Accuracy: 2,
         Speed: 4,
+        BadRates: new(Cleanup: new(158, 426), EmailChat: new(55, 360), Translate: new(77, 225), Assistant: new(6, 180)),
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "Qwen3.5-4B-Q4_K_M.gguf",
@@ -130,8 +146,9 @@ internal static class LocalModelCatalog
         Id: "qwen3.5-9b-q4km",
         DisplayName: "Qwen3.5 9B",
         Tier: LocalModelTier.Large,
-        Accuracy: 5,
+        Accuracy: 3,
         Speed: 3,
+        BadRates: new(Cleanup: new(112, 426), EmailChat: new(45, 360), Translate: new(62, 225), Assistant: new(1, 180)),
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "Qwen3.5-9B-Q4_K_M.gguf",
@@ -151,8 +168,9 @@ internal static class LocalModelCatalog
         Id: "gemma-4-12b-qat",
         DisplayName: "Gemma 4 12B",
         Tier: LocalModelTier.Best,
-        Accuracy: 5,
+        Accuracy: 4,
         Speed: 2,
+        BadRates: new(Cleanup: new(46, 426), EmailChat: new(10, 360), Translate: new(7, 225), Assistant: new(0, 180)),
         Licence: "Apache-2.0",
         Model: new LocalModelFile(
             "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",

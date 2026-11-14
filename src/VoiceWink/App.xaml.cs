@@ -919,22 +919,29 @@ public partial class App : Application, Services.IAppLifetime
                 {
                     var enhancementVm = sp.GetRequiredService<EnhancementViewModel>();
                     enhancementVm.UseBuiltInModel(id);
+                    // Stored too: a view model already caching this choice writes nothing (ONB-14).
+                    var enhancement = sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>();
+                    enhancement.SelectedProvider = global::VoiceWink.Services.AIEnhancement.AIProvider.OnThisPc;
+                    enhancement.SelectedModel = id;
                     enhancementVm.RefreshOnThisPcModels();
                     enhancementVm.ReloadFromSettings();
                     enhancementVm.IsEnabled = true;
                 },
                 startFirstUseCheck: engine.StartFirstUseCheck,
-                switchAiOff: () =>
+                aiSwitchRemoved: () =>
                 {
-                    // Reloaded first: setup writes the switch directly, so the singleton can hold a
-                    // stale false and the assignment would change nothing (Codex diff r1).
-                    var enhancementVm = sp.GetRequiredService<EnhancementViewModel>();
-                    enhancementVm.ReloadFromSettings();
-                    enhancementVm.IsEnabled = false;
+                    // The stored ON is already removed: the view model re-reads it and its warmed model is released (ONB-14).
+                    sp.GetRequiredService<EnhancementViewModel>().ReloadFromSettings();
+                    sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().SyncOnThisPcResidency();
                 },
                 activeTextProvider: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().ActiveTextProvider(),
                 activeBuiltInModel: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().ActiveBuiltInModel(),
-                activePromptIsImage: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().GetActivePrompt()?.IsImageGeneration == true);
+                activePromptIsImage: () => sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>().GetActivePrompt()?.IsImageGeneration == true,
+                promptThatWillRun: () => global::VoiceWink.Helpers.PromptThatWillRun.Route(
+                    sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.AIEnhancementService>(),
+                    sp.GetRequiredService<SettingsService>(),
+                    sp.GetRequiredService<EnhancementViewModel>().IsEnabled),
+                setupOpen: () => MainWindowInstance?.IsOnboarding == true);
         });
         // Local-runtime seam: every local model goes through LocalModelPreparer, which is the ONE
         // authority on which engine serves a model name — the five call sites that used to reach
@@ -1038,7 +1045,8 @@ public partial class App : Application, Services.IAppLifetime
             recordingsRoot: Helpers.AppPaths.RecordingsDir,
             reportsRoot: Helpers.AppPaths.ReportsDir,
             legacyTempRoot: global::System.IO.Path.GetTempPath(),
-            imagesRoot: Helpers.AppPaths.ImagesDir));
+            imagesRoot: Helpers.AppPaths.ImagesDir,
+            databaseFile: Helpers.AppPaths.DatabaseFile));
         services.AddSingleton<CustomVocabularyService>();
 
         // Privacy / GDPR data-subject rights (LGL-2): export (Art. 15/20) + erasure (Art. 17)
@@ -1083,9 +1091,9 @@ public partial class App : Application, Services.IAppLifetime
         // AI Enhancement
         services.AddSingleton(sp => AIProviderRegistry.CreateDefault(
             sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine>()));
-        // The E-mail / Chat language rule's detector; the container disposes it on exit.
+        // The detector behind the E-mail / Chat and translation language rules; the container disposes it on exit.
         services.AddSingleton<ITextLanguageDetector>(_ => new TextLanguageDetector(cause =>
-            Log.Warning("Windows' language detector is unavailable ({Cause}); the E-mail / Chat reply-language check is off for this session", cause)));
+            Log.Warning("Windows' language detector is unavailable ({Cause}); the E-mail / Chat and translation reply-language checks are off for this session", cause)));
         services.AddSingleton<AIEnhancementService>();
         // IMG-BG: single-slot coordinator for the background image generation job.
         services.AddSingleton<Services.AIEnhancement.ImageGenerationJobService>();

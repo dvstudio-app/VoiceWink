@@ -23,7 +23,7 @@ internal sealed class MaintenanceGate : IMaintenanceGate
     private readonly object _lock = new();
     private readonly List<IMaintenanceStatusSource> _sources = new();
 
-    // All four counters/flags are guarded by _lock (same as _sources) so the check-AND-acquire
+    // All counters/flags are guarded by _lock (same as _sources) so the check-AND-acquire
     // in the TryBegin* methods is atomic — a bare check-then-set would be a TOCTOU (Codex plan
     // review). Update-apply and erasure are MUTUALLY EXCLUSIVE (F19); cleanup passes are refused
     // while either exclusive op holds, and refcounted so overlapping passes all drain; an
@@ -32,6 +32,7 @@ internal sealed class MaintenanceGate : IMaintenanceGate
     private bool _erasing;           // single-holder data-erasure lease
     private int _cleanupPassCount;   // > 0 ⇒ ≥1 history-cleanup / orphan-sweep pass in flight
     private int _licenseCheckCount;  // > 0 ⇒ an automatic licence re-validation is in flight (LIC-23)
+    private bool _dataExport;        // single-holder GDPR export lease (LGL-8)
 
     public IDisposable Register(IMaintenanceStatusSource source)
     {
@@ -69,11 +70,12 @@ internal sealed class MaintenanceGate : IMaintenanceGate
         // Gate-internal blocker (no IMaintenanceStatusSource): a background cleanup/sweep pass
         // in flight blocks an erasure's poll until it drains, without exposing the pass as a
         // pull-model source. Read under the same lock as the counter's writers.
-        bool cleanupActive, licenseCheckActive;
+        bool cleanupActive, licenseCheckActive, dataExportActive;
         lock (_lock)
         {
             cleanupActive = _cleanupPassCount > 0;
             licenseCheckActive = _licenseCheckCount > 0;
+            dataExportActive = _dataExport;
         }
         if (cleanupActive)
         {
@@ -94,6 +96,12 @@ internal sealed class MaintenanceGate : IMaintenanceGate
             // away for the length of one validate (typically about a second; at most the licensing
             // client's bound).
             blockers.Add("License check");
+        }
+        if (dataExportActive)
+        {
+            blockers ??= new List<string>();
+            // LGL-8: an update apply or erasure must not quit the app while the export ZIP is open.
+            blockers.Add("Data export");
         }
 
         return blockers is null
@@ -154,6 +162,18 @@ internal sealed class MaintenanceGate : IMaintenanceGate
         return true;
     }
 
+    public bool TryBeginDataExport(out IDisposable? lease)
+    {
+        lock (_lock)
+        {
+            // LGL-8: single holder, so a second export from a re-opened Settings page is refused.
+            if (_updateApplyCount > 0 || _erasing || _dataExport) { lease = null; return false; }
+            _dataExport = true;
+        }
+        lease = new ReleaseScope(EndDataExport);
+        return true;
+    }
+
     public bool IsApplyingUpdate
     {
         get
@@ -208,6 +228,14 @@ internal sealed class MaintenanceGate : IMaintenanceGate
         }
     }
 
+    private void EndDataExport()
+    {
+        lock (_lock)
+        {
+            _dataExport = false;
+        }
+    }
+
     private void Unregister(IMaintenanceStatusSource source)
     {
         lock (_lock)
@@ -235,7 +263,7 @@ internal sealed class MaintenanceGate : IMaintenanceGate
         }
     }
 
-    // One release-once scope for all four lease kinds — the release delegate carries the
+    // One release-once scope for all lease kinds — the release delegate carries the
     // specific End* action. Idempotent: only the first Dispose runs it.
     private sealed class ReleaseScope : IDisposable
     {

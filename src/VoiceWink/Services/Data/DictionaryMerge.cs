@@ -5,9 +5,10 @@ public sealed record DictionaryRule(string OriginalText, string ReplacementText,
 
 /// <summary>
 /// The ONE rule for adding Dictionary entries next to the ones already there — shared by the
-/// shipped-defaults seed (<see cref="DefaultDictionarySeed"/>) and a backup import
-/// (<see cref="DictionaryTransfer"/>), so the two can never disagree about what "already there"
-/// means. Pure: it decides, the callers write.
+/// shipped-defaults seed (<see cref="DefaultDictionarySeed"/>), a backup import
+/// (<see cref="DictionaryTransfer"/>) and a word added by hand
+/// (<see cref="CustomVocabularyService.AddAsync"/>, DCT-3), so they can never disagree about what
+/// "already there" means. Pure: it decides, the callers write.
 ///
 /// <para><b>Words</b> are compared trimmed and case-insensitively ("Openrouter" is "OpenRouter"),
 /// against the present rows AND the earlier incoming ones. <b>Rules</b> keep only the spellings

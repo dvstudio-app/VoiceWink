@@ -78,6 +78,8 @@ public sealed class OnThisPcEngine : IDisposable
 
     private readonly LlamaServerProcess _process;
     private readonly Func<string, string?> _installedModelPath;
+    /// <summary>The models this engine serves: the catalog; LAI-21's benchmark adds files under evaluation.</summary>
+    private readonly IReadOnlyList<LocalModelEntry> _models;
     private readonly HttpClient _http;
     private readonly LlamaGpuCheckStore _checks;
     private readonly Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<(LlamaSelfTestVerdict Verdict, int Facts, TimeSpan Elapsed)>> _selfTest;
@@ -162,8 +164,10 @@ public sealed class OnThisPcEngine : IDisposable
         TimeSpan? unloadRetry = null,
         IGpuMemoryProbe? gpuMemory = null,
         Func<bool, (IDisposable Handle, CancellationToken Yield)?>? beginGpuProbe = null,
-        TimeSpan? gpuQuietWait = null)
+        TimeSpan? gpuQuietWait = null,
+        IReadOnlyList<LocalModelEntry>? models = null)
     {
+        _models = models ?? LocalModelCatalog.All;
         _gpuMemory = gpuMemory;
         _beginGpuProbe = beginGpuProbe;
         _gpuQuietWait = gpuQuietWait ?? GpuQuietWait;
@@ -180,6 +184,9 @@ public sealed class OnThisPcEngine : IDisposable
 
     internal LlamaServerProcess Process => _process;
 
+    private LocalModelEntry? FindModel(string id)
+        => _models.FirstOrDefault(e => string.Equals(e.Id, id, StringComparison.Ordinal));
+
     /// <summary>Test seam: how many first-use checks are running right now.</summary>
     internal int WarmupsInFlightForTest
     {
@@ -194,7 +201,7 @@ public sealed class OnThisPcEngine : IDisposable
 
     /// <summary>The catalog models installed on this PC, in catalog order — the provider's model list.</summary>
     internal IReadOnlyList<string> InstalledModelIds()
-        => LocalModelCatalog.All.Where(e => _installedModelPath(e.Id) is not null).Select(e => e.Id).ToList();
+        => _models.Where(e => _installedModelPath(e.Id) is not null).Select(e => e.Id).ToList();
 
     /// <summary>Binds a child to the catalog revision it was spawned for, not the file's path.</summary>
     internal static string IdentityOf(LocalModelEntry entry)
@@ -203,7 +210,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// <summary>True while a first-use check for this model is owed or running.</summary>
     internal bool IsWarmupPending(string modelId)
     {
-        var entry = LocalModelCatalog.Find(modelId);
+        var entry = FindModel(modelId);
         if (entry is null)
             return false;
         var identity = IdentityOf(entry);
@@ -218,7 +225,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// or when the session runs on the processor and the measurement was the GPU's.</summary>
     internal int? MeasuredSpeedMs(string modelId)
     {
-        var entry = LocalModelCatalog.Find(modelId);
+        var entry = FindModel(modelId);
         if (entry is null)
             return null;
         lock (_state)
@@ -238,7 +245,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// The live child counts only when it serves this model.</summary>
     internal Helpers.BuiltInComputeFacts ComputeFacts(string modelId)
     {
-        var entry = LocalModelCatalog.Find(modelId);
+        var entry = FindModel(modelId);
         if (entry is null)
             return new(null, null, false, RunsOnProcessor, null, null);
         var identity = IdentityOf(entry);
@@ -334,7 +341,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// owed has nothing to wait on — answering a completed task there made the rows rebuild forever).</summary>
     internal Task? WhenFirstUseCheckSettledAsync(string modelId)
     {
-        var entry = LocalModelCatalog.Find(modelId);
+        var entry = FindModel(modelId);
         if (entry is null)
             return null;
         lock (_state)
@@ -351,7 +358,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// </summary>
     internal async Task<string> EnhanceAsync(AIProviderConfig config, string systemPrompt, string userText, CancellationToken ct)
     {
-        var entry = LocalModelCatalog.Find(config.ModelName);
+        var entry = FindModel(config.ModelName);
         var path = entry is null ? null : _installedModelPath(entry.Id);
         if (entry is null || path is null)
             throw new InvalidOperationException(NotInstalledMessage);
@@ -565,7 +572,7 @@ public sealed class OnThisPcEngine : IDisposable
     {
         try
         {
-            var entry = LocalModelCatalog.Find(modelId);
+            var entry = FindModel(modelId);
             var path = entry is null ? null : _installedModelPath(entry.Id);
             if (entry is null || path is null)
                 return;
@@ -607,7 +614,7 @@ public sealed class OnThisPcEngine : IDisposable
             _queuedPrepare = null;
             if (next is null || _closed || _deleting.Contains(next.Value.ModelId))
                 return;
-            entry = LocalModelCatalog.Find(next.Value.ModelId);
+            entry = FindModel(next.Value.ModelId);
             path = entry is null ? null : _installedModelPath(entry.Id);
             if (entry is null || path is null)
                 return;
@@ -907,7 +914,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// <summary>After a model download: run its first-use check now rather than on the first dictation.</summary>
     internal void StartFirstUseCheck(string modelId)
     {
-        var entry = LocalModelCatalog.Find(modelId);
+        var entry = FindModel(modelId);
         var path = entry is null ? null : _installedModelPath(entry.Id);
         if (entry is null || path is null)
             return;
@@ -1391,7 +1398,7 @@ public sealed class OnThisPcEngine : IDisposable
         {
             // Only a child serving THIS model is stopped - deleting one model never fails another
             // model's dictation.
-            var entry = LocalModelCatalog.Find(modelId);
+            var entry = FindModel(modelId);
             // A dictation already running finishes first: it holds the slot this waits for.
             // The delete takes the engine's one user slot and keeps it through the retire AND the
             // file removal (Codex plan round, LAI-11 B1): a first-use check between two of its

@@ -29,7 +29,7 @@ internal static class SidebarLayout
         new("Dictionary",      "\uE82D", "dictionary"),
         new("Models",          "\uE8F1", "models"),
         new("AI Enhancement",  "\uE945", "enhancement"),
-        new("App Mode",        "\uE7AC", "appmode", "A different model, language or prompt per app"),
+        new("App Mode",        "\uE7AC", "appmode", "A different model, language or enhancement per app"),
         new("Transcribe File", "\uE8E6", "transcribe"),
         new("Settings",        "\uE713", "settings"),
     ];

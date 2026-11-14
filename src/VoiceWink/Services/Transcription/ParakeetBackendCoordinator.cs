@@ -63,9 +63,6 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
     /// rule, and a parity test enforces it).</summary>
     internal const string ServerExeSha256 = "0c834c36dfc2ceab0d25ade2633b7605b314ef0869dee45aa9716c7919e7b715";
 
-    /// <summary>Free-space slack over the exact payload size for the migration download.</summary>
-    internal const long DiskSlackBytes = 256L * 1024 * 1024;
-
     /// <summary>The durable delete tombstone's file name, in the Models root. Invisible to the
     /// manager by construction (not <c>*.bin</c>, not a catalog bundle name).</summary>
     internal const string TombstoneFileName = ".vw-parakeet-delete-pending";
@@ -352,8 +349,9 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                           && Volatile.Read(ref _consecutiveWholeCallFailures) < MaxConsecutiveWholeCallFailures,
             PcppHasServed: identity is not null
                            && string.Equals(_servedIdentity, identity, StringComparison.Ordinal),
-            // NET-8: a partial a full disk stopped is resumed, so only the remaining bytes need room.
-            DiskAllowsGguf: _availableFreeBytes() >= _gguf.FileSizeBytes - _downloads.ResumableStagingBytes(_gguf) + DiskSlackBytes,
+            // NET-10: the download's own precheck rule, so the gate never admits a download it refuses.
+            DiskAllowsGguf: _availableFreeBytes() >= ModelDownloadManager.RequiredFreeBytes(
+                _gguf.FileSizeBytes, _downloads.ResumableStagingBytes(_gguf)),
             DeletePending: deletePending,
             // != false, deliberately: an unreadable probe keeps the auto-cleanup REACHABLE —
             // the same fail-open-toward-delete direction as HasAnyArtifact. Over genuinely

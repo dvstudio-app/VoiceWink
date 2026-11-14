@@ -114,18 +114,19 @@ internal static class LocalModelRecommendation
             : new TierSpeed(SpeedCalibration.Apply(EstimateMs(t, profile, arm64), factor), Measured: false));
     }
 
-    /// <summary>The recommended tier, or null when this PC is below every floor (or its memory
-    /// cannot be read).</summary>
+    /// <summary>The recommended tier, or null when no tier that can be the pick fits this PC (or its
+    /// memory cannot be read).</summary>
     internal static LocalModelTier? Recommend(LocalHardwareProfile profile) => Recommend(profile, _ => null);
 
     /// <summary>The largest tier that is fast enough on this PC — measured where it was, estimated and
     /// calibrated where not, in which case it must also meet its floor; null when none is.
-    /// <paramref name="measuredMs"/> gives a tier's measured check time, or null.</summary>
+    /// <paramref name="measuredMs"/> gives a tier's measured check time, or null.
+    /// Light is never the pick: its replies are not accurate enough to recommend (LAI-19).</summary>
     internal static LocalModelTier? Recommend(LocalHardwareProfile profile, Func<LocalModelTier, int?> measuredMs,
         bool arm64 = false)
     {
         var speeds = Speeds(profile, arm64, measuredMs);
-        foreach (var tier in new[] { LocalModelTier.Best, LocalModelTier.Large, LocalModelTier.Standard, LocalModelTier.Light })
+        foreach (var tier in new[] { LocalModelTier.Best, LocalModelTier.Large, LocalModelTier.Standard })
         {
             var speed = speeds[tier];
             if (!IsTooSlow(speed.Ms) && (speed.Measured || Fits(tier, profile)))
@@ -171,6 +172,14 @@ internal static class LocalModelRecommendation
         };
     }
 
+    /// <summary>The line the model list shows when no model is the pick for this PC (LAI-19).</summary>
+    internal static string NoPickNote(LocalHardwareProfile profile, Func<LocalModelTier, int?> measuredMs)
+        => profile.TotalRamBytes is null ? "This PC's memory could not be read."
+            // A model that ran fast enough here contradicts "not enough memory", whatever its floor says.
+            : Enum.GetValues<LocalModelTier>().Any(t => Fits(t, profile) || measuredMs(t) <= TooSlowMs)
+                ? "On this PC, a cloud provider is recommended."
+            : "Not enough memory for built-in AI. A cloud provider is recommended.";
+
     /// <summary>The order the model rows are shown in: highest Accuracy first, the larger model first
     /// on a tie (owner, 2026-10-05: always the same order; "Best for this PC" marks its row and no
     /// longer moves it). Display only — <see cref="LocalModelCatalog.All"/> keeps the default first,
@@ -182,11 +191,8 @@ internal static class LocalModelRecommendation
             .ToList();
 
     /// <summary>What setup's AI step offers (owner, 2026-10-05: one model, as the transcription step
-    /// offers one): the pick for this PC, or the catalog default (<see cref="LocalModelCatalog.Standard"/>)
-    /// when nothing can be picked, plus the model already in use when that is another one.</summary>
+    /// offers one): the pick for this PC plus the model already in use when that is another one.
+    /// Nothing picked and nothing in use offers nothing (LAI-19).</summary>
     internal static IReadOnlyList<LocalModelEntry> SetupOffer(LocalModelTier? recommended, Func<string, bool> isSelected)
-    {
-        var pick = recommended ?? LocalModelCatalog.Standard.Tier;
-        return DisplayOrder().Where(e => e.Tier == pick || isSelected(e.Id)).ToList();
-    }
+        => DisplayOrder().Where(e => e.Tier == recommended || isSelected(e.Id)).ToList();
 }

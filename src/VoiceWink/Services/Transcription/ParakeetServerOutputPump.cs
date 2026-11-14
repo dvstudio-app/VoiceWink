@@ -25,6 +25,11 @@ internal static class ParakeetServerOutputPump
     /// <summary>Read <paramref name="reader"/> to EOF. Returns the number of lines seen. A read
     /// failure — the handle closed under the reader by the child's Dispose, or a broken pipe —
     /// ends the pump quietly rather than propagating from a background thread.</summary>
-    internal static int Pump(TextReader reader, Action<GgmlVulkanDeviceLine> onMatch)
-        => NativeChildOutputPump.Pump<GgmlVulkanDeviceLine>(reader, GgmlVulkanDeviceLine.TryParse, onMatch);
+    /// <param name="onLine">TRN-95: called once per raw line, with no argument (the line's text never leaves).</param>
+    internal static int Pump(TextReader reader, Action<GgmlVulkanDeviceLine> onMatch, Action? onLine = null)
+        => NativeChildOutputPump.Pump(reader, (string? line, out GgmlVulkanDeviceLine parsed) =>
+        {
+            onLine?.Invoke();
+            return GgmlVulkanDeviceLine.TryParse(line, out parsed);
+        }, onMatch);
 }

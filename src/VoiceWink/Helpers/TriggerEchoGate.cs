@@ -16,7 +16,8 @@ namespace VoiceWink.Helpers;
 ///   of one hinted name) costs one click, never the content (Codex round 4).
 /// - <see cref="ImageActivationAllowed"/> — FAIL-CLOSED for the costly/irreversible
 ///   image action: a trigger-selected image generation fires only when the trigger
-///   boundary-matches the RAW text AND the raw remainder carries a real description
+///   boundary-matches the PRE-REPLACEMENT text (the caller passes it filler-cleaned,
+///   IMG-29) AND that remainder carries a real description
 ///   word (one not part of any hint term or the trigger). Deliberately over-blocks
 ///   the ambiguous case (e.g. a "description" made only of hint-word fragments) —
 ///   the Retry escape hatch makes over-blocking cheap.
@@ -90,7 +91,7 @@ public static class TriggerEchoGate
     /// FAIL-CLOSED gate for a TRIGGER-SELECTED image generation (hotkey / App-Mode /
     /// globally-active image prompts don't call this — they need no spoken trigger).
     /// Returns true only when <paramref name="detectedTrigger"/> boundary-matches the
-    /// RAW transcript AND the raw remainder (after stripping that trigger) contains
+    /// pre-replacement transcript AND its remainder (after stripping that trigger) contains
     /// at least one token that appears in NO <paramref name="hintTerms"/> entry and
     /// not in the trigger — a word the recognizer wasn't biased toward, i.e. a real
     /// description. TOKEN-UNION cover, deliberately stricter than the terminal echo

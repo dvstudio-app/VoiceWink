@@ -206,15 +206,33 @@ public sealed class EnhancementPage : Page
             "Use AI to clean up and enhance transcription output.");
 
         // -- Enable toggle --
+        var syncingEnableToggle = false;
         var enableToggle = AppTheme.CreateToggleSetting(
             "Enable AI Enhancement",
             "Turn on AI-powered enhancement features",
             _viewModel.IsEnabled,
             isOn =>
             {
+                if (syncingEnableToggle) return;
                 _viewModel.IsEnabled = isOn;
                 BuildUI(); // rebuild to reflect prompt active states
+            },
+            out var enableSwitch);
+        // ENH-37: a writer outside the page (a finished built-in download, a settings reload) can flip it while the page is open.
+        var enableGeneration = _uiGeneration;
+        PropertyChangedEventHandler enabledChangedHandler = (_, e) =>
+        {
+            if (e.PropertyName != nameof(EnhancementViewModel.IsEnabled)) return;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (enableGeneration != _uiGeneration || enableSwitch.IsOn == _viewModel.IsEnabled) return;
+                syncingEnableToggle = true;
+                try { enableSwitch.IsOn = _viewModel.IsEnabled; }
+                finally { syncingEnableToggle = false; }
+                RefreshPromptList(); // turning on can activate a prompt
             });
+        };
+        RegisterViewModelSubscription(enabledChangedHandler);
 
         // -- AI Provider Integration card --
         var providerSection = BuildProviderSection();
@@ -609,7 +627,7 @@ public sealed class EnhancementPage : Page
 
         var imageModelHint = new TextBlock
         {
-            Text = "Used by image generation prompts (e.g. Generate Image).",
+            Text = "Used by image generation enhancements (e.g. Generate Image).",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.DimText),
             Margin = new Thickness(0, 4, 0, 0)
@@ -768,6 +786,9 @@ public sealed class EnhancementPage : Page
             providerActive.Visibility = activeCard == ActiveTextCardKind.Provider ? Visibility.Visible : Visibility.Collapsed;
             ApplyGpuStatusLine();
             RebuildLocalModelRows();
+            // The line under a prompt follows the model in use and this PC's pick (LAI-19).
+            if (localRowsShown && localRowsGeneration == _uiGeneration)
+                RefreshPromptList();
         }
         ApplyOnThisPcRows();
         PropertyChangedEventHandler onThisPcRowsHandler = (_, e) =>
@@ -1062,13 +1083,13 @@ public sealed class EnhancementPage : Page
 
     private UIElement BuildPromptsSection()
     {
-        var sectionHeader = AppTheme.CreateSectionHeader("Enhancement Prompts");
+        var sectionHeader = AppTheme.CreateSectionHeader("Enhancements");
 
         _promptListPanel = new StackPanel { Spacing = 8 };
         RefreshPromptList();
 
         // Button row: Add Prompt + Add from Template
-        var addBtn = AppTheme.CreateAccentButton("+ Add Prompt", (s, e) =>
+        var addBtn = AppTheme.CreateAccentButton("+ Add Enhancement", (s, e) =>
         {
             // Open the edit dialog immediately on a blank DETACHED draft, so the user is never
             // left with a silently-appended prompt they didn't notice. The draft is not in the
@@ -1115,7 +1136,7 @@ public sealed class EnhancementPage : Page
             };
             var emptyTitle = new TextBlock
             {
-                Text = "No prompts yet",
+                Text = "No enhancements yet",
                 FontSize = 16,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = AppTheme.Brush(AppTheme.SubtleText),
@@ -1124,7 +1145,7 @@ public sealed class EnhancementPage : Page
             };
             var emptySubtitle = new TextBlock
             {
-                Text = "Add a prompt or pick one from the templates\nto enhance your transcriptions.",
+                Text = "Add an enhancement or pick one from the templates.",
                 FontSize = 13,
                 Foreground = AppTheme.Brush(AppTheme.DimText),
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -1151,8 +1172,13 @@ public sealed class EnhancementPage : Page
             .OrderBy(p => p.Title, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
 
+        // This PC's pick is read only when a prompt runs on a built-in model: the read walks the hardware.
+        var pickId = _viewModel.Prompts.Any(p => _enhancement.BuiltInModelFor(p) is not null)
+            ? LocalModelsSection.RecommendedPick(_viewModel.OnThisPc, LocalHardwareProfile.Read()) : null;
+        var pick = pickId is null ? null : LocalModelCatalog.Find(pickId);
+
         foreach (var prompt in pinned)
-            _promptListPanel.Children.Add(BuildPromptCard(prompt));
+            _promptListPanel.Children.Add(BuildPromptCard(prompt, pick));
 
         if (pinned.Count > 0 && rest.Count > 0)
             _promptListPanel.Children.Add(new Border
@@ -1164,10 +1190,10 @@ public sealed class EnhancementPage : Page
             });
 
         foreach (var prompt in rest)
-            _promptListPanel.Children.Add(BuildPromptCard(prompt));
+            _promptListPanel.Children.Add(BuildPromptCard(prompt, pick));
     }
 
-    private UIElement BuildPromptCard(CustomPrompt prompt)
+    private UIElement BuildPromptCard(CustomPrompt prompt, LocalModelEntry? builtInPick)
     {
         // Active indicator: green dot when active, dim dot when inactive
         var indicator = new Ellipse
@@ -1387,6 +1413,19 @@ public sealed class EnhancementPage : Page
         textPanel.Children.Add(badgeRow);
         if (triggerWordsDisplay != null) textPanel.Children.Add(triggerWordsDisplay);
         if (hotkeyDisplay != null) textPanel.Children.Add(hotkeyDisplay);
+        // LAI-19: where the built-in model this prompt runs on is weak, say what is recommended on this PC.
+        var builtInModel = _enhancement.BuiltInModelFor(prompt) is { } builtInId ? LocalModelCatalog.Find(builtInId) : null;
+        if (LocalModelAdvice.PromptLine(builtInModel, LocalPromptClassifier.Classify(prompt), builtInPick) is { } adviceLine)
+        {
+            textPanel.Children.Add(new TextBlock
+            {
+                Text = adviceLine,
+                FontSize = 12,
+                Foreground = AppTheme.Brush(AppTheme.TextSecondary),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0)
+            });
+        }
 
         // Action buttons row
         var buttonsRow = new StackPanel
@@ -1406,7 +1445,7 @@ public sealed class EnhancementPage : Page
                     var dialog = new ContentDialog
                     {
                         Title = "AI Enhancement Disabled",
-                        Content = "AI enhancement is currently off. Enable it to use this prompt?",
+                        Content = "AI enhancement is currently off. Enable it to use this enhancement?",
                         PrimaryButtonText = "Enable",
                         CloseButtonText = "Cancel",
                         DefaultButton = ContentDialogButton.Primary,
@@ -1421,8 +1460,8 @@ public sealed class EnhancementPage : Page
                 BuildUI(); // rebuild to reflect toggle + prompt state
             });
         ToolTipService.SetToolTip(setActiveBtn, prompt.IsActive
-            ? "Stops using this prompt by default"
-            : "Makes this the prompt dictations use by default");
+            ? "Stops using this enhancement by default"
+            : "Makes this the enhancement dictations use by default");
         buttonsRow.Children.Add(setActiveBtn);
 
         var editBtn = AppTheme.CreateSecondaryButton("Edit", (s, e) =>
@@ -1453,7 +1492,7 @@ public sealed class EnhancementPage : Page
         {
             ShowConfigureDialog(prompt);
         });
-        ToolTipService.SetToolTip(configBtn, "Type, provider, model and language for this prompt");
+        ToolTipService.SetToolTip(configBtn, "Type, provider, model and language for this enhancement");
         buttonsRow.Children.Add(configBtn);
 
         var deleteBtn = AppTheme.CreateDangerButton("Delete", async (s, e) =>
@@ -1560,7 +1599,7 @@ public sealed class EnhancementPage : Page
         var nameBox = new TextBox
         {
             Text = prompt.Title,
-            PlaceholderText = "Prompt name",
+            PlaceholderText = "Enhancement name",
             Margin = new Thickness(0, 0, 0, 16)
         };
 
@@ -1617,7 +1656,7 @@ public sealed class EnhancementPage : Page
             // behavior change get nothing.
             content.Children.Add(new TextBlock
             {
-                Text = "Note: for image prompts, your processed dictation (or the text you edit in the generation dialog) is what's sent to the image model — this description is not part of the request.",
+                Text = "Note: for image generation enhancements, your processed dictation (or the text you edit in the generation dialog) is what's sent to the image model — this description is not part of the request.",
                 FontSize = 12,
                 TextWrapping = TextWrapping.Wrap,
                 Foreground = AppTheme.Brush(AppTheme.SubtleText),
@@ -1771,7 +1810,10 @@ public sealed class EnhancementPage : Page
 
         var infoText = new TextBlock
         {
-            Text = "Trigger words let you activate this prompt by voice. Say the trigger word at the start or end of your sentence, and VoiceWink will automatically use this prompt for that transcription.",
+            // An image generation enhancement matches a trigger at the start only (UI-36).
+            Text = "Trigger words let you activate this enhancement by voice. Say the trigger word at the "
+                 + (prompt.IsImageGeneration ? "start" : "start or end")
+                 + " of your sentence, and VoiceWink will automatically use this enhancement for that transcription.",
             FontSize = 12,
             Foreground = AppTheme.Brush(AppTheme.SubtleText),
             TextWrapping = TextWrapping.Wrap,
@@ -1882,7 +1924,7 @@ public sealed class EnhancementPage : Page
 
             var infoText = new TextBlock
             {
-                Text = "Assign a hotkey to activate this prompt. Press the hotkey to start recording — the transcription will be enhanced using this prompt.",
+                Text = "Assign a hotkey to this enhancement. Pressing it starts a recording that uses this enhancement.",
                 FontSize = 12,
                 Foreground = AppTheme.Brush(AppTheme.SubtleText),
                 TextWrapping = TextWrapping.Wrap,
@@ -1946,7 +1988,7 @@ public sealed class EnhancementPage : Page
                 dialog.IsPrimaryButtonEnabled = true;
                 var first = collisions[0];
                 warningText.Text = first.IsPrompt
-                    ? $"{selected} is already assigned to \"{first.PromptTitle}\". Saving will move it to this prompt."
+                    ? $"{selected} is already assigned to \"{first.PromptTitle}\". Saving will move it to this enhancement."
                     : $"⚠ {selected} is {first.Describe()}. This will override that function.";
                 warningText.Visibility = Visibility.Visible;
             };
@@ -2575,8 +2617,8 @@ public sealed class EnhancementPage : Page
                 // starts recording, pauses, and only then picks a prompt is already past it — the
                 // looser wording promised them an override that does not apply. That inaccuracy
                 // predates this change; shortening the hint is when it got noticed.
-                Text = "Applies when this prompt is chosen before recording starts. Chosen "
-                     + "mid-recording — by trigger word or prompt hotkey — recording keeps the "
+                Text = "Applies when this enhancement is chosen before recording starts. Chosen "
+                     + "mid-recording — by trigger word or enhancement hotkey — recording keeps the "
                      + "language it started with.",
                 FontSize = 12,
                 Foreground = AppTheme.Brush(AppTheme.DimText),

@@ -59,6 +59,16 @@ internal static class LocalPromptClassifier
         return LocalPromptClass.Custom;
     }
 
+    // Same order as TranslateTexts, in the language detector's primary subtags.
+    private static readonly string[] TranslateTargets = ["nl", "zh", "en"];
+
+    /// <summary>LAI-19: the language a shipped translation prompt promises; null for every other prompt, an edited translation included.</summary>
+    internal static string? TargetLanguage(CustomPrompt? prompt)
+    {
+        var index = Array.IndexOf(TranslateTexts, Normalize((prompt ?? PredefinedPrompts.Default).PromptText));
+        return index < 0 ? null : TranslateTargets[index];
+    }
+
     /// <summary>The ceiling on custom prompts' output, in tokens.</summary>
     internal const int CustomCeiling = 4096;
 

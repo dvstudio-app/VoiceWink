@@ -10,7 +10,8 @@ namespace VoiceWink.Services.Data;
 /// pass: an unconditional, off-thread sweep of debug-retained recordings, crash-orphaned
 /// root WAVs (ledger-aware hard 7 days), prompt-trace files, and report bundles that runs
 /// BEFORE the history-cleanup enable gate, so no diagnostics artifact outlives its bound
-/// even with history cleanup disabled or a long-lived tray session.
+/// even with history cleanup disabled or a long-lived tray session. The orphaned-image sweep
+/// (HIS-3) runs before that gate too, since HIS-17.
 /// </summary>
 public sealed class TranscriptionCleanupService
 {
@@ -34,6 +35,8 @@ public sealed class TranscriptionCleanupService
     internal string ReportsRoot { get; }
     internal string LegacyTempRoot { get; }
     internal string ImagesRoot { get; }
+    // HIS-17: the database file whose schema-repair backups protect the images they may reference.
+    internal string DatabaseFile { get; }
 
     /// <summary>
     /// HIS-3 crash-orphan backstop: an UNREFERENCED PNG is swept only once it is at least this
@@ -64,7 +67,8 @@ public sealed class TranscriptionCleanupService
         string recordingsRoot,
         string reportsRoot,
         string legacyTempRoot,
-        string imagesRoot)
+        string imagesRoot,
+        string databaseFile)
     {
         _history = history;
         _settings = settings;
@@ -74,6 +78,7 @@ public sealed class TranscriptionCleanupService
         ReportsRoot = reportsRoot;
         LegacyTempRoot = legacyTempRoot;
         ImagesRoot = imagesRoot;
+        DatabaseFile = databaseFile;
     }
 
     public async Task CleanupAsync(CancellationToken ct = default)
@@ -95,6 +100,9 @@ public sealed class TranscriptionCleanupService
             catch (Exception ex) { Logger.Warning(ex, "Report bundle sweep failed"); }
         }, ct).ConfigureAwait(false);
 
+        // HIS-17: orphaned images are app debris, not history, so the sweep runs whatever the cleanup toggle says.
+        await CleanupOrphanedImageFilesAsync(ct).ConfigureAwait(false);
+
         // The table, never a literal (2026-09-13, when the default went OFF): a present-but-
         // malformed stored value falls back to the caller's literal, and `true` here would have
         // run a deletion the table says is off — the two-literal hazard AppDefaults.BoolDefault
@@ -113,9 +121,6 @@ public sealed class TranscriptionCleanupService
 
         // Clean up old audio recording files using the same retention period
         CleanupRecordingFiles(cutoff);
-
-        // Clean up orphaned image files (not referenced by any history entry)
-        await CleanupOrphanedImageFilesAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -266,7 +271,9 @@ public sealed class TranscriptionCleanupService
 
             // Get all image paths still referenced in the database
             var referencedPaths = await _history.GetAllImagePathsAsync(ct).ConfigureAwait(false);
-            var referencedSet = new HashSet<string>(referencedPaths, StringComparer.OrdinalIgnoreCase);
+            // HIS-17: match on file name (full-GUID names), so a moved profile folder never orphans every stored path.
+            var referencedSet = new HashSet<string>(referencedPaths.Select(p => Path.GetFileName(p)), StringComparer.OrdinalIgnoreCase);
+            var backupFloorUtc = NewestSchemaBackupUtc();
 
             if (_afterSnapshotHook is { } hook)
                 await hook().ConfigureAwait(false);
@@ -289,7 +296,10 @@ public sealed class TranscriptionCleanupService
             var deleted = 0;
             foreach (var file in files)
             {
-                if (IsSweepableOrphan(referencedSet.Contains(file), TryGetCreationTimeUtc(file), cutoffUtc))
+                var createdUtc = TryGetCreationTimeUtc(file);
+                if (createdUtc < backupFloorUtc)
+                    continue; // HIS-17: older than a schema-repair backup, so its row may live in that backup
+                if (IsSweepableOrphan(referencedSet.Contains(Path.GetFileName(file)), createdUtc, cutoffUtc))
                 {
                     try
                     {
@@ -316,6 +326,31 @@ public sealed class TranscriptionCleanupService
     /// </summary>
     internal static bool IsSweepableOrphan(bool referenced, DateTime? createdUtc, DateTime nowUtc)
         => !referenced && createdUtc is { } created && nowUtc - created >= OrphanImageAgeGrace;
+
+    /// <summary>HIS-17: the newest schema-repair backup's time (App.TryBackupDatabase's name stamp), or null when there is none.</summary>
+    private DateTime? NewestSchemaBackupUtc()
+    {
+        var dir = Path.GetDirectoryName(DatabaseFile);
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+            return null;
+
+        var prefix = Path.GetFileName(DatabaseFile) + ".schema-backup-";
+        DateTime? newest = null;
+        foreach (var file in Directory.EnumerateFiles(dir, prefix + "*"))
+        {
+            var stamp = Path.GetFileName(file)[prefix.Length..];
+            // An unreadable stamp protects everything: never sweep on an unknown repair time.
+            var taken = stamp.Length >= 17 && DateTime.TryParseExact(stamp[..17], "yyyyMMddHHmmssfff",
+                    global::System.Globalization.CultureInfo.InvariantCulture,
+                    global::System.Globalization.DateTimeStyles.AssumeUniversal | global::System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out var parsed)
+                ? parsed
+                : DateTime.MaxValue;
+            if (newest is null || taken > newest)
+                newest = taken;
+        }
+        return newest;
+    }
 
     private DateTime? TryGetCreationTimeUtc(string file)
     {

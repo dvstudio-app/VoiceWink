@@ -530,6 +530,12 @@ internal static class NativeInterop
     [DllImport("user32.dll")]
     public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
+
+    /// <summary>PST-22: the owner-window test's proof that its thread pumps; non-zero when the window answered in time.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
     // MiniRecorder drag (PILL-4): system drag-start threshold in pixels — a press that
     // wobbles less than this is a click, not a drag. (The drag itself is a manual
     // captured-pointer move: the native WM_NCLBUTTONDOWN loop gets no live WM_POINTER

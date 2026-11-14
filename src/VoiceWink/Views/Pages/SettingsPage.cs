@@ -167,7 +167,7 @@ public sealed class SettingsPage : Page
                           "updates and diagnostics.\n\n" +
                           "It keeps your license, API keys, " +
                           "the AI Enhancement switch and its provider and model choices, " +
-                          "prompts, App Modes, dictionary words and replacements, history entries, " +
+                          "enhancements, App Modes, dictionary words and replacements, history entries, " +
                           "the selected speech model and language, and your crash-report choice.",
                 PrimaryButtonText = "Reset",
                 CloseButtonText = "Cancel",
@@ -1026,8 +1026,8 @@ public sealed class SettingsPage : Page
             Children = { includeMediaCheck, includeMediaLabel },
         };
 
-        var exportButton = AppTheme.CreateSecondaryButton("Export data",
-            async (_, _) => await ExportDataAsync(includeMediaCheck.IsChecked == true));
+        var exportButton = AppTheme.CreateSecondaryButton("Export data");
+        exportButton.Click += async (_, _) => await ExportDataAsync(exportButton, includeMediaCheck.IsChecked == true);
 
         var deleteHistoryButton = AppTheme.CreateSecondaryButton("Delete history",
             async (_, _) => await ShowDeleteHistoryDialogAsync());
@@ -1098,10 +1098,12 @@ public sealed class SettingsPage : Page
     }
 
     /// <summary>Run the GDPR export to a user-chosen ZIP via FileSavePicker (hwnd-initialized for unpackaged WinUI 3).</summary>
-    private async Task ExportDataAsync(bool includeMedia)
+    private async Task ExportDataAsync(Button exportButton, bool includeMedia)
     {
         try
         {
+            // LGL-8: same-page re-click guard; the service's gate lease is what refuses a second export.
+            AppTheme.SetButtonEnabled(exportButton, false);
             var path = await FilePickers.PickSaveFileAsync($"voicewink-export-{DateTime.Now:yyyy-MM-dd}", "Zip archive", ".zip");
             if (path is null) return; // user cancelled
 
@@ -1120,10 +1122,19 @@ public sealed class SettingsPage : Page
                 await ShowInfoAsync("Export complete", $"Your data was exported to:\n{path}");
             }
         }
+        catch (DataExportRefusedException ex)
+        {
+            Logger.Information("GDPR export refused: {Reason}", ex.Message);
+            await ShowInfoAsync("Export not started", ex.Message);
+        }
         catch (Exception ex)
         {
             Logger.Error(ex, "GDPR export failed");
             await ShowInfoAsync("Export failed", "Sorry, the export couldn't be completed.\n\n" + ex.Message);
+        }
+        finally
+        {
+            AppTheme.SetButtonEnabled(exportButton, true);
         }
     }
 

@@ -7,12 +7,16 @@ using VoiceWink.Helpers;
 using VoiceWink.Models.Entities;
 using VoiceWink.Services.AppMode;
 using VoiceWink.Services.Data;
+using VoiceWink.Services.Maintenance;
 using VoiceWink.Services.System;
 
 namespace VoiceWink.Services.Privacy;
 
 /// <summary>Outcome of a GDPR export — how many media/log files were skipped (in use) and omitted.</summary>
 public sealed record GdprExportResult(int SkippedFileCount);
+
+/// <summary>LGL-8: the export did not start because another export, an update or an erasure holds the gate.</summary>
+public sealed class DataExportRefusedException(string message) : InvalidOperationException(message);
 
 /// <summary>
 /// GDPR right-of-access / data-portability export (Art. 15 / 20). Produces a single ZIP
@@ -42,6 +46,7 @@ public sealed class GdprExportService
     private readonly SettingsService _settings;
     private readonly IDbContextFactory<VoiceWinkDbContext> _dbFactory;
     private readonly CsvExportService _csv;
+    private readonly IMaintenanceGate _gate;
     private readonly string _rootDir;
     private readonly string _recordingsDir;
     private readonly string _imagesDir;
@@ -53,11 +58,13 @@ public sealed class GdprExportService
         SettingsService settings,
         IDbContextFactory<VoiceWinkDbContext> dbFactory,
         CsvExportService csv,
+        IMaintenanceGate gate,
         string? rootDir = null)
     {
         _settings = settings;
         _dbFactory = dbFactory;
         _csv = csv;
+        _gate = gate;
         var root = rootDir ?? AppPaths.RootDir;
         _rootDir = root;
         _recordingsDir = Path.Combine(root, "Recordings");
@@ -71,9 +78,33 @@ public sealed class GdprExportService
     /// Write the export ZIP to <paramref name="zipPath"/>. When <paramref name="includeMedia"/>
     /// is true, audio recordings, generated images, and redacted logs are bundled too (these can
     /// be large, so the UI defaults the option off). Returns a result reporting how many files were
-    /// in use and therefore omitted.
+    /// in use and therefore omitted. Refused (faulted task, <see cref="DataExportRefusedException"/>)
+    /// while another export, an update apply or a data erasure holds its maintenance-gate lease.
     /// </summary>
-    public async Task<GdprExportResult> ExportAsync(string zipPath, bool includeMedia, CancellationToken ct = default)
+    public Task<GdprExportResult> ExportAsync(string zipPath, bool includeMedia, CancellationToken ct = default)
+    {
+        // LGL-8: lease taken on the caller's thread so no update or erasure can start between the check and the run.
+        if (!_gate.TryBeginDataExport(out var lease))
+            return Task.FromException<GdprExportResult>(new DataExportRefusedException(RefusalReason()));
+
+        return RunLeasedAsync(lease!, zipPath, includeMedia, ct);
+    }
+
+    private async Task<GdprExportResult> RunLeasedAsync(IDisposable lease, string zipPath, bool includeMedia, CancellationToken ct)
+    {
+        using (lease)
+        {
+            // LGL-8: the ZIP is synchronous I/O; on the pool it no longer freezes the window.
+            return await Task.Run(() => ExportCoreAsync(zipPath, includeMedia, ct), ct).ConfigureAwait(false);
+        }
+    }
+
+    private string RefusalReason() =>
+        _gate.IsErasing ? "Your data is being deleted."
+        : _gate.IsApplyingUpdate ? "VoiceWink is about to restart."
+        : "An export is already running.";
+
+    private async Task<GdprExportResult> ExportCoreAsync(string zipPath, bool includeMedia, CancellationToken ct)
     {
         // Legacy-key migration must run BEFORE Flush so its removal is materialized into the
         // settings.json snapshot this export redacts (keys are kept in the redacted output, so

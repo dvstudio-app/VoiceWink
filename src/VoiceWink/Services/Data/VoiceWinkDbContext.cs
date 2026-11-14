@@ -1,4 +1,7 @@
+using System.Data.Common;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using VoiceWink.Models.Entities;
 
 namespace VoiceWink.Services.Data;
@@ -30,6 +33,31 @@ public class VoiceWinkDbContext : DbContext
         if (!optionsBuilder.IsConfigured)
         {
             optionsBuilder.UseSqlite($"Data Source={_dbPath}");
+        }
+
+        optionsBuilder.AddInterceptors(UnicodeLowerInterceptor.Instance);
+    }
+
+    /// <summary>HIS-16: SQLite's built-in lower() folds only A-Z, so EF's ToLower() missed "Über"; replace it on every connection EF opens.</summary>
+    private sealed class UnicodeLowerInterceptor : DbConnectionInterceptor
+    {
+        internal static readonly UnicodeLowerInterceptor Instance = new();
+
+        public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
+            => Register(connection);
+
+        public override Task ConnectionOpenedAsync(
+            DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            Register(connection);
+            return Task.CompletedTask;
+        }
+
+        // Matches SearchQuery's ToLowerInvariant; replaced only on EF-opened connections, so no index may use lower().
+        private static void Register(DbConnection connection)
+        {
+            if (connection is SqliteConnection sqlite)
+                sqlite.CreateFunction("lower", (string? s) => s?.ToLowerInvariant(), isDeterministic: true);
         }
     }
 

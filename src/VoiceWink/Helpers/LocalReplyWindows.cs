@@ -15,10 +15,11 @@ namespace VoiceWink.Helpers;
 /// that runs out is recorded (<see cref="LocalReplyProgress.WouldHaveStalled"/>) and logged, and the
 /// reply goes on (owner decision 2026-10-18: no healthy reply cut off until field logs show the clocks
 /// fire only on stuck models). <see cref="OnCpu"/> replaces this set on the built-in engine's processor
-/// route, which is several times slower than the graphics route.
+/// route, which is several times slower than the graphics route. <see cref="Presence"/> acts whatever <see cref="Enforce"/> says: refused twice with no text arriving is a server that is gone, never a slow PC (LAI-18).
 /// </summary>
 internal sealed record LocalReplyWindows(
-    double? FirstTextBaseMs, double? FirstTextMsPerChar, TimeSpan? Stall, bool Enforce = false, LocalReplyWindows? OnCpu = null)
+    double? FirstTextBaseMs, double? FirstTextMsPerChar, TimeSpan? Stall, bool Enforce = false, LocalReplyWindows? OnCpu = null,
+    LocalServerPresence? Presence = null)
 {
     /// <summary>No clock armed: the reply is bounded by the total deadline only.</summary>
     internal static readonly LocalReplyWindows Unarmed = new(null, null, null);
@@ -34,20 +35,21 @@ internal sealed record LocalReplyWindows(
     /// <see cref="Processor"/> when the child runs on the processor.</summary>
     internal static readonly LocalReplyWindows BuiltIn = new(11_278, 2.3829, TimeSpan.FromMilliseconds(2_868), OnCpu: Processor);
 
-    /// <summary>The shipped windows per local provider; <see cref="Unarmed"/> for every other one.
-    /// Local server gets the processor's: a user's own server may have no graphics card, and every
-    /// measured one had.</summary>
+    /// <summary>LAI-18: the processor's windows (a user's server may have no graphics card) plus the presence check; the built-in engine has none, as its child's death closes the connection.</summary>
+    internal static readonly LocalReplyWindows LocalServer = Processor with { Presence = LocalServerPresence.Default };
+
+    /// <summary>The shipped windows per local provider; <see cref="Unarmed"/> for every other one.</summary>
     internal static LocalReplyWindows For(AIProvider provider) => provider switch
     {
         AIProvider.OnThisPc => BuiltIn,
-        AIProvider.LocalServer => Processor,
+        AIProvider.LocalServer => LocalServer,
         _ => Unarmed,
     };
 
     /// <summary>The set for the route the reply runs on. The processor set takes this set's
-    /// <see cref="Enforce"/>, so arming one provider arms both its routes.</summary>
+    /// <see cref="Enforce"/> and <see cref="Presence"/>, so arming one provider arms both its routes.</summary>
     internal LocalReplyWindows ForRoute(bool onGpu)
-        => onGpu || OnCpu is null ? this : OnCpu with { Enforce = Enforce };
+        => onGpu || OnCpu is null ? this : OnCpu with { Enforce = Enforce, Presence = Presence };
 
     /// <summary>The first-text wait for a prompt of <paramref name="promptChars"/> characters
     /// (system + user message), or null when not armed.</summary>

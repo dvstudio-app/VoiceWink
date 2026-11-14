@@ -2,8 +2,8 @@ using System.Runtime.InteropServices;
 
 namespace VoiceWink.Helpers;
 
-/// <summary>Which language a text reads as: the E-mail / Chat language rule's detector
-/// (<see cref="LocalOutputGuard.MeasureLanguage"/>). A seam so tests can answer without Windows.</summary>
+/// <summary>Which language a text reads as: the detector behind the E-mail / Chat and translation language rules
+/// (<see cref="LocalOutputGuard.MeasureLanguage"/>, <see cref="LocalOutputGuard.MeasureTranslation"/>). A seam so tests can answer without Windows.</summary>
 public interface ITextLanguageDetector
 {
     /// <summary>The most likely language's primary subtag in lower case ("nl", "en"), or null when

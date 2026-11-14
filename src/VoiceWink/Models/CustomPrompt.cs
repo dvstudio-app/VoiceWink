@@ -150,4 +150,32 @@ public class CustomPrompt
         copy.TriggerWords = new List<string>(TriggerWords);
         return copy;
     }
+
+    /// <summary>ENH-35: the one rule for "this stored text is a usable prompt list", shared by the service and the re-seed.</summary>
+    /// <param name="json">The stored <c>customPrompts</c> text.</param>
+    /// <param name="prompts">The list; null for a JSON <c>null</c>, which holds nothing to lose.</param>
+    /// <param name="failure">The failure kind when false — an exception type name, never its message (it can quote the text).</param>
+    public static bool TryReadList(string json, out List<CustomPrompt>? prompts, out string failure)
+    {
+        try
+        {
+            prompts = global::System.Text.Json.JsonSerializer.Deserialize<List<CustomPrompt>>(json);
+        }
+        catch (Exception ex)
+        {
+            prompts = null;
+            failure = ex.GetType().Name;
+            return false;
+        }
+
+        if (prompts != null && prompts.Exists(p => p is null))
+        {
+            prompts = null;
+            failure = "null entry";
+            return false;
+        }
+
+        failure = "";
+        return true;
+    }
 }

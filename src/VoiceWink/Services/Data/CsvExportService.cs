@@ -15,7 +15,8 @@ public sealed class CsvExportService
     public string ExportToCsv(IEnumerable<TranscriptionRecord> transcriptions)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Id,Timestamp,Duration(s),TranscriptionModel,EnhancementModel,Language,Text,EnhancedText,WasEnhanced");
+        // HIS-18: the stored clock is UTC (History shows local time), so the header says so; the value format stays for existing parsers.
+        sb.AppendLine("Id,Timestamp (UTC),Duration(s),TranscriptionModel,EnhancementModel,Language,Text,EnhancedText,WasEnhanced");
 
         foreach (var t in transcriptions)
         {
