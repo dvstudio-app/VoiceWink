@@ -31,15 +31,16 @@ public sealed class CustomVocabularyService
         return await db.VocabularyWords.OrderBy(w => w.Word).ToListAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task AddAsync(string word, CancellationToken ct = default)
+    /// <summary>Adds the word; false when it is blank or already in the list (DCT-10).</summary>
+    public async Task<bool> AddAsync(string word, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(word)) return;
+        if (string.IsNullOrWhiteSpace(word)) return false;
 
         using var db = _dbFactory.CreateDbContext();
         // DCT-3: the seed's and the import's case-insensitive rule, so "openai" beside "OpenAI" adds nothing.
         var present = await db.VocabularyWords.Select(w => w.Word).ToListAsync(ct).ConfigureAwait(false);
         var plan = DictionaryMerge.Decide(present, [], [word], []);
-        if (plan.WordsToAdd.Count == 0) return;
+        if (plan.WordsToAdd.Count == 0) return false;
         var normalizedWord = plan.WordsToAdd[0];
 
         db.VocabularyWords.Add(new VocabularyWord { Word = normalizedWord });
@@ -52,6 +53,7 @@ public sealed class CustomVocabularyService
         // user-authored and frequently personal names (the SEC-3 class); privacy-v5 §7 promised (v6 keeps the promise)
         // they ride only the raw-trace opt-in. Pinned by LogLevelControlTests.
         Logger.Debug("Added vocabulary word ({Length} chars)", normalizedWord.Length);
+        return true;
     }
 
     public async Task DeleteAsync(int id, CancellationToken ct = default)

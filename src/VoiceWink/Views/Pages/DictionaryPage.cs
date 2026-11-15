@@ -194,6 +194,7 @@ public sealed class DictionaryPage : Page
             var path = await FilePickers.PickOpenFileAsync(".json");
             if (path is null) return; // user cancelled
             var result = await _viewModel.ImportAsync(path);
+            _statusMessage?.Clear(); // DCT-11
             await ShowInfoAsync("Dictionary imported", BackupImportSummary.Describe(result, BackupParts.Dictionary));
         }
         catch (Exception ex)
@@ -246,51 +247,51 @@ public sealed class DictionaryPage : Page
             FontSize = 13,
             VerticalContentAlignment = VerticalAlignment.Center
         };
-        newWordBox.TextChanged += (_, _) => _viewModel.NewVocabularyWord = newWordBox.Text;
-
-        // Enter key to add
-        newWordBox.KeyDown += async (_, e) =>
+        // Enter and Add share one path, which reads the box at submit time (DCT-10, DCT-2's shape).
+        // Guarded: an unhandled exception escaping an async void UI handler crashes the app (F38).
+        // One submit at a time, as SubmitReplacementAsync: a double Enter would refuse the word it just saved.
+        var submitPending = false;
+        async Task SubmitWordAsync()
         {
-            // Guarded like HandleEnterKey below: an unhandled exception escaping an
-            // async void UI handler (DB write failure) crashes the whole app (F38).
+            if (submitPending || _isUnloaded) return;
+            submitPending = true;
             try
             {
-                if (e.Key == Windows.System.VirtualKey.Enter)
+                var word = newWordBox.Text;
+                if (string.IsNullOrWhiteSpace(word)) return;
+                var added = await _viewModel.AddVocabularyWordAsync(word);
+                if (_isUnloaded) return;
+                if (added)
                 {
-                    var word = newWordBox.Text?.Trim();
-                    if (string.IsNullOrEmpty(word)) return;
-                    var countBefore = _viewModel.VocabularyWords.Count;
-                    await _viewModel.AddVocabularyWordCommand.ExecuteAsync(null);
-                    if (_viewModel.VocabularyWords.Count > countBefore)
-                        newWordBox.Text = "";
+                    newWordBox.Text = "";
+                    _statusMessage?.Clear();
+                }
+                else
+                {
+                    _statusMessage?.Show("Already in the list.");
                 }
             }
             catch (Exception ex)
             {
                 Log.ForContext<DictionaryPage>().Error(ex, "Add vocabulary word failed");
+                if (_isUnloaded) return;
                 _statusMessage?.Show("Failed to add the word. Please try again.");
             }
+            finally
+            {
+                submitPending = false;
+            }
+        }
+
+        newWordBox.KeyDown += async (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Enter) return;
+            e.Handled = true; // as HandleEnterKey below: no bubbling, no sound cue
+            await SubmitWordAsync();
         };
 
         var addWordBtn = CreateCompactAccentButton("Add");
-        addWordBtn.Click += async (_, _) =>
-        {
-            try
-            {
-                var word = newWordBox.Text?.Trim();
-                if (string.IsNullOrEmpty(word)) return;
-                var countBefore = _viewModel.VocabularyWords.Count;
-                await _viewModel.AddVocabularyWordCommand.ExecuteAsync(null);
-                // Only clear the input if the word was actually added
-                if (_viewModel.VocabularyWords.Count > countBefore)
-                    newWordBox.Text = "";
-            }
-            catch (Exception ex)
-            {
-                Log.ForContext<DictionaryPage>().Error(ex, "Add vocabulary word failed");
-                _statusMessage?.Show("Failed to add the word. Please try again.");
-            }
-        };
+        addWordBtn.Click += async (_, _) => await SubmitWordAsync();
 
         // A Grid, not a horizontal StackPanel: a StackPanel gives a TextBox infinite width, so it
         // grows with its text and pushes the button off the card (owner UAT 2026-09-13, on the
@@ -455,6 +456,7 @@ public sealed class DictionaryPage : Page
                 var stillThisEdit = ReferenceEquals(_editingReplacement, editing);
                 if (saved.Saved)
                 {
+                    _statusMessage?.Clear(); // DCT-11: an earlier refusal never outlives this save
                     if (stillThisEdit) EndEditReplacement(clearBoxes: true);
                 }
                 else if (saved.LoopsWith.Count > 0)
@@ -485,10 +487,14 @@ public sealed class DictionaryPage : Page
             if (_isUnloaded) return;
             // Clear only if no pencil was clicked while the add was in flight — the boxes would
             // then hold the row just loaded for editing, not the text just added (Gemini diff r1).
-            if (added.Saved && _editingReplacement == null)
+            if (added.Saved)
             {
-                _replacementOriginalBox.Text = "";
-                _replacementTargetBox.Text = "";
+                _statusMessage?.Clear(); // DCT-11
+                if (_editingReplacement == null)
+                {
+                    _replacementOriginalBox.Text = "";
+                    _replacementTargetBox.Text = "";
+                }
             }
             else if (added.LoopsWith.Count > 0)
             {
@@ -577,6 +583,7 @@ public sealed class DictionaryPage : Page
                 try
                 {
                     await _viewModel.DeleteVocabularyWordCommand.ExecuteAsync(word);
+                    _statusMessage?.Clear(); // DCT-11
                 }
                 catch (Exception ex)
                 {
@@ -764,6 +771,7 @@ public sealed class DictionaryPage : Page
             try
             {
                 await _viewModel.ToggleReplacementCommand.ExecuteAsync(replacement);
+                _statusMessage?.Clear(); // DCT-11
             }
             catch (Exception ex)
             {
@@ -828,6 +836,7 @@ public sealed class DictionaryPage : Page
             try
             {
                 await _viewModel.DeleteReplacementCommand.ExecuteAsync(replacement);
+                _statusMessage?.Clear(); // DCT-11
                 // DCT-2: deleting the row under edit cancels the edit — there is nothing left to
                 // save into — and keeps the typing in case the delete was the wrong click.
                 if (_editingReplacement?.Id == replacement.Id)
@@ -943,6 +952,14 @@ public sealed class DictionaryPage : Page
             _block.Text = text;
             _block.Visibility = Visibility.Visible;
             _ = DismissAsync(_cts.Token, durationMs);
+        }
+
+        /// <summary>Hides the line now, so an earlier refusal never outlives a later success (DCT-10).</summary>
+        public void Clear()
+        {
+            _cts?.Cancel();
+            _cts = null;
+            _block.Visibility = Visibility.Collapsed;
         }
 
         private async Task DismissAsync(CancellationToken ct, int ms)

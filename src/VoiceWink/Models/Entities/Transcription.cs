@@ -80,6 +80,12 @@ public class TranscriptionRecord
     /// </summary>
     public string? ReferenceImagePath { get; set; }
 
+    /// <summary>HIS-11: the Windows name of the microphone that made the recording; null when unknown or nothing was recorded.</summary>
+    public string? CaptureDeviceName { get; set; }
+
+    /// <summary>HIS-11: that microphone's <c>CaptureDeviceTag</c> (the logs' <c>dev=</c> value); null when unknown or nothing was recorded.</summary>
+    public string? CaptureDeviceTag { get; set; }
+
     /// <summary>Sentinel EnhancedText value for successful image generations.</summary>
     public const string ImageGeneratedMarker = "[Image generated]";
     /// <summary>Sentinel EnhancedText value for failed image generations.</summary>

@@ -27,10 +27,11 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 /// health before any request succeeded (<see cref="NotifyServed"/>), is a driver-shaped death —
 /// not charged, one CPU respawn, and Cpu is latched for the session. <see cref="RequestCpu"/> is the
 /// non-blocking intent the GPU self-test's FAIL uses.</para>
-/// <para><b>Thinking is a contract:</b> the command line turns it off, and a child that states
-/// <c>thinking = 1</c> anyway is retired and its model refused for the session — a thinking model
-/// blows the dictation deadline and pastes its reasoning.</para>
-/// <para>No app caller yet (LAI-4 wires it); <c>tools/llama-server-probe</c> drives it end to end.</para>
+/// <para><b>Thinking is a contract:</b> each call asks for a thinking state (off unless LAI-24's
+/// switch is on); a child is reused only for the state it was launched with, and a child that states
+/// another <c>thinking = 0|1</c> than the one asked for is retired and its model refused for that
+/// state for the session.</para>
+/// <para>Its app caller is <c>OnThisPcEngine</c>; <c>tools/llama-server-probe</c> drives it end to end.</para>
 /// </summary>
 internal sealed class LlamaServerProcess
 {
@@ -57,6 +58,7 @@ internal sealed class LlamaServerProcess
     private bool _stormTripped;
     private LlamaLaunchMode _launchMode;
     private int _cpuRequested;
+    /// <summary>Model identity + asked thinking state (<see cref="RefusalKey"/>) refused this session.</summary>
     private readonly HashSet<string> _thinkingRefusedModels = new(StringComparer.Ordinal);
 
     /// <summary>How long a healthy child gets to print its <c>thinking = 0|1</c> line when the drain
@@ -65,8 +67,8 @@ internal sealed class LlamaServerProcess
     internal static readonly TimeSpan ThinkingLineWait = TimeSpan.FromSeconds(1);
 
     /// <summary>What an acquire hands out: where to send, the key to send, which generation a later
-    /// kill may target, and whether this child showed GPU evidence.</summary>
-    internal readonly record struct LlamaLease(Uri BaseUri, string ApiKey, int Generation, bool OnGpu);
+    /// kill may target, whether this child showed GPU evidence, and whether it thinks (LAI-24).</summary>
+    internal readonly record struct LlamaLease(Uri BaseUri, string ApiKey, int Generation, bool OnGpu, bool Thinking = false);
 
     /// <summary>An acquire's result when the caller asked to be told about a busy graphics card:
     /// <see cref="Busy"/> = the child was stopped while loading because the card could not hold
@@ -150,20 +152,21 @@ internal sealed class LlamaServerProcess
 
     /// <summary>The live child's lease for <paramref name="modelIdentity"/> without waiting — null
     /// when there is none, or when a gated acquire would not reuse it: exited, another model, a
-    /// pending CPU request against a GPU child (a failed self-test must stop the fast path too), or
-    /// a child that reported thinking on. A dictation arriving while a child is still loading must
+    /// pending CPU request against a GPU child (a failed self-test must stop the fast path too),
+    /// another thinking state than <paramref name="thinking"/>, or a child that reported a thinking
+    /// state other than its own. A dictation arriving while a child is still loading must
     /// not wait on the gate. Like a gated reuse it MINTS a generation, so a stale holder's kill can
     /// never reach this caller's child; the resident is re-read after the mint, so a lease never
     /// pairs one child's address and key with a successor's generation.</summary>
-    internal LlamaLease? TryGetReadyLease(string modelIdentity, LlamaLaunchMode? mode = null)
+    internal LlamaLease? TryGetReadyLease(string modelIdentity, LlamaLaunchMode? mode = null, bool thinking = false)
     {
         var resident = Volatile.Read(ref _resident);
-        if (!IsServable(resident, modelIdentity, mode))
+        if (!IsServable(resident, modelIdentity, mode, thinking))
         {
             return null;
         }
         var generation = Interlocked.Increment(ref _generation);
-        if (!ReferenceEquals(Volatile.Read(ref _resident), resident) || !IsServable(resident, modelIdentity, mode))
+        if (!ReferenceEquals(Volatile.Read(ref _resident), resident) || !IsServable(resident, modelIdentity, mode, thinking))
         {
             return null;
         }
@@ -171,12 +174,16 @@ internal sealed class LlamaServerProcess
     }
 
     /// <summary>The reuse rule <see cref="TryAcquireAsync"/> applies under the gate, read lock-free.</summary>
-    private bool IsServable(Resident? resident, string modelIdentity, LlamaLaunchMode? mode)
+    private bool IsServable(Resident? resident, string modelIdentity, LlamaLaunchMode? mode, bool thinking)
         => resident is not null
            && !resident.Child.HasExited
            && resident.Mode == EffectiveMode(LaunchMode, mode)
-           && resident.Child.ObservedThinking != true
+           && resident.Thinking == thinking
+           && !resident.ReportsOtherThinking
            && string.Equals(resident.ModelIdentity, modelIdentity, StringComparison.Ordinal);
+
+    /// <summary>The refused-set key: a model refused with thinking on still serves with it off.</summary>
+    private static string RefusalKey(string modelIdentity, bool thinking) => modelIdentity + (thinking ? "|thinking" : "");
 
     /// <summary>The first request on this child succeeded: from now on its death is a crash, not
     /// a driver-shaped death that earns the CPU fallback.</summary>
@@ -228,15 +235,17 @@ internal sealed class LlamaServerProcess
 
     /// <summary>
     /// A healthy resident server for <paramref name="modelPath"/>, or null when the engine cannot
-    /// serve this call (payload refused, storm tripped, launch or health failure, a thinking
-    /// model). <paramref name="modelIdentity"/> binds the child to the model INSTALL, not its path:
+    /// serve this call (payload refused, storm tripped, launch or health failure, a model refused
+    /// for its thinking state). <paramref name="modelIdentity"/> binds the child to the model INSTALL, not its path:
     /// a re-download lands new bytes at the same path. Never throws for lifecycle reasons;
     /// cancellation propagates. <paramref name="requestedMode"/> is this call's own mode
     /// (<see cref="EffectiveMode"/>): it neither sets nor clears the session latch.
+    /// <paramref name="thinking"/> is this call's thinking state (LAI-24); a resident in the other
+    /// state is retired and replaced.
     /// </summary>
     internal async Task<LlamaLease?> TryAcquireAsync(
-        string modelPath, string modelIdentity, CancellationToken ct, LlamaLaunchMode? requestedMode = null)
-        => (await AcquireCoreAsync(modelPath, modelIdentity, ct, requestedMode, loadGuard: null).ConfigureAwait(false)).Lease;
+        string modelPath, string modelIdentity, CancellationToken ct, LlamaLaunchMode? requestedMode = null, bool thinking = false)
+        => (await AcquireCoreAsync(modelPath, modelIdentity, ct, requestedMode, loadGuard: null, thinking: thinking).ConfigureAwait(false)).Lease;
 
     /// <summary>
     /// An Auto acquire for a GPU measurement: like <see cref="TryAcquireAsync"/>, except that a
@@ -254,7 +263,7 @@ internal sealed class LlamaServerProcess
 
     private async Task<LlamaAcquire> AcquireCoreAsync(
         string modelPath, string modelIdentity, CancellationToken ct, LlamaLaunchMode? requestedMode, LoadGuard? loadGuard,
-        bool cpuFallback = true)
+        bool cpuFallback = true, bool thinking = false)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -276,25 +285,25 @@ internal sealed class LlamaServerProcess
                 var reusable = !current.Child.HasExited
                     && current.Mode == EffectiveMode(_launchMode, requestedMode)
                     && string.Equals(current.ModelIdentity, modelIdentity, StringComparison.Ordinal)
-                    && current.Child.ObservedThinking != true;
+                    && current.Thinking == thinking
+                    && !current.ReportsOtherThinking;
                 if (reusable)
                 {
                     return new(current.LeaseFor(Interlocked.Increment(ref _generation)), false);
                 }
-                if (current.Child.ObservedThinking == true)
+                if (current.ReportsOtherThinking)
                 {
                     // The line arrived after this child was published: refuse the model now, or
                     // every later call would reload it only to retire it again.
-                    _thinkingRefusedModels.Add(current.ModelIdentity);
-                    Logger.Error("llama-server: the model reports thinking on despite --reasoning off - refused for this session (a thinking model misses the dictation deadline)");
+                    RefuseThinking(current.ModelIdentity, current.Thinking);
                 }
-                if (!RetireResident(current, current.Child.ObservedThinking == true ? "thinking on" : "not reusable"))
+                if (!RetireResident(current, current.ReportsOtherThinking ? "thinking state mismatch" : "not reusable"))
                 {
                     return default;
                 }
             }
 
-            if (_thinkingRefusedModels.Contains(modelIdentity))
+            if (_thinkingRefusedModels.Contains(RefusalKey(modelIdentity, thinking)))
             {
                 return default; // refused once this session with a logged reason; never respawned.
             }
@@ -335,7 +344,7 @@ internal sealed class LlamaServerProcess
                     return default;
                 }
                 var apiKey = LlamaServerLaunch.NewApiKey();
-                var child = _launcher.TryLaunch(_exePath, modelPath, apiKey, mode);
+                var child = _launcher.TryLaunch(_exePath, modelPath, apiKey, mode, thinking);
                 if (child is null)
                 {
                     Logger.Warning("llama-server: launch failed (job setup or process creation, launch mode {Mode})", mode);
@@ -362,11 +371,10 @@ internal sealed class LlamaServerProcess
                         // The wait is bounded at ThinkingLineWait.
                         await Task.Delay(50, CancellationToken.None).ConfigureAwait(false);
                     }
-                    if (child.ObservedThinking == true)
+                    if (child.ObservedThinking is { } reported && reported != thinking)
                     {
                         Retire(child);
-                        _thinkingRefusedModels.Add(modelIdentity);
-                        Logger.Error("llama-server: the model reports thinking on despite --reasoning off - refused for this session (a thinking model misses the dictation deadline)");
+                        RefuseThinking(modelIdentity, thinking);
                         return default;
                     }
                     if (mode == LlamaLaunchMode.Cpu && cpuRetried)
@@ -375,10 +383,10 @@ internal sealed class LlamaServerProcess
                         Logger.Warning("llama-server: CPU retry healthy after the Auto (GPU) child died before health - latching CPU for this session");
                     }
                     var generation = Interlocked.Increment(ref _generation);
-                    var resident = new Resident(child, baseUri, apiKey, modelIdentity, mode, generation, cpuFallback);
+                    var resident = new Resident(child, baseUri, apiKey, modelIdentity, mode, generation, cpuFallback, thinking);
                     Volatile.Write(ref _resident, resident);
-                    Logger.Information("llama-server: generation {Gen} healthy on port {Port} (pid {Pid}, launch mode {Mode}, gpu evidence {OnGpu})",
-                        generation, baseUri.Port, child.Pid, mode, resident.OnGpu);
+                    Logger.Information("llama-server: generation {Gen} healthy on port {Port} (pid {Pid}, launch mode {Mode}, gpu evidence {OnGpu}, thinking {Thinking})",
+                        generation, baseUri.Port, child.Pid, mode, resident.OnGpu, thinking ? "on" : "off");
                     return new(resident.LeaseFor(generation), false);
                 }
 
@@ -666,6 +674,14 @@ internal sealed class LlamaServerProcess
         _retiring = child;
     }
 
+    /// <summary>The model reported another thinking state than the one asked for: refused in that state for the session.</summary>
+    private void RefuseThinking(string modelIdentity, bool asked)
+    {
+        _thinkingRefusedModels.Add(RefusalKey(modelIdentity, asked));
+        Logger.Error("llama-server: the model reports thinking {Reported} although thinking {Asked} was asked for - refused in that state for this session",
+            asked ? "off" : "on", asked ? "on" : "off");
+    }
+
     private void RecordInvoluntaryExit()
     {
         var now = _utcNow();
@@ -677,7 +693,8 @@ internal sealed class LlamaServerProcess
     /// <summary>The live child and what it was spawned for. <see cref="Served"/> is written by
     /// <see cref="NotifyServed"/> off the gate, hence volatile.</summary>
     private sealed class Resident(
-        ILlamaServerChild child, Uri baseUri, string apiKey, string modelIdentity, LlamaLaunchMode mode, int firstGeneration, bool cpuFallback)
+        ILlamaServerChild child, Uri baseUri, string apiKey, string modelIdentity, LlamaLaunchMode mode, int firstGeneration, bool cpuFallback,
+        bool thinking)
     {
         private volatile bool _served;
 
@@ -686,7 +703,11 @@ internal sealed class LlamaServerProcess
         public LlamaLaunchMode Mode { get; } = mode;
         public int FirstGeneration { get; } = firstGeneration;
         public bool CpuFallback { get; } = cpuFallback;
+        public bool Thinking { get; } = thinking;
         public bool OnGpu => LlamaServerLogLine.IsGpuDevice(Child.ObservedDevice?.Token);
+
+        /// <summary>The child printed a thinking state other than the one it was launched with.</summary>
+        public bool ReportsOtherThinking => Child.ObservedThinking is { } reported && reported != Thinking;
 
         public bool Served
         {
@@ -694,6 +715,6 @@ internal sealed class LlamaServerProcess
             set => _served = value;
         }
 
-        public LlamaLease LeaseFor(int generation) => new(baseUri, apiKey, generation, OnGpu);
+        public LlamaLease LeaseFor(int generation) => new(baseUri, apiKey, generation, OnGpu, Thinking);
     }
 }

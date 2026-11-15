@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using VoiceWink.Helpers;
@@ -119,7 +120,7 @@ public sealed class GdprExportService
         var vocabulary = await db.VocabularyWords.AsNoTracking().ToListAsync(ct).ConfigureAwait(false);
         var replacements = await db.WordReplacements.AsNoTracking().ToListAsync(ct).ConfigureAwait(false);
 
-        var jsonOpts = new JsonSerializerOptions { WriteIndented = true };
+        var jsonOpts = new JsonSerializerOptions { WriteIndented = true, Converters = { new UtcDateTimeConverter() } };
         var skipped = new List<string>();
 
         await using var fs = new FileStream(zipPath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -214,7 +215,23 @@ public sealed class GdprExportService
         r.ImageThinking,
         r.ImageVersionCount,
         ReferenceImageFiles = ReferenceBaseNames(r.ReferenceImagePath),
+        r.CaptureDeviceName,
+        r.CaptureDeviceTag,
     };
+
+    /// <summary>HIS-21: every stored clock is UTC but SQLite returns Kind=Unspecified, so the export writes the Z itself.</summary>
+    private sealed class UtcDateTimeConverter : JsonConverter<DateTime>
+    {
+        public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.GetDateTime();
+
+        public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.Kind switch
+            {
+                DateTimeKind.Local => value.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            });
+    }
 
     private static string? BaseName(string? path) =>
         string.IsNullOrEmpty(path) ? null : Path.GetFileName(path);

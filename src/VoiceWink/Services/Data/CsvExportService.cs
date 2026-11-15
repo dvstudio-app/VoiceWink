@@ -16,7 +16,8 @@ public sealed class CsvExportService
     {
         var sb = new StringBuilder();
         // HIS-18: the stored clock is UTC (History shows local time), so the header says so; the value format stays for existing parsers.
-        sb.AppendLine("Id,Timestamp (UTC),Duration(s),TranscriptionModel,EnhancementModel,Language,Text,EnhancedText,WasEnhanced");
+        // HIS-11: the two microphone columns are appended last, so existing column positions hold.
+        sb.AppendLine("Id,Timestamp (UTC),Duration(s),TranscriptionModel,EnhancementModel,Language,Text,EnhancedText,WasEnhanced,Microphone,MicrophoneId");
 
         foreach (var t in transcriptions)
         {
@@ -32,7 +33,9 @@ public sealed class CsvExportService
                 EscapeCsv(t.Language ?? ""),
                 EscapeCsv(t.Text),
                 EscapeCsv(t.EnhancedText ?? ""),
-                t.WasEnhanced));
+                t.WasEnhanced,
+                EscapeCsv(t.CaptureDeviceName ?? ""),
+                EscapeCsv(t.CaptureDeviceTag ?? "")));
         }
 
         return sb.ToString();

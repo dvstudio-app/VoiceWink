@@ -33,6 +33,12 @@ internal sealed class DialogLease
     public async Task<IDisposable> AcquireAsync(CancellationToken ct = default)
     {
         await _slot.WaitAsync(ct);
+        // UI-5d: the grant can reach the caller after its token tripped; a stale caller gives the slot back.
+        if (ct.IsCancellationRequested)
+        {
+            _slot.Release();
+            ct.ThrowIfCancellationRequested();
+        }
         return new Lease(_slot);
     }
 

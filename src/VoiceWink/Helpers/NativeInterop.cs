@@ -723,56 +723,10 @@ internal static class NativeInterop
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
 
-    // --- Raw keyboard input sink (HKY-2 RawKeyboardSink) ---
-
-    public const uint WM_INPUT = 0x00FF;
     public static readonly IntPtr HWND_MESSAGE = new(-3);
-    public const uint RIDEV_REMOVE = 0x00000001;
-    public const uint RIDEV_INPUTSINK = 0x00000100;
-    public const uint RID_HEADER = 0x10000005;
-    public const uint RIM_TYPEKEYBOARD = 1;
-    public const ushort HID_USAGE_PAGE_GENERIC = 0x01;
-    public const ushort HID_USAGE_GENERIC_KEYBOARD = 0x06;
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RAWINPUTDEVICE
-    {
-        public ushort usUsagePage;
-        public ushort usUsage;
-        public uint dwFlags;
-        public IntPtr hwndTarget;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RAWINPUTHEADER
-    {
-        public uint dwType;
-        public uint dwSize;
-        public IntPtr hDevice;
-        public IntPtr wParam;
-    }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool RegisterRawInputDevices(
-        [In] RAWINPUTDEVICE[] pRawInputDevices, uint uiNumDevices, uint cbSize);
-
-    /// <summary>Returns the device count, or (uint)-1 on error (ERROR_INSUFFICIENT_BUFFER sets *puiNumDevices).</summary>
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint GetRegisteredRawInputDevices(
-        [Out] RAWINPUTDEVICE[]? pRawInputDevices, ref uint puiNumDevices, uint cbSize);
-
-    /// <summary>Returns bytes copied, or (uint)-1 on error.</summary>
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint GetRawInputData(
-        IntPtr hRawInput, uint uiCommand, out RAWINPUTHEADER pData, ref uint pcbSize, uint cbSizeHeader);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr DispatchMessage(ref MSG lpMsg);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool PostMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
 
     // --- Monitor Info ---
 

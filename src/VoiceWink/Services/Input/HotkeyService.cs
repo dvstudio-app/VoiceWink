@@ -32,21 +32,15 @@ public sealed class HotkeyService : IDisposable
     // Thresholds are tuned to recover within ~75s of hook death; the false-positive
     // case (user mousing-only for 60+ seconds) is a ~600ms invisible restart.
     private const int WatchdogIntervalSeconds = 15;
-    internal const int HookSilentThresholdSeconds = 60;    // 1 minute silent on our side
-    internal const int WindowsInputFreshSeconds = 30;      // and Windows saw input in the last 30s
-    internal const int MinSecondsBetweenAutoRestarts = 60; // never auto-restart more than once a minute
+    private const int HookSilentThresholdSeconds = 60;    // 1 minute silent on our side
+    private const int WindowsInputFreshSeconds = 30;      // and Windows saw input in the last 30s
+    private const int MinSecondsBetweenAutoRestarts = 60; // never auto-restart more than once a minute
 
     private readonly SettingsService _settings;
 
     /// <summary>HKY-2: receives the foreground sample at each watchdog restart and emits
     /// the diagnostic line off-thread. Null in tests / the public ctor.</summary>
     private readonly WatchdogForegroundObserver? _watchdogObserver;
-
-    /// <summary>HKY-2: raw keyboard evidence for the watchdog. Null in tests / the public ctor = the legacy check alone.</summary>
-    private readonly RawKeyboardSink? _rawKeyboard;
-
-    /// <summary>HKY-2: hardware key-downs the hook passed on (not suppressed, not simulated); the sink's miss evidence.</summary>
-    private long _hookPassedKeyDowns;
 
     private IGlobalHook? _hook;
     private DispatcherQueue? _dispatcherQueue;
@@ -82,7 +76,7 @@ public sealed class HotkeyService : IDisposable
     /// <summary>Once-per-minute throttle window for the near-miss watchdog log. UI thread only.</summary>
     private static readonly TimeSpan NearMissLogThrottle = TimeSpan.FromSeconds(60);
     /// <summary>Floor for "Windows-input is fresh enough to suggest the user just typed" — must be ≤ <see cref="WindowsInputFreshSeconds"/>.</summary>
-    internal const int NearMissHookSilentFloorSeconds = 30;
+    private const int NearMissHookSilentFloorSeconds = 30;
     /// <summary>
     /// Tolerance for treating our mouse-hook event as the same input observed by
     /// GetLastInputInfo. Both use GetTickCount time; this allows hook dispatch jitter.
@@ -352,11 +346,10 @@ public sealed class HotkeyService : IDisposable
     /// <summary>HKY-2: production overload (App's explicit DI factory) supplying the
     /// watchdog foreground observer. Null (the public ctor, all test sites) = no
     /// foreground-context line; the watchdog itself behaves identically.</summary>
-    internal HotkeyService(SettingsService settings, WatchdogForegroundObserver? watchdogObserver, RawKeyboardSink? rawKeyboard = null)
+    internal HotkeyService(SettingsService settings, WatchdogForegroundObserver? watchdogObserver)
     {
         _settings = settings;
         _watchdogObserver = watchdogObserver;
-        _rawKeyboard = rawKeyboard;
         _config = ResolveRoleBindings(_config);
     }
 
@@ -587,13 +580,6 @@ public sealed class HotkeyService : IDisposable
         _watchdogTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(WatchdogIntervalSeconds) };
         _watchdogTimer.Tick += OnWatchdogTick;
         _watchdogTimer.Start();
-        // HKY-2: the sink's start waits up to 2 s for its thread, so it never runs on the UI thread.
-        if (_rawKeyboard is { } sink)
-            _ = Task.Run(() =>
-            {
-                try { sink.Start(); }
-                catch (Exception ex) { Logger.Warning(ex, "Raw keyboard sink start failed — watchdog keeps its legacy check"); }
-            });
     }
 
     /// <summary>
@@ -650,8 +636,6 @@ public sealed class HotkeyService : IDisposable
     {
         try
         {
-            // HKY-2: ping before the early returns, so a skipped tick never reads as a wedged sink pump.
-            var sinkPumping = _rawKeyboard?.Ping() ?? false;
             if (_disposed || _hook == null) return;
             // Skip while a key is actively held — restart would leak the key-down.
             if (_activeHotkeyCode != KeyCode.VcUndefined) return;
@@ -662,40 +646,11 @@ public sealed class HotkeyService : IDisposable
             };
             if (!NativeInterop.GetLastInputInfo(ref info)) return;
 
-            // HKY-2: counters, then the clock, then the hook time — a key landing mid-tick then reads as stale raw input, never as fresh raw beside stale hook silence.
-            var hookPassedKeyDowns = Interlocked.Read(ref _hookPassedKeyDowns);
-            var raw = _rawKeyboard?.Sample() ?? default;
-            var tickNow = NativeInterop.GetTickCount();
             var nowUtc = DateTime.UtcNow;
-            var lastHookEventUtc = _lastHookEventUtc;
-            var rawKeyAgeMs = RawKeyboardSink.RawKeyAgeMs(tickNow, raw.LastTime);
+            var tickNow = NativeInterop.GetTickCount();
+            var lastHookEventUtc = _lastHookEventUtc; // one read, so the decision and its log line agree
             var lastMouseEventTickTime = GetLastMouseEventTickCount();
             var decision = EvaluateWatchdog(nowUtc, lastHookEventUtc, lastMouseEventTickTime, info.dwTime, tickNow, _lastWatchdogRestartUtc);
-
-            // HKY-2: a trusted raw-keyboard sink replaces the LASTINPUTINFO guess; Fallback keeps the legacy decision.
-            string? rawEvidence = null;
-            if (_rawKeyboard != null)
-            {
-                try
-                {
-                    var verdict = _rawKeyboard.Evaluate(sinkPumping, hookPassedKeyDowns, raw.Count, rawKeyAgeMs,
-                        (nowUtc - lastHookEventUtc).TotalSeconds, (nowUtc - _lastWatchdogRestartUtc).TotalSeconds,
-                        decision == WatchdogDecision.Restart, nowUtc);
-                    (decision, rawEvidence) = verdict switch
-                    {
-                        RawKeyboardSink.Verdict.Healthy => (WatchdogDecision.Healthy, "raw"),
-                        RawKeyboardSink.Verdict.NearMiss => (WatchdogDecision.NearMiss, "raw"),
-                        RawKeyboardSink.Verdict.RestartRaw => (WatchdogDecision.Restart, "raw"),
-                        RawKeyboardSink.Verdict.RestartBackstop => (WatchdogDecision.Restart, "backstop"),
-                        _ => (decision, (string?)null),
-                    };
-                }
-                catch (Exception ex)
-                {
-                    // A sink fault must never cancel the legacy restart, the only recovery for a dead hook.
-                    Logger.Warning(ex, "Raw keyboard sink evaluation failed — legacy watchdog decision kept");
-                }
-            }
 
             switch (decision)
             {
@@ -707,13 +662,6 @@ public sealed class HotkeyService : IDisposable
                     // ticks on the UI thread so no synchronization needed.
                     if (nowUtc - _lastNearMissLogUtc < NearMissLogThrottle) return;
                     _lastNearMissLogUtc = nowUtc;
-                    if (rawEvidence != null)
-                    {
-                        Logger.Information(
-                            "Watchdog near-miss: hookSilent={HookSilent:F0}s rawKey={RawKey:F0}s evidence={Evidence} — no restart yet",
-                            (nowUtc - lastHookEventUtc).TotalSeconds, rawKeyAgeMs / 1000.0, rawEvidence);
-                        return;
-                    }
                     var nearMissHookSilent = (nowUtc - lastHookEventUtc).TotalSeconds;
                     var nearMissWindowsInput = unchecked(tickNow - info.dwTime) / 1000.0;
                     var nearMissMouseInput = unchecked(tickNow - lastMouseEventTickTime) / 1000.0;
@@ -729,14 +677,9 @@ public sealed class HotkeyService : IDisposable
                     var hookSilent = (nowUtc - lastHookEventUtc).TotalSeconds;
                     var windowsInput = unchecked(tickNow - info.dwTime) / 1000.0;
                     var mouseInput = unchecked(tickNow - lastMouseEventTickTime) / 1000.0;
-                    if (rawEvidence != null)
-                        Logger.Warning(
-                            "Watchdog: keyboard hook silent for {HookSilent:F0}s, raw keyboard input {RawKey:F0}s ago, Windows saw input {WindowsInput:F0}s ago (evidence={Evidence}) — restarting global hook",
-                            hookSilent, rawKeyAgeMs / 1000.0, windowsInput, rawEvidence);
-                    else
-                        Logger.Warning(
-                            "Watchdog: keyboard hook silent for {HookSilent:F0}s, Windows saw input {WindowsInput:F0}s ago, mouse hook silent for {MouseInput:F0}s — restarting global hook",
-                            hookSilent, windowsInput, mouseInput);
+                    Logger.Warning(
+                        "Watchdog: keyboard hook silent for {HookSilent:F0}s, Windows saw input {WindowsInput:F0}s ago, mouse hook silent for {MouseInput:F0}s — restarting global hook",
+                        hookSilent, windowsInput, mouseInput);
                     // HKY-2: sample the foreground BEFORE the restart call below — its async
                     // body runs synchronously through lock acquisition and hook disposal
                     // before its first yield, so a post-call capture would not be a fire-time
@@ -1808,8 +1751,6 @@ public sealed class HotkeyService : IDisposable
             var timestampMs = Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
             if (HandleKeyDown(e.Data.KeyCode, timestampMs))
                 e.SuppressEvent = true;
-            else if (!e.IsEventSimulated)
-                Interlocked.Increment(ref _hookPassedKeyDowns); // HKY-2: a swallowed key is never raw-miss evidence
         }
         catch (Exception ex)
         {
@@ -1965,7 +1906,6 @@ public sealed class HotkeyService : IDisposable
             _watchdogTimer.Tick -= OnWatchdogTick;
             _watchdogTimer = null;
         }
-        _rawKeyboard?.Dispose(); // Dispose, not Stop: a thread-pool Start still queued from StartWatchdog then no-ops
         if (DetachAndDisposeHook())
             Logger.Information("Global hotkey hook disposed");
         // Don't dispose _restartLock — App.OnPowerModeChanged.Resume can call

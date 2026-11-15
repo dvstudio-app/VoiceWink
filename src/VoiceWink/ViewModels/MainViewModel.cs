@@ -51,6 +51,7 @@ public partial class MainViewModel : ObservableObject
     private readonly AppModeManager _appModeManager;
     private readonly RedoCoordinator _redoCoordinator;
     private readonly RetainedWavLedger _wavLedger;
+    private readonly Services.Audio.RecordingDeviceLedger _deviceLedger;
     private readonly LastRecordingSlot _lastRecording;
     private readonly LicenseService _license;
     private readonly Services.AIEnhancement.ImageGenerationJobService _imageJob;
@@ -508,15 +509,19 @@ public partial class MainViewModel : ObservableObject
     /// so the dialog opens on the main window (which has XamlRoot).
     /// Args: (isImageGeneration, capturedContext). The dialog callback calls RedoEnhancementAsync.
     /// Context is passed as a snapshot to avoid timer races nulling the coordinator context.
+    /// The token ends the wait for the dialog slot when the request goes stale (UI-5d).
     /// </summary>
-    public event Func<bool, RedoContext, Task>? ShowModelPickerRequested;
+    public event Func<bool, RedoContext, CancellationToken, Task>? ShowModelPickerRequested;
 
-    /// <summary>REL-20: shows the two-choice dialog; null = cancelled.</summary>
-    public event Func<Task<Helpers.RedoChoice?>>? ShowRedoChoiceRequested;
+    /// <summary>REL-20: shows the two-choice dialog; null = cancelled. The token ends a stale slot wait (UI-5d).</summary>
+    public event Func<CancellationToken, Task<Helpers.RedoChoice?>>? ShowRedoChoiceRequested;
 
     // REL-20: the open AI picker's ticket (one picker at a time — the _enhancementPickerActive CAS).
     private long _pickerGeneration;
     private bool _pickerFromChooser;
+
+    // UI-5d: cancels a picker's wait for the dialog slot once its request has gone stale.
+    private readonly Helpers.PickerWaitCancellation _pickerWait = new();
 
     /// <summary>
     /// Raised when an image generation prompt has <c>AskImageSize</c> enabled. The handler shows
@@ -538,12 +543,10 @@ public partial class MainViewModel : ObservableObject
     /// and consume the retained WAV itself, and moving that into App would put the guard order in
     /// the hub.
     ///
-    /// <para><b>No CancellationToken, deliberately.</b> The image picker takes one because a
-    /// pipeline Stop tap can hit a dialog opened DURING a run and must be able to Hide() it. This
-    /// dialog only ever opens at <see cref="RecordingState.Idle"/> with nothing in flight, so there
-    /// is no cancel source to plumb.</para>
+    /// <para>The token ends the wait for the dialog slot when a new recording makes the request
+    /// stale (UI-5d); it never closes a dialog already on screen.</para>
     /// </summary>
-    public event Func<TranscriptionRetryPickerRequest, Task<TranscriptionRetrySelection?>>?
+    public event Func<TranscriptionRetryPickerRequest, CancellationToken, Task<TranscriptionRetrySelection?>>?
         ShowTranscriptionRetryPickerRequested;
 
     /// <summary>
@@ -587,6 +590,7 @@ public partial class MainViewModel : ObservableObject
         VoiceActivityDetectionService voiceActivityDetection,
         Services.Audio.RecordingAudioPreparation audioPreparation,
         Services.Audio.StandingCaptureService standingCapture,
+        Services.Audio.RecordingDeviceLedger deviceLedger,
         // TRN-29 auto-cleanup proof: the ONLY place "the engine's text survived the machine-owned
         // pipeline" is decidable is after that pipeline, which lives here — so the ViewModel
         // carries the proof signal (criterion = engine health, owner decision 2026-08-24; see the
@@ -617,6 +621,7 @@ public partial class MainViewModel : ObservableObject
         _appModeManager = appModeManager;
         _redoCoordinator = redoCoordinator;
         _wavLedger = wavLedger;
+        _deviceLedger = deviceLedger;
         _lastRecording = lastRecording;
         _license = license;
         _imageJob = imageJob;
@@ -1187,6 +1192,13 @@ public partial class MainViewModel : ObservableObject
                 scope, (retired?.Count ?? 0) - before);
         }
 
+        // UI-5d: a redo picker or chooser on History content this delete covers is stale, keyed on its own context.
+        if (_pickerWait.TripRedoPicker(isImage => BulkDeleteScopeMatchesArmedRedo(scope, isImage)))
+        {
+            _redoCoordinator.InvalidatePending();
+            Logger.Information("Cancelled a redo picker or chooser after a bulk history delete ({Scope})", scope);
+        }
+
         return (IReadOnlyList<string>?)retired ?? Array.Empty<string>();
     }
 
@@ -1395,7 +1407,9 @@ public partial class MainViewModel : ObservableObject
         // HIS-10: the dictation's recording length, persisted by BuildImageRow; 0 where nothing was recorded.
         double DurationSeconds,
         // REL-20: the held recording this job's redo pairs with on completion; null = none.
-        string? PairWithHeldWav = null);
+        string? PairWithHeldWav = null,
+        // HIS-11: the dictation's microphone, persisted by BuildImageRow; default where nothing was recorded.
+        Services.Audio.RecordedCaptureDevice CaptureDevice = default);
 
     /// <summary>
     /// A finished job's presentation, waiting for the pipeline to be idle. OWNS the fresh-copy
@@ -1877,7 +1891,8 @@ public partial class MainViewModel : ObservableObject
     /// <summary>
     /// IMG-4b failure-independence guard around one batch item's provider call: a
     /// cancellation (the runner's linked batch token — user/quit or structured cleanup)
-    /// passes through unlogged, while every genuine per-item failure at N&gt;1 gets ONE
+    /// passes through unlogged, and so does a timeout already logged where it was thrown
+    /// (IMG-23), while every other genuine per-item failure at N&gt;1 gets ONE
     /// local Warning — siblings keep running and only the FIRST-processed failure
     /// presents, so this line is the only diagnostic trail for the others (incl.
     /// parse-stage throws that never reach a provider-client log line). ex.ToString()
@@ -1903,12 +1918,16 @@ public partial class MainViewModel : ObservableObject
         {
             throw; // a cancel is not a failure — never logged as one
         }
+        catch (Helpers.ImageGenerationTimeoutException) when (count > 1)
+        {
+            throw; // IMG-23: already logged once where the timeout was thrown
+        }
         // An EXPECTED provider/network verdict (safety block, 4xx/5xx, timeout, DNS):
         // message only, no stack. The provider client already logged the reason and body
         // one line above, so `ex.ToString()` was dumping ~6 identical frames PER failed
         // version — 24 for an all-failed 4-version run (owner, 2026-07-28: "unnecessary
         // stack traces"). The predicate matches the image path's existing one (see
-        // PersistFailedImageMarkerAsync) — ProviderApiException derives from
+        // Helpers.ImageJobFailureLog) — ProviderApiException derives from
         // HttpRequestException, so typed provider errors are covered — plus
         // OperationCanceledException, which reaches here only as a NON-caller cancel
         // (a caller cancel returned above): that is an HTTP timeout, exactly the
@@ -1926,7 +1945,7 @@ public partial class MainViewModel : ObservableObject
             // An UNEXPECTED type is a real defect, not provider noise: Error + the
             // attached exception, so the stack survives locally AND the event reaches
             // Sentry (whose BeforeSend redacts message, exception values, and stack
-            // frames). Mirrors the else-branch precedent in PersistFailedImageMarkerAsync.
+            // frames). Mirrors the else-branch precedent in Helpers.ImageJobFailureLog.
             logger.Error(ex, "Image generation item {Item}/{Count} failed", item, count);
             throw;
         }
@@ -2051,6 +2070,8 @@ public partial class MainViewModel : ObservableObject
             // explicit 1) so History's Redo can restore it — see the property's docs.
             ImageVersionCount = Helpers.ImageBatchPolicy.ClampCount(req.Count),
             ReferenceImagePath = referencePath,
+            CaptureDeviceName = req.CaptureDevice.Name,
+            CaptureDeviceTag = req.CaptureDevice.Tag,
         };
 
     private async Task<Helpers.ImageItemPersistResult> PersistImageItemAsync(
@@ -2183,11 +2204,7 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     private async Task<Helpers.MarkerPersist> PersistFailedImageMarkerAsync(ImageGenJobRequest req, Exception ex)
     {
-        if (ex is HttpRequestException or InvalidOperationException or TimeoutException
-            or Helpers.InvalidApiKeyFormatException)
-            Logger.Warning("Image generation job failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
-        else
-            Logger.Error(ex, "Image generation job failed");
+        Helpers.ImageJobFailureLog.Write(Logger, ex);
 
         var sanitizedReferences = SanitizeReferencesAfterFailure(req.References, ex);
 
@@ -2214,7 +2231,8 @@ public partial class MainViewModel : ObservableObject
     /// shared body behind both the N=1 terminal marker and each batch version's own
     /// inline row, so the row shape, reference sanitation, and retention can never
     /// drift between them. Deliberately does NOT log and does NOT take commit
-    /// admission: the N=1 wrapper already logs through <c>{ErrorMessage}</c> and each
+    /// admission: the N=1 wrapper already logs through <c>{ErrorMessage}</c> (<c>ImageJobFailureLog</c>;
+    /// a timeout is logged once where it is thrown, IMG-23) and each other
     /// batch item is logged exactly once through the Sentry-redacted
     /// <c>{LocalException}</c> boundary in <see cref="GenerateBatchItemLoggedAsync"/>,
     /// so logging here would both duplicate and widen what reaches breadcrumbs (plan
@@ -2288,9 +2306,10 @@ public partial class MainViewModel : ObservableObject
     /// it was open makes it stale: the captured target is released and nothing else changes.</summary>
     public Task ConfirmModelPickerAsync(string modelId, AIProvider? providerOverride, RedoContext ctx)
     {
+        _pickerWait.EndRedoPicker(); // UI-5d: the dialog has answered; a later trip must not reach the redo it starts
         if (!_redoCoordinator.IsCurrent(_pickerGeneration))
         {
-            Logger.Information("AI picker confirmed after a newer recording — abandoning");
+            Logger.Information("AI picker confirmed after its request went stale — abandoning");
             ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
             return Task.CompletedTask;
         }
@@ -2310,6 +2329,7 @@ public partial class MainViewModel : ObservableObject
     /// chooser's second step, or a stale picker, changes nothing but the captured target.</summary>
     public void CancelModelPicker()
     {
+        _pickerWait.EndRedoPicker(); // UI-5d
         if (_pickerFromChooser || !_redoCoordinator.IsCurrent(_pickerGeneration))
         {
             ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
@@ -2491,6 +2511,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         TranscriptionRetrySelection? selection;
+        var waitToken = _pickerWait.Begin();
         try
         {
             // Recency (REL-12): opening the retry picker IS the user's most recent intent, so the
@@ -2524,7 +2545,7 @@ public partial class MainViewModel : ObservableObject
                     Models: runnable,
                     PreselectedModelName: Helpers.RunnableTranscriptionModels.Preselect(runnable, attemptModel),
                     RequestedModelDisplayName: Helpers.ModelDisplayName.Resolve(attemptModel),
-                    PreselectedLanguage: attemptLanguage));
+                    PreselectedLanguage: attemptLanguage), waitToken);
 
                 if (selection == null)
                 {
@@ -2554,6 +2575,7 @@ public partial class MainViewModel : ObservableObject
         }
         finally
         {
+            _pickerWait.End(waitToken);
             Interlocked.Exchange(ref _enhancementPickerActive, 0);
         }
 
@@ -2718,10 +2740,12 @@ public partial class MainViewModel : ObservableObject
         }
 
         Helpers.RedoChoice? choice;
+        // UI-5d: a History delete that retires the paired redo leaves this chooser with a dead "Run AI again".
+        var waitToken = pairedRedo != null ? _pickerWait.BeginRedoChoice(pairedRedo.WasImageGeneration) : _pickerWait.Begin();
         try
         {
             CapturePickerPasteTarget(held.TargetWindow);
-            choice = await handler.Invoke();
+            choice = await handler.Invoke(waitToken);
         }
         catch (Exception ex)
         {
@@ -2730,6 +2754,7 @@ public partial class MainViewModel : ObservableObject
         }
         finally
         {
+            _pickerWait.End(waitToken);
             Interlocked.Exchange(ref _enhancementPickerActive, 0);
         }
 
@@ -2816,7 +2841,10 @@ public partial class MainViewModel : ObservableObject
             // IMG-1 text-first entry: no transcription behind this chain, so there is no
             // language to report. Stated explicitly rather than defaulted.
             TranscriptionLanguage: null,
-            IsNewGeneration: true));
+            IsNewGeneration: true),
+            fromChooser: false, targetAlreadyCaptured: false,
+            // UI-5d: the only picker with no History content behind it, so no History delete cancels it.
+            onHistory: false);
     }
 
     /// <summary>
@@ -2928,7 +2956,7 @@ public partial class MainViewModel : ObservableObject
     public void RequestModelPickerWithContext(RedoContext ctx)
         => RequestModelPickerWithContext(ctx, fromChooser: false, targetAlreadyCaptured: false);
 
-    private void RequestModelPickerWithContext(RedoContext ctx, bool fromChooser, bool targetAlreadyCaptured)
+    private void RequestModelPickerWithContext(RedoContext ctx, bool fromChooser, bool targetAlreadyCaptured, bool onHistory = true)
     {
         void ReleaseChooserCapture()
         {
@@ -3022,11 +3050,13 @@ public partial class MainViewModel : ObservableObject
             ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
             return;
         }
+        var waitToken = _pickerWait.BeginRedoPicker(ctx.WasImageGeneration, onHistory);
         try
         {
-            var task = handler.Invoke(ctx.WasImageGeneration, ctx);
+            var task = handler.Invoke(ctx.WasImageGeneration, ctx, waitToken);
             if (task == null)
             {
+                _pickerWait.End(waitToken);
                 Interlocked.Exchange(ref _enhancementPickerActive, 0);
             }
             else
@@ -3035,6 +3065,7 @@ public partial class MainViewModel : ObservableObject
                 // cancel, or fault alike (fault keeps the pre-gate Error log).
                 _ = task.ContinueWith(t =>
                 {
+                    _pickerWait.End(waitToken);
                     Interlocked.Exchange(ref _enhancementPickerActive, 0);
                     if (t.Exception != null)
                         Logger.Error(t.Exception, "Unhandled exception in ShowModelPickerRequested handler");
@@ -3044,6 +3075,7 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex)
         {
             Logger.Error(ex, "ShowModelPickerRequested handler threw synchronously");
+            _pickerWait.End(waitToken);
             Interlocked.Exchange(ref _enhancementPickerActive, 0);
             // Same teardown as a picker cancel — clear + release + orphan-hide (the
             // dismiss timer was already stopped above, so this path would otherwise
@@ -3298,6 +3330,7 @@ public partial class MainViewModel : ObservableObject
                 // safety blocks, timeouts), fully handled with user-facing feedback, and the
                 // Sentry sub-logger forwards Error+ — VOICEWINK-2 was 169 events of one 520
                 // storm. Unexpected exceptions are Error once per type per run, so real bugs still reach Sentry (ENH-16).
+                // The only enhancement-failure line: the service logs none (ENH-42).
                 if (ex is HttpRequestException or InvalidOperationException or TimeoutException
                     or Helpers.InvalidApiKeyFormatException)
                     Logger.Warning("Redo enhancement failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
@@ -4261,6 +4294,8 @@ public partial class MainViewModel : ObservableObject
             // REL-20: the new recording replaces the last one, and an open AI picker goes stale.
             _redoCoordinator.InvalidatePending();
             _lastRecording.Discard("superseded");
+            // UI-5d: a picker still waiting for the dialog slot would open for a request just made stale.
+            _pickerWait.TripAll();
 
             // Capture the target app's window BEFORE any UI changes that could steal focus.
             // GetForegroundWindow is a fast kernel call (non-blocking even under contention).
@@ -4565,6 +4600,8 @@ public partial class MainViewModel : ObservableObject
             // Notice AFTER a successful start (the pipeline pill is live, so the notice renders
             // inside it), one-shot per device id per run — inform, never nag.
             MaybeNotifyDeviceFallback(resolution);
+            // HIS-11: after the retry above, so the row names the device that actually opened.
+            _deviceLedger.Note(startupRecordingPath, resolution.DeviceTag, resolution.EndpointId);
 
             // Codex 2026-05-19 review-loop round-4 finding: there's a residual
             // race window between `_capture.StartRecording()` (inside the call
@@ -4939,6 +4976,8 @@ public partial class MainViewModel : ObservableObject
         // FallbackToDefault at the STANDING capture's start — surface it through the same
         // one-shot latch the cold path uses, now that the pipeline pill is live to render it.
         MaybeNotifyDeviceFallback(claim.ResolutionInfo);
+        // HIS-11: the standing capture's device is the one this recording drained from.
+        _deviceLedger.Note(warmRecordingPath, claim.ResolutionInfo.DeviceTag, claim.ResolutionInfo.EndpointId);
     }
 
     /// <summary>
@@ -5742,11 +5781,22 @@ public partial class MainViewModel : ObservableObject
             // FileStream inside TranscribeAsync; a handler-level retry could not replay that stream.
             // AUD-36: a deferred block takes the engine's gate-blocked entry (the guard above
             // proved the cast); everything else is the ordinary call, byte-for-byte.
+            // TRN-96b: chunks the engine lost on the ordinary entry; the last attempt's count wins.
+            var lostChunks = 0;
+            async Task<string> DecodeNotingLossAsync(
+                Services.Transcription.IDecodeLossReportingTranscriber reporting, CancellationToken token)
+            {
+                var decode = await reporting.TranscribeReportingLossAsync(recordingPath, token);
+                lostChunks = decode.LostChunks;
+                return decode.Text;
+            }
             string rawText = await Helpers.OperationTiming.TimeTranscriptionAsync(attemptModel, recordingPath,
                 () => Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
                     token => noSpeechDeferredToEngine && transcriber is Services.Transcription.INoSpeechAwareTranscriber aware
                         ? aware.TranscribeSuspectedNoSpeechAsync(recordingPath, language, transcriptionHints, token)
-                        : transcriber.TranscribeAsync(recordingPath, language, transcriptionHints, diarize: false, token),
+                        : transcriber is Services.Transcription.IDecodeLossReportingTranscriber reporting
+                            ? DecodeNotingLossAsync(reporting, token)
+                            : transcriber.TranscribeAsync(recordingPath, language, transcriptionHints, diarize: false, token),
                     onRetrying: () =>
                     {
                         PipelineNoticeRequested?.Invoke("Poor connection — retrying");
@@ -6101,6 +6151,8 @@ public partial class MainViewModel : ObservableObject
 
             // HIS-10: read once while the WAV exists; feeds the text row and the voice image rows. 0 = unreadable.
             var recordingSeconds = Helpers.OperationTiming.TryReadWavSeconds(recordingPath) ?? 0;
+            // HIS-11: read once here; feeds the text row and the voice image rows.
+            var captureDevice = _deviceLedger.Find(recordingPath);
 
             // Image generation flow — dispatches a BACKGROUND job (IMG-BG) and returns; the
             // pipeline goes Idle while the image generates, so recording stays available.
@@ -6109,7 +6161,7 @@ public partial class MainViewModel : ObservableObject
             {
                 var transcriptionModelNameForImage = attemptModel;
                 var handledByImageBranch = await TryRunImageGenerationAsync(
-                    text, rawText, prompt, transcriptionModelNameForImage, language, wasPushToTalk, recordingSeconds, ct,
+                    text, rawText, prompt, transcriptionModelNameForImage, language, wasPushToTalk, recordingSeconds, captureDevice, ct,
                     onDispatched: () =>
                     {
                         deliveredRecording = echoRetryCandidate;
@@ -6221,7 +6273,7 @@ public partial class MainViewModel : ObservableObject
                         // outlier among the five sibling catch sites, all of which already
                         // split Warning/provider-shaped vs Error/unexpected per the
                         // documented provider-noise policy) — once per exception type per run,
-                        // shared with the service's own catch (ENH-16).
+                        // shared with the redo catch (ENH-16). The service logs no failure line (ENH-42).
                         Logger.Write(AIEnhancementService.UnexpectedFailureLevel(ex), ex,
                             "AI enhancement failed, using unenhanced text");
                     enhancementFailed = true;
@@ -6356,7 +6408,9 @@ public partial class MainViewModel : ObservableObject
                         EnhancementModelName = enhancedText != null || enhancementFailed
                             ? GetEnhancementModelLabel(prompt) : null,
                         Language = language,
-                        ReferenceImagePath = referencePath
+                        ReferenceImagePath = referencePath,
+                        CaptureDeviceName = captureDevice.Name,
+                        CaptureDeviceTag = captureDevice.Tag
                     }, ct), ct);
             _lastTranscriptionHistoryId = fallthroughPersist.HistoryId;
 
@@ -6374,9 +6428,22 @@ public partial class MainViewModel : ObservableObject
             if (pasteLanded)
                 StatusText = "Done";
 
+            // TRN-96b: part of the recording decoded empty — keep it and offer Retry; outranks the redo pill, so no redo is armed (see PartialDecodeNotice).
+            var offerPartialDecodeRetry = echoRetryCandidate != null
+                && Helpers.PartialDecodeNotice.ShouldOfferRetry(
+                    lostChunks, pasteLanded, File.Exists(echoRetryCandidate.WavPath));
+            if (offerPartialDecodeRetry)
+            {
+                Logger.Warning("Transcription pasted with {LostChunks} chunk(s) decoded empty — recording kept for Retry (TRN-96b)", lostChunks);
+                StatusText = Helpers.PartialDecodeNotice.Message;
+                keepWavForRetry = true;
+                _wavLedger.Track(echoRetryCandidate!.WavPath);
+                ArmRetry(Helpers.PartialDecodeNotice.RetryContextFor(echoRetryCandidate), MiniRecorderTone.Warning);
+                IsMiniRecorderVisible = true;
+            }
             // Show enhancement error AFTER state is Idle and text is pasted,
             // so UpdateState(Idle) doesn't overwrite the error display
-            if (enhancementFailed)
+            else if (enhancementFailed)
             {
                 // Text enhancement failed — offer redo to retry with a different model.
                 // ENH-1: a silent raw-text fallback looked identical to a successful
@@ -6447,8 +6514,13 @@ public partial class MainViewModel : ObservableObject
                     clipboardFallbackTone);
             }
 
+            if (!offerPartialDecodeRetry && lostChunks > 0)
+            {
+                Logger.Warning("Transcription delivered with {LostChunks} chunk(s) decoded empty — no Retry offered (pasted={Pasted}) (TRN-96b)", lostChunks, pasteLanded);
+            }
+
             // REL-20: the redo this run armed, so the chooser offers it for THIS recording only.
-            if (enhancementFailed || enhancedText != null)
+            if (!offerPartialDecodeRetry && (enhancementFailed || enhancedText != null))
                 deliveredRedo = _redoCoordinator.LastContext;
 
             if (pasteLanded)
@@ -7128,6 +7200,7 @@ public partial class MainViewModel : ObservableObject
         string language,
         bool wasPushToTalk, // resolved by the caller — a RETRY run must not read live hotkey state (REL-12)
         double recordingSeconds, // HIS-10: the dictation's length, read while its WAV still exists
+        Services.Audio.RecordedCaptureDevice captureDevice, // HIS-11: by value; the detached job outlives the ledger entry
         CancellationToken ct,
         Action? onDispatched = null, // REL-20: the delivery commit (a cancel also returns true)
         string? pairWithHeldWav = null) // REL-20: the recording this job's redo pairs with
@@ -7286,7 +7359,8 @@ public partial class MainViewModel : ObservableObject
                 Count: count,
                 ReferenceLease: referenceLease,
                 PairWithHeldWav: pairWithHeldWav,
-                DurationSeconds: recordingSeconds);
+                DurationSeconds: recordingSeconds,
+                CaptureDevice: captureDevice);
 
             // Pipeline exit state BEFORE Start (Codex diff review round 2): a PRE-CANCELLED
             // job token (tray Cancel during preparation) makes the body's synchronous prefix

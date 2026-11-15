@@ -33,6 +33,9 @@ public sealed class AppModeManager
         _enhancement = enhancement;
     }
 
+    /// <summary>ENH-39: drops the cached list so the next read sees what an import wrote.</summary>
+    public void DiscardCachedConfigs() => _cache = null;
+
     public List<AppModeConfig> GetConfigs()
     {
         if (_cache != null)
@@ -43,8 +46,8 @@ public sealed class AppModeManager
         // legacy key is gone.
         AppModeSettingsMigration.Run(_settings);
 
-        var json = _settings.GetString(AppDefaults.AppModeConfigs, "");
-        if (string.IsNullOrEmpty(json))
+        var stored = ReadStoredConfigs(out var nothingStored);
+        if (nothingStored)
         {
             var defaults = CreateDefaults();
             SaveConfigs(defaults); // persist so IDs are stable across sessions
@@ -52,17 +55,65 @@ public sealed class AppModeManager
             return _cache;
         }
 
-        try
+        _cache = stored ?? new List<AppModeConfig>(); // unreadable, or a stored JSON null: an empty list
+        return _cache;
+    }
+
+    /// <summary>ENH-38: the stored list, or null when none is usable; an unreadable value is copied aside first.</summary>
+    /// <param name="nothingStored">True when the key is absent, JSON null or an empty string.</param>
+    private List<AppModeConfig>? ReadStoredConfigs(out bool nothingStored)
+    {
+        nothingStored = false;
+        var kind = _settings.GetValueKind(AppDefaults.AppModeConfigs);
+        if (kind is JsonValueKind.Undefined or JsonValueKind.Null)
         {
-            _cache = JsonSerializer.Deserialize<List<AppModeConfig>>(json) ?? new List<AppModeConfig>();
-            return _cache;
+            nothingStored = true;
+            return null;
         }
-        catch (Exception ex)
+        if (kind != JsonValueKind.String)
         {
-            Logger.Warning(ex, "Failed to deserialize App Mode configs ({JsonLength} chars)", json.Length);
-            _cache = new List<AppModeConfig>();
-            return _cache;
+            KeepUnreadableConfigs(_settings.Get(AppDefaults.AppModeConfigs, default(JsonElement)).GetRawText(), "not a string");
+            return null;
         }
+
+        lock (_readLock) // ENH-40c: a second read waits and finds the Ids the first one stored
+        {
+            var json = _settings.GetString(AppDefaults.AppModeConfigs, "");
+            if (string.IsNullOrEmpty(json))
+            {
+                nothingStored = true;
+                return null;
+            }
+            if (AppModeConfig.TryReadList(json, out var configs, out var failure))
+            {
+                if (configs is not null && configs.Exists(c => c.IdMinted))
+                {
+                    // ENH-40c: store the new Ids at once, so the next read and any link to them see the same ones.
+                    _settings.SetString(AppDefaults.AppModeConfigs, JsonSerializer.Serialize(configs));
+                    Logger.Information("App Mode configs: {Count} stored entries had no Id or a repeated one; new Ids were written to settings",
+                        configs.Count(c => c.IdMinted));
+                }
+                return configs;
+            }
+            KeepUnreadableConfigs(json, failure);
+            return null;
+        }
+    }
+
+    private readonly object _readLock = new();
+
+    private string? _reportedUnreadableConfigs;
+
+    // ENH-38: failure kind and length only, never the text (App Mode names and patterns are user data, SEC-3).
+    private void KeepUnreadableConfigs(string raw, string failure)
+    {
+        if (_settings.GetString(AppDefaults.AppModeConfigsUnreadableCopy, "") != raw)
+            _settings.SetString(AppDefaults.AppModeConfigsUnreadableCopy, raw);
+        if (_reportedUnreadableConfigs == raw)
+            return;
+        _reportedUnreadableConfigs = raw;
+        Logger.Warning("App Mode configs could not be read ({Failure}, {JsonLength} chars); the stored text is kept aside",
+            failure, raw.Length);
     }
 
     private List<AppModeConfig> CreateDefaults()
@@ -92,6 +143,7 @@ public sealed class AppModeManager
 
     public void SaveConfigs(List<AppModeConfig> configs)
     {
+        ReadStoredConfigs(out _); // ENH-38: keep an unreadable stored list aside before this write replaces it, cache or not
         var json = JsonSerializer.Serialize(configs);
         try
         {

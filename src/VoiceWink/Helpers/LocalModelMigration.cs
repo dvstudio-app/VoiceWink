@@ -51,6 +51,9 @@ namespace VoiceWink.Helpers;
 /// A name here must be one no shipped build can use — which is what
 /// <c>LocalModelMigrationTests.NoLegacyNameSurvivesInTheCatalog</c> pins.</para>
 ///
+/// <para>Retired CLOUD ids (<see cref="CloudModels.Retired"/>, TRN-84) are rewritten by the same pass through
+/// <see cref="SelectionSuccessor"/>, and are never part of the sweep allowlist.</para>
+///
 /// <para>Unknown names pass through UNCHANGED rather than falling back to a default. A name this map
 /// does not recognise is either already a q8 row or something the user hand-placed, and silently
 /// rewriting it would be the wrong-engine substitution the runtime seam exists to prevent.</para>
@@ -201,12 +204,17 @@ internal static class LocalModelMigration
         MigrateAppModeOverrides(settings);
     }
 
+    /// <summary>The successor a persisted selection is rewritten to, or null when nothing maps; retired cloud ids
+    /// ride the same rewrite but stay out of <see cref="Successors"/>, which is also the on-disk sweep allowlist (TRN-84).</summary>
+    internal static string? SelectionSuccessor(string? persistedName)
+        => IsSuperseded(persistedName) ? Migrate(persistedName)
+            : CloudModels.FindRetired(persistedName)?.Successor;
+
     private static void MigrateGlobalSelection(SettingsService settings)
     {
         var current = settings.GetString(AppDefaults.SelectedModelName, "");
-        if (!IsSuperseded(current)) return;
+        if (SelectionSuccessor(current) is not { } successor) return;
 
-        var successor = Migrate(current)!;
         settings.SetString(AppDefaults.SelectedModelName, successor);
         Logger.Information(
             "Migrated selected model {Old} -> {New} (the catalogue no longer ships that row)",
@@ -250,9 +258,9 @@ internal static class LocalModelMigration
                 if (overrideNode?.GetValueKind() != JsonValueKind.String) continue;
 
                 var current = overrideNode.GetValue<string>();
-                if (!IsSuperseded(current)) continue;
+                if (SelectionSuccessor(current) is not { } successor) continue;
 
-                config[ModelOverrideProperty] = Migrate(current);
+                config[ModelOverrideProperty] = successor;
                 migrated++;
             }
 

@@ -5,8 +5,11 @@ namespace VoiceWink.Models;
 /// <summary>
 /// Custom AI enhancement prompt.
 /// </summary>
-public class CustomPrompt
+public class CustomPrompt : IJsonOnDeserializing, IJsonOnDeserialized
 {
+    /// <summary>The icon a prompt gets when none is set.</summary>
+    public const string DefaultIcon = "E945"; // FontIcon glyph
+
     public string Id { get; set; } = Guid.NewGuid().ToString();
 
     /// <summary>
@@ -20,7 +23,7 @@ public class CustomPrompt
 
     public string Title { get; set; } = string.Empty;
     public string PromptText { get; set; } = string.Empty;
-    public string Icon { get; set; } = "E945"; // FontIcon glyph
+    public string Icon { get; set; } = DefaultIcon;
     public string? Description { get; set; }
     public bool IsActive { get; set; }
     public bool IsPredefined { get; set; }
@@ -139,6 +142,29 @@ public class CustomPrompt
 
     public DateTime DateCreated { get; set; } = DateTime.UtcNow;
 
+    /// <summary>ENH-40c/ENH-43: true when this prompt was read with no Id, or with an earlier prompt's Id, and was given a new one, which the reader saves.</summary>
+    internal bool IdMinted { get; private set; }
+
+    /// <summary>ENH-40c: clears the constructor's Id before the stored fields arrive, so an omitted Id reads like a null one.</summary>
+    void IJsonOnDeserializing.OnDeserializing() => Id = string.Empty;
+
+    /// <summary>ENH-40c: a stored missing, null or blank Id gets a new one, null text reads as empty and a null Icon as the default.</summary>
+    void IJsonOnDeserialized.OnDeserialized()
+    {
+        if (string.IsNullOrWhiteSpace(Id))
+            MintId();
+        Title ??= string.Empty;
+        PromptText ??= string.Empty;
+        Icon ??= DefaultIcon;
+    }
+
+    private string MintId()
+    {
+        Id = Guid.NewGuid().ToString();
+        IdMinted = true;
+        return Id;
+    }
+
     /// <summary>
     /// Creates a shallow copy with all properties duplicated.
     /// Use when you need a temporary override (e.g. image size picker)
@@ -174,6 +200,9 @@ public class CustomPrompt
             failure = "null entry";
             return false;
         }
+
+        if (prompts != null)
+            StoredIdRepair.MintRepeatedIds(prompts, static p => p.Id, static p => p.MintId());
 
         failure = "";
         return true;

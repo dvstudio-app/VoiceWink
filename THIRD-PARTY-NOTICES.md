@@ -144,7 +144,7 @@ weights inside it are the same © NVIDIA Parakeet TDT 0.6B v3 release under **CC
 
 ## llama-server (bundled)
 
-VoiceWink ships llama.cpp's **`llama-server`**, build **b11960** (win-vulkan-x64 release), in
+VoiceWink ships llama.cpp's **`llama-server`**, build **b12110** (win-vulkan-x64 release), in
 `runtimes\win-x64\llama\` — the local engine behind AI enhancement on this PC. The directory
 holds `llama-server.exe` and the libraries it loads: `llama-server-impl.dll`, `llama-common.dll`,
 `llama.dll`, `mtmd.dll`, `ggml.dll`, `ggml-base.dll`, `ggml-vulkan.dll`, fourteen
@@ -162,10 +162,10 @@ Visual C++ runtime DLLs. The licences below cover both directories.
 | llama.cpp (incl. ggml) | **MIT** | https://github.com/ggml-org/llama.cpp |
 | LLVM OpenMP runtime (`libomp.dll`) | **Apache-2.0 WITH LLVM-exception** | https://github.com/llvm/llvm-project |
 | BoringSSL 0.20261020.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **Apache-2.0** | https://boringssl.googlesource.com/boringssl |
-| cpp-httplib 0.62.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
+| cpp-httplib 0.64.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
 | nlohmann/json 3.12.0 (in `llama-common.dll`) | **MIT** | https://github.com/nlohmann/json |
 | rotate-bits (in `llama-common.dll`, `mtmd.dll`) | **MIT** | https://github.com/jb55/rotate-bits.h |
-| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b11960/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
+| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b12110/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
 | nerdamer-prime (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/together-science/nerdamer-prime |
 | decimal.js (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/MikeMcl/decimal.js |
 
@@ -552,7 +552,7 @@ PARTICULAR PURPOSE.
 ## llama-server web UI (bundled npm packages)
 
 `llama-server-impl.dll` (both directories) carries llama.cpp's web UI, compiled from its
-`tools/ui` at build b11960 into one JavaScript bundle and one stylesheet. VoiceWink starts
+`tools/ui` at build b12110 into one JavaScript bundle and one stylesheet. VoiceWink starts
 llama-server with the UI switched off (`--no-webui`), but the UI still ships inside the binary.
 The first table lists the npm packages the UI's own code reaches at run time according to that
 build's `package-lock.json`: the packages it imports and their dependencies, without build tools
@@ -904,6 +904,36 @@ The app fetches them at the user's request from DV Studio's model mirror
 revision named in the download path — falling back to the upstream repository itself when the
 mirror is unavailable or serves a file that fails verification; each download is verified
 against the SHA-256 pins in `PredefinedModels` at install time.
+
+## Built-in AI models (downloaded on demand, not bundled)
+
+The optional built-in AI enhancement models are GGUF files that the bundled `llama-server` runs.
+The app downloads a model the user chooses from DV Studio's model mirror
+(models.voicewink.app), which serves byte-identical copies of the upstream files; there is no
+fallback to another host. Each file is verified against the size and SHA-256 pins in
+`LocalModelCatalog` at install time, and a model's licence files are downloaded into its
+folder with it. Which of these models a VoiceWink version offers depends on the version.
+
+| Model | File | Licence | Source |
+|---|---|---|---|
+| Qwen3.5 2B | `Qwen3.5-2B-Q4_K_M.gguf` | Apache-2.0 | https://huggingface.co/Qwen/Qwen3.5-2B (GGUF: https://huggingface.co/unsloth/Qwen3.5-2B-GGUF) |
+| Qwen3.5 4B | `Qwen3.5-4B-Q4_K_M.gguf` | Apache-2.0 | https://huggingface.co/Qwen/Qwen3.5-4B (GGUF: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF) |
+| Qwen3.5 9B | `Qwen3.5-9B-Q4_K_M.gguf` | Apache-2.0 | https://huggingface.co/Qwen/Qwen3.5-9B (GGUF: https://huggingface.co/unsloth/Qwen3.5-9B-GGUF) |
+| Gemma 4 12B | `gemma-4-12B-it-qat-UD-Q4_K_XL.gguf` | Apache-2.0 | https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF |
+| Gemma 4 E4B | `gemma-4-E4B-it-qat-UD-Q4_K_XL.gguf` | Apache-2.0 | https://huggingface.co/unsloth/gemma-4-E4B-it-qat-GGUF |
+| NVIDIA Nemotron 3.5 Bolt E4B | `Nemotron-3.5-Bolt-E4B-Q4_K_M.gguf` | OpenMDW-1.1 | https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB |
+
+- **Qwen3.5** — Copyright 2026 Alibaba Cloud, Apache License 2.0. The GGUF conversions are
+  published by Unsloth. Each model is downloaded with the `LICENSE` file of its Qwen repository.
+- **Gemma 4** — built by Google DeepMind and released under the Apache License 2.0
+  (https://ai.google.dev/gemma/docs/gemma_4_license). The GGUF conversions are published by
+  Unsloth. Each model is downloaded with the Apache License 2.0 text (`LICENSE-2.0.txt`).
+- **NVIDIA Nemotron 3.5 Bolt E4B** — developed by NVIDIA Corporation. Its use is governed by the
+  OpenMDW License Agreement, version 1.1 (https://openmdw.ai/license/1-1/). NVIDIA post-trained
+  it from Google's Gemma 4 E4B (`Gemma-4-E4B-it`), whose use is governed by the Apache License 2.0. The model is
+  downloaded with both licence texts.
+
+The models are data that `llama-server` loads, not code linked into VoiceWink.
 
 ## Whisper.cpp runtime (bundled via Whisper.net.Runtime + Whisper.net.Runtime.Vulkan + Whisper.net.Runtime.NoAvx)
 

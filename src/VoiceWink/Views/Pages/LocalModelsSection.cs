@@ -27,33 +27,38 @@ internal static class LocalModelsSection
     /// <param name="measured">A first-use check settled: its time now decides the stars and the pick.</param>
     /// <param name="notice">The page's "speed ratings were updated" tracker; null shows no line.</param>
     /// <param name="setupInUse">Setup's AI step: shows only the model for this PC plus the models this
-    /// says are in use, not all four. Null shows every model.</param>
+    /// says are in use, not every model. Null shows every model.</param>
     /// <param name="whenSetupOffersNothing">Setup's AI step: what to show under the note when no model is the pick and none is in use (LAI-19).</param>
+    /// <param name="retiredSwitch">The AI Enhancement page: a retired model in use offers this PC's pick (LAI-22). Null offers nothing.</param>
     internal static UIElement Build(LocalModelStore store, LocalHardwareProfile profile,
         Func<string, bool> isSelected, Action<string> select,
         OnThisPcEngine? engine = null, Action<string?>? changed = null, Action? measured = null,
         SpeedRatingsNotice.Tracker? notice = null, Func<string, bool>? setupInUse = null,
-        Func<UIElement>? whenSetupOffersNothing = null)
+        Func<UIElement>? whenSetupOffersNothing = null, RetiredModelSwitch? retiredSwitch = null)
     {
         // Captured BEFORE the measurements are read, so a timing stored in between is not missed.
         var nextSpeedMeasured = engine?.NextSpeedMeasured;
         // Running checks captured BEFORE their results are read, so a settle in between is not missed.
         var runningChecks = LocalModelCatalog.All.ToDictionary(e => e.Tier,
             e => engine is not null && store.IsInstalled(e.Id) ? engine.WhenFirstUseCheckSettledAsync(e.Id) : null);
-        var (speedProfile, measuredMs) = ProfileAndMeasurements(engine, profile);
+        var (speedProfile, measuredMs, processorOnly) = ProfileAndMeasurements(engine, profile);
         // Every row on one scale for THIS PC (owner rule, 2026-10-03): measured where a check ran,
         // estimated from the PC type and calibrated by the measured rows everywhere else.
         var arm64 = ModelRatings.IsArm64Os;
-        var speeds = LocalModelRecommendation.Speeds(speedProfile, arm64, tier => measuredMs[tier]);
-        var recommended = LocalModelRecommendation.Recommend(speedProfile, tier => measuredMs[tier], arm64);
+        var speeds = LocalModelRecommendation.Speeds(speedProfile, arm64, tier => measuredMs[tier], processorOnly);
+        var recommended = LocalModelRecommendation.Recommend(speedProfile, tier => measuredMs[tier], arm64, processorOnly);
         // The Models page's card spacing.
         var rows = new StackPanel { Spacing = 12 };
+        // LAI-22: only the rows the list can show; a hidden retired row's star must not announce a change.
+        var listed = LocalModelCatalog.All
+            .Where(e => LocalModelRecommendation.IsListed(e, store.IsInstalled(e.Id)))
+            .ToList();
         if (notice?.Show(
-                SpeedRatingsNotice.Fingerprint(LocalModelCatalog.All.Select(e =>
+                SpeedRatingsNotice.Fingerprint(listed.Select(e =>
                     (e.Id, LocalModelRecommendation.MeasuredSpeedStars(speeds[e.Tier].Ms)))),
                 // The build before this one: the measured star where a check had timed it, the
                 // catalog's fixed star otherwise.
-                SpeedRatingsNotice.Fingerprint(LocalModelCatalog.All.Select(e =>
+                SpeedRatingsNotice.Fingerprint(listed.Select(e =>
                     (e.Id, measuredMs[e.Tier] is int ms ? LocalModelRecommendation.MeasuredSpeedStars(ms) : e.Speed)))) == true)
         {
             rows.Children.Add(Caption(SpeedRatingsNotice.Text, AppTheme.TextSecondary));
@@ -66,9 +71,12 @@ internal static class LocalModelsSection
         if (measured is not null && nextSpeedMeasured is { } speedMeasured)
             RefreshWhenMeasured(speedMeasured, measured);
 
-        var ordered = setupInUse is not null
-            ? LocalModelRecommendation.SetupOffer(recommended, setupInUse)
-            : LocalModelRecommendation.DisplayOrder();
+        var ordered = (setupInUse is not null
+                ? LocalModelRecommendation.SetupOffer(recommended, setupInUse)
+                : LocalModelRecommendation.DisplayOrder())
+            .Where(e => LocalModelRecommendation.IsListed(e, store.IsInstalled(e.Id)))
+            .ToList();
+        var pick = recommended is { } pickTier ? LocalModelCatalog.All.First(e => e.Tier == pickTier) : null;
         for (var i = 0; i < ordered.Count; i++)
         {
             var entry = ordered[i];
@@ -81,7 +89,8 @@ internal static class LocalModelsSection
                   ?? (LocalModelRecommendation.IsTooSlow(speed.Ms) ? "Likely slow on this PC." : null);
             // Setup shows stars only, and a model this PC cannot run well shows its note alone (owner, LAI-19).
             rows.Children.Add(BuildRow(store, engine, changed, measured, entry, entry.Tier == recommended,
-                note, setupInUse is null && note is null ? LocalModelAdvice.CardLine(entry) : null, speed, isSelected, select));
+                note, setupInUse is null && note is null ? LocalModelAdvice.CardLine(entry) : null, speed, isSelected, select,
+                retiredSwitch, pick));
             if (measured is not null && runningChecks[entry.Tier] is { } running)
                 RefreshWhenMeasured(running, measured);
         }
@@ -97,21 +106,26 @@ internal static class LocalModelsSection
     /// </summary>
     internal static string? RecommendedPick(OnThisPcEngine? engine, LocalHardwareProfile profile)
     {
-        var (speedProfile, measuredMs) = ProfileAndMeasurements(engine, profile);
-        var tier = LocalModelRecommendation.Recommend(speedProfile, t => measuredMs[t], ModelRatings.IsArm64Os);
+        var (speedProfile, measuredMs, processorOnly) = ProfileAndMeasurements(engine, profile);
+        var tier = LocalModelRecommendation.Recommend(speedProfile, t => measuredMs[t], ModelRatings.IsArm64Os, processorOnly);
         return tier is { } t ? LocalModelCatalog.All.First(e => e.Tier == t).Id : null;
     }
 
     /// <summary>
     /// The profile the speed estimates and floors read, and the speed this PC measured for each
-    /// model (null where nothing was measured). GPU acceleration off: the graphics card plays no
-    /// part, so neither estimates nor floors count it. A deleted model's measurement still
-    /// calibrates the others: deleting it must not move them.
+    /// model (null where nothing was measured). On the processor (GPU acceleration off, or no graphics
+    /// card can serve it — LAI-18b) the card plays no part, so neither estimates nor floors count it.
+    /// A deleted model's measurement still calibrates the others: deleting it must not move them.
     /// </summary>
-    private static (LocalHardwareProfile SpeedProfile, IReadOnlyDictionary<LocalModelTier, int?> MeasuredMs)
+    private static (LocalHardwareProfile SpeedProfile, IReadOnlyDictionary<LocalModelTier, int?> MeasuredMs, bool ProcessorOnly)
         ProfileAndMeasurements(OnThisPcEngine? engine, LocalHardwareProfile profile)
-        => (engine?.RunsOnProcessor == true ? profile with { LargestDedicatedVramBytes = null } : profile,
-            LocalModelCatalog.All.ToDictionary(e => e.Tier, e => engine?.MeasuredSpeedMs(e.Id)));
+    {
+        var processorOnly = LocalModelRecommendation.RunsOnProcessor(
+            engine?.RunsOnProcessor == true, GpuToggleAvailability.Current, ModelRatings.IsArm64Os);
+        return (processorOnly ? profile with { LargestDedicatedVramBytes = null } : profile,
+            LocalModelCatalog.All.ToDictionary(e => e.Tier, e => engine?.MeasuredSpeedMs(e.Id)),
+            processorOnly);
+    }
 
     /// <summary>Rebuilds the rows once a running first-use check has settled, so its time shows.</summary>
     private static async void RefreshWhenMeasured(Task running, Action measured)
@@ -137,7 +151,7 @@ internal static class LocalModelsSection
 
     private static UIElement BuildRow(LocalModelStore store, OnThisPcEngine? engine, Action<string?>? changed, Action? measured,
         LocalModelEntry entry, bool isRecommended, string? floorNote, string? adviceLine, LocalModelRecommendation.TierSpeed tierSpeed,
-        Func<string, bool> isSelected, Action<string> select)
+        Func<string, bool> isSelected, Action<string> select, RetiredModelSwitch? retiredSwitch, LocalModelEntry? pick)
     {
         // ── Left: the Models page's status icon, then name + size and the stars line ──
         var iconGlyph = new FontIcon
@@ -241,6 +255,26 @@ internal static class LocalModelsSection
             Margin = new Thickness(0, 8, 0, 0),
         };
 
+        // LAI-22: a retired model in use offers this PC's pick; one button per label, shown by state.
+        var offerLine = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = AppTheme.Brush(AppTheme.TextSecondary),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var switchBtn = AppTheme.CreateCompactButton("Switch");
+        var downloadAndSwitchBtn = AppTheme.CreateCompactButton("Download and switch");
+        var offerButtons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        offerButtons.Children.Add(switchBtn);
+        offerButtons.Children.Add(downloadAndSwitchBtn);
+        var offer = new Grid { ColumnSpacing = 16, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        offer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        offer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(offerButtons, 1);
+        offer.Children.Add(offerLine);
+        offer.Children.Add(offerButtons);
+
         var card = new Border
         {
             Background = AppTheme.Brush(AppTheme.CardBg),
@@ -256,7 +290,9 @@ internal static class LocalModelsSection
         {
             var installed = store.IsInstalled(entry.Id);
             var chosen = installed && isSelected(entry.Id);
-            download.Element.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+            download.Element.Visibility = LocalModelRecommendation.OffersDownload(entry, installed) ? Visibility.Visible : Visibility.Collapsed;
+            // LAI-22: a deleted retired model leaves the list at once; the page may not rebuild its rows.
+            card.Visibility = LocalModelRecommendation.IsListed(entry, installed) ? Visibility.Visible : Visibility.Collapsed;
             selectBtn.Visibility = installed && !chosen ? Visibility.Visible : Visibility.Collapsed;
             active.Visibility = chosen ? Visibility.Visible : Visibility.Collapsed;
             // Delete beside Select, as on the Models page; an Active model is switched away from first.
@@ -273,7 +309,39 @@ internal static class LocalModelsSection
             card.BorderBrush = chosen
                 ? AppTheme.Brush(ColorHelper.FromArgb(80, 48, 209, 88))
                 : AppTheme.Brush(AppTheme.CardBorderColor);
+            var offered = retiredSwitch is null ? default : RetiredModelSwitch.Offer(entry, chosen, pick,
+                pick is not null && store.IsInstalled(pick.Id),
+                retiredSwitch.PendingTargetFor(entry.Id) is { } target ? LocalModelCatalog.Find(target) : null);
+            offer.Visibility = offered.Kind == RetiredOfferKind.None ? Visibility.Collapsed : Visibility.Visible;
+            offerLine.Text = offered.Line ?? "";
+            switchBtn.Visibility = offered.Kind == RetiredOfferKind.Switch ? Visibility.Visible : Visibility.Collapsed;
+            downloadAndSwitchBtn.Visibility = offered.Kind == RetiredOfferKind.DownloadAndSwitch ? Visibility.Visible : Visibility.Collapsed;
         }
+
+        // LAI-22: a switch not made shows the offer again and why; the switch keeps the reason for a rebuilt row.
+        async void WatchSwitch(Task<RetiredSwitchResult> run)
+        {
+            await run;   // never faults: the switch reports every outcome as its result
+            Render();
+            var lastStatus = retiredSwitch?.LastStatusFor(entry.Id, pick?.Id ?? "");
+            ShowStatus(offer.Visibility == Visibility.Visible ? lastStatus : null);
+        }
+
+        void AcceptOffer()
+        {
+            if (retiredSwitch is null || pick is null)
+                return;
+            // LAI-22: a cloud provider shown in the box without a key is not stored; the click says "built-in".
+            select(entry.Id);
+            ShowStatus(null);
+            WatchSwitch(retiredSwitch.Accept(entry.Id, pick.Id));
+            Render();
+            // Still running: the pick's own row attaches to the download this started.
+            if (retiredSwitch.PendingRunFor(entry.Id) is not null)
+                measured?.Invoke();
+        }
+        switchBtn.Click += (_, _) => AcceptOffer();
+        downloadAndSwitchBtn.Click += (_, _) => AcceptOffer();
 
         void ShowStatus(string? message)
         {
@@ -381,13 +449,21 @@ internal static class LocalModelsSection
         {
             Watch(alreadyRunning);
         }
+        if (retiredSwitch?.PendingRunFor(entry.Id) is { } pendingSwitch)
+        {
+            WatchSwitch(pendingSwitch);
+        }
+        else if (retiredSwitch?.LastStatusFor(entry.Id, pick?.Id ?? "") is { } lastStatus && offer.Visibility == Visibility.Visible)
+        {
+            ShowStatus(lastStatus);   // LAI-22: the rebuild that follows a first-use check must not wipe the reason
+        }
         var grid = new Grid { ColumnSpacing = 16 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(buttons, 1);
         grid.Children.Add(left);
         grid.Children.Add(buttons);
-        card.Child = new StackPanel { Children = { grid, status } };
+        card.Child = new StackPanel { Children = { grid, offer, status } };
         return card;
     }
 

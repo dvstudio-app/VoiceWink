@@ -746,8 +746,20 @@ public partial class ModelManagementViewModel : ObservableObject
     /// </summary>
     internal void PersistSelectionWithoutLoading(string modelName)
     {
-        SelectedModelName = modelName;
         _settings.SetString(AppDefaults.SelectedModelName, modelName);
+        MarkSelected(modelName);
+    }
+
+    /// <summary>SET-3: re-reads the model and language the store holds, which a settings import may have replaced since this singleton cached them.</summary>
+    internal void ReloadSelectionFromSettings()
+    {
+        MarkSelected(_settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel));
+        SelectedLanguage = _settings.GetString(AppDefaults.SelectedLanguage, "auto");
+    }
+
+    private void MarkSelected(string modelName)
+    {
+        SelectedModelName = modelName;
         foreach (var m in Models)
             m.IsSelected = ModelDiskReconciliation.IsSameModel(m.Name, modelName);
     }

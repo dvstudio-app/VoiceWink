@@ -213,6 +213,15 @@ public interface IParakeetPcppBackend
         int generation, IReadOnlyList<DecodeChunk> plan, float[] samples, int sampleRate, double gainDb,
         CancellationToken ct);
 
+    /// <summary>TRN-96b: the same re-decode plus how many of its chunks decoded empty on non-silent audio; the default reports none.</summary>
+    async Task<TranscriptionDecode?> TryDecodeOnCpuFallbackReportingLossAsync(
+        int generation, IReadOnlyList<DecodeChunk> plan, float[] samples, int sampleRate, double gainDb,
+        CancellationToken ct)
+    {
+        var text = await TryDecodeOnCpuFallbackAsync(generation, plan, samples, sampleRate, gainDb, ct).ConfigureAwait(false);
+        return text is null ? null : new TranscriptionDecode(text, 0);
+    }
+
     /// <summary>App exit: kill the resident server explicitly (the job object is the app-DEATH
     /// backstop, not the graceful path) and stop background work.</summary>
     Task ShutdownAsync();

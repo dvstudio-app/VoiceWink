@@ -79,17 +79,25 @@ public static class DefaultPromptsReseed
         // Parse raw blobs strictly. A present-but-not-an-array blob is malformed → leave EVERYTHING
         // untouched (never let a save destroy an unreadable-but-recoverable user blob).
         // ENH-35: an array that does not read as a prompt list (wrong field types, null entries) is malformed too.
+        List<CustomPrompt>? parsedPrompts = null;
         if (!TryParseArray(settings, AppDefaults.CustomPrompts, promptsPresent, out var promptArr)
-            || (promptArr is { Count: > 0 } && !CustomPrompt.TryReadList(settings.GetString(AppDefaults.CustomPrompts, ""), out _, out _)))
+            || (promptArr is { Count: > 0 } && !CustomPrompt.TryReadList(settings.GetString(AppDefaults.CustomPrompts, ""), out parsedPrompts, out _)))
         {
             Logger.Warning("Custom prompts JSON is malformed — default re-seed skipped, blob left intact");
             return;
         }
-        if (!TryParseArray(settings, AppDefaults.AppModeConfigs, appModesPresent, out var appModeArr))
+        // ENH-38: the same for an array that does not read as an App Mode list.
+        List<AppModeConfig>? parsedAppModes = null;
+        if (!TryParseArray(settings, AppDefaults.AppModeConfigs, appModesPresent, out var appModeArr)
+            || (appModeArr is { Count: > 0 } && !AppModeConfig.TryReadList(settings.GetString(AppDefaults.AppModeConfigs, ""), out parsedAppModes, out _)))
         {
             Logger.Warning("App-Mode configs JSON is malformed — default re-seed skipped, blob left intact");
             return;
         }
+
+        // ENH-40c: new Ids for null-Id entries go onto the nodes before links resolve, so a default App Mode's link is not repaired to None.
+        var mintedPrompts = ApplyMintedIds(promptArr, parsedPrompts, static p => (p.IdMinted, p.Id));
+        var mintedAppModes = ApplyMintedIds(appModeArr, parsedAppModes, static c => (c.IdMinted, c.Id));
 
         var manifest = DefaultsManifest.Parse(settings.GetString(AppDefaults.DefaultsManifest, ""));
 
@@ -109,7 +117,8 @@ public static class DefaultPromptsReseed
         }
         else
         {
-            promptsChanged = ReconcilePrompts(promptArr!, manifest.Prompts, manifest.PromptsPresent, newPromptMap);
+            promptsChanged = ReconcilePrompts(promptArr!, manifest.Prompts, manifest.PromptsPresent, newPromptMap)
+                | mintedPrompts > 0;
         }
 
         // SeedKey → prompt Id index (unique only) for App-Mode link resolution, and the set of EVERY
@@ -130,7 +139,8 @@ public static class DefaultPromptsReseed
         }
         else
         {
-            appModesChanged = ReconcileAppModes(appModeArr!, manifest.AppModes, manifest.AppModesPresent, promptIdByKey, promptIds, newAppModeMap);
+            appModesChanged = ReconcileAppModes(appModeArr!, manifest.AppModes, manifest.AppModesPresent, promptIdByKey, promptIds, newAppModeMap)
+                | mintedAppModes > 0;
         }
 
         var newManifestJson = DefaultsManifest.Serialize(newPromptMap, newAppModeMap);
@@ -148,8 +158,26 @@ public static class DefaultPromptsReseed
         if (appModesChanged) batch[AppDefaults.AppModeConfigs] = appModeArr!.ToJsonString();
         settings.SetManyAndFlushOrThrow(batch);
 
+        if (mintedPrompts > 0 || mintedAppModes > 0)
+            Logger.Information("Default re-seed: {Prompts} prompts and {AppModes} App Mode entries had no Id or a repeated one; new Ids were written to settings",
+                mintedPrompts, mintedAppModes);
         Logger.Information("Default re-seed applied: prompts={PromptsChanged}, appModes={AppModesChanged}",
             promptsChanged, appModesChanged);
+    }
+
+    // ENH-40c: TryReadList refuses null entries, so list index i is array node i.
+    private static int ApplyMintedIds<T>(JsonArray? arr, List<T>? parsed, Func<T, (bool Minted, string Id)> idOf)
+    {
+        if (arr is null || parsed is null || parsed.Count != arr.Count) return 0;
+        var count = 0;
+        for (var i = 0; i < arr.Count; i++)
+        {
+            var (minted, id) = idOf(parsed[i]);
+            if (!minted || arr[i] is not JsonObject obj) continue;
+            obj["Id"] = id;
+            count++;
+        }
+        return count;
     }
 
     // ── Prompts reconcile ───────────────────────────────────────────────────

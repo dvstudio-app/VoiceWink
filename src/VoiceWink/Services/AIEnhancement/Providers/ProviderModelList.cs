@@ -20,9 +20,9 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 /// True when provider-scoped curation selected these ids rather than the shared id classifiers —
 /// metadata-backed where the provider publishes metadata (Mistral capabilities, OpenRouter
 /// modalities), or — for Gemini, whose OpenAI-compatible list carries no
-/// <c>supportedGenerationMethods</c> — the <see cref="GeminiModelCatalog"/> branch, which since
-/// 2026-09-13 applies only the shared <c>IsChatModel</c> baseline (the Live-line evidence the native
-/// endpoint verified now lives in <c>ModelDisplayPolicy.HasLiveSegment</c>).
+/// <c>supportedGenerationMethods</c> — the <see cref="GeminiModelCatalog"/> branch: the shared
+/// <c>IsChatModel</c> baseline (the Live-line evidence the native endpoint verified lives in
+/// <c>ModelDisplayPolicy.HasLiveSegment</c>) plus ENH-40's Decisions-API exclusion.
 /// <para><b>Narrow by design.</b> It means only "the id classifier has already been superseded — do
 /// not run <c>IsChatModel</c>/<c>IsImageModel</c> over this list". It does NOT exempt the list from
 /// the app's display policy (dated snapshots, previews), which

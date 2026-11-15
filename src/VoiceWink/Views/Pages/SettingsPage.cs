@@ -164,11 +164,12 @@ public sealed class SettingsPage : Page
                 Content = "This resets these preferences to their defaults: hotkeys, audio, text " +
                           "processing, clipboard, appearance, startup, mini recorder, history " +
                           "recording and its cleanup, the Dictionary switches, speaker labels, GPU, " +
-                          "updates and diagnostics.\n\n" +
+                          "built-in model thinking, updates and diagnostics.\n\n" +
                           "It keeps your license, API keys, " +
                           "the AI Enhancement switch and its provider and model choices, " +
                           "enhancements, App Modes, dictionary words and replacements, history entries, " +
-                          "the selected speech model and language, and your crash-report choice.",
+                          "the selected speech model and language, and your crash-report choice. " +
+                          "Enhancement hotkeys that conflict with the default recording hotkey are cleared.",
                 PrimaryButtonText = "Reset",
                 CloseButtonText = "Cancel",
                 XamlRoot = this.XamlRoot,
@@ -178,6 +179,8 @@ public sealed class SettingsPage : Page
             if (await DialogLease.MainWindow.ShowAsync(dialog, "Reset all settings") == ContentDialogResult.Primary)
             {
                 _viewModel.ResetAllSettingsCommand.Execute(null);
+                // HKY-18: the restored recording hotkey wins over a prompt hotkey on the same key, as a Settings conflict does.
+                ClearConflictingHotkey(_viewModel.HotkeyModifier, HotkeyRole.Recording);
                 // Rebuild UI to reflect new values
                 BuildUI();
             }
@@ -1180,8 +1183,25 @@ public sealed class SettingsPage : Page
                 if (parts == BackupParts.None) return; // cancelled
             }
 
-            var result = await service.ImportAsync(backup, parts);
-            await ShowInfoAsync("Backup imported", BackupImportSummary.Describe(result, parts));
+            ImportExportService.ImportResult result;
+            try
+            {
+                result = await service.ImportAsync(backup, parts);
+            }
+            finally
+            {
+                // ENH-39: the hook holds a copy of the prompt hotkeys; an import (or its revert) replaced the list.
+                if (parts.HasFlag(BackupParts.Settings)) ((App)App.Current).RegisterPromptHotkeys();
+            }
+            var importedNothing = BackupImportSummary.ImportedNothing(result);
+            await ShowInfoAsync(importedNothing ? "Nothing imported" : "Backup imported", BackupImportSummary.Describe(result, parts));
+            if (parts.HasFlag(BackupParts.Settings) && result.AppliedCount > 0)
+            {
+                // SET-3: after the dialog, because a theme change rebuilds the window under it.
+                _viewModel.ApplyImportedSettings();
+                ((App)App.Current).RegisterPromptHotkeys(); // SET-3: prompt hotkeys are checked against the roles just applied.
+                if (!_pageUnloaded) BuildUI();
+            }
         }
         catch (Exception ex)
         {
@@ -1246,18 +1266,33 @@ public sealed class SettingsPage : Page
             RequestedTheme = AppTheme.ElementTheme,
         };
 
-        if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete transcription history") != ContentDialogResult.Primary) return;
+        // UI-5d: the delete runs and reports inside this dialog, so its slot is held throughout and a redo
+        // picker waiting behind the confirm is cancelled before it can open.
+        dialog.PrimaryButtonClick += async (_, args) =>
+        {
+            var deferral = args.GetDeferral();
+            args.Cancel = true;
+            try
+            {
+                await App.Services.GetRequiredService<TranscriptionHistoryService>().DeleteAllAsync();
+                dialog.Title = "History deleted";
+                dialog.Content = "Your transcription history has been deleted.";
+            }
+            catch (Exception ex)
+            {
+                Logger.Error(ex, "Delete history failed");
+                dialog.Title = "Delete failed";
+                dialog.Content = "Sorry, history couldn't be deleted.\n\n" + ex.Message;
+            }
+            finally
+            {
+                dialog.PrimaryButtonText = "";
+                dialog.CloseButtonText = "OK";
+                deferral.Complete();
+            }
+        };
 
-        try
-        {
-            await App.Services.GetRequiredService<TranscriptionHistoryService>().DeleteAllAsync();
-            await ShowInfoAsync("History deleted", "Your transcription history has been deleted.");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex, "Delete history failed");
-            await ShowInfoAsync("Delete failed", "Sorry, history couldn't be deleted.\n\n" + ex.Message);
-        }
+        await DialogLease.MainWindow.ShowAsync(dialog, "Delete transcription history");
     }
 
     /// <summary>
@@ -1744,20 +1779,14 @@ public sealed class SettingsPage : Page
             if (collision.Role is { } role) _viewModel.SetHotkey(role, "");
         }
 
-        var clearedPromptIds = collisions.Where(c => c.IsPrompt).Select(c => c.PromptId).ToHashSet(StringComparer.Ordinal);
+        var clearedPromptIds = collisions.Where(c => c.IsPrompt).Select(c => c.PromptId!).ToHashSet(StringComparer.Ordinal);
         if (clearedPromptIds.Count > 0)
         {
-            var enhancement = App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>();
-            var prompts = enhancement.GetPrompts();
-            foreach (var prompt in prompts.Where(p => clearedPromptIds.Contains(p.Id)))
-                prompt.Hotkey = null;
-            enhancement.SavePrompts(prompts);
+            // HKY-17: the service also refreshes the AI Enhancement view model's copy.
+            App.Services.GetRequiredService<Services.AIEnhancement.AIEnhancementService>().ClearPromptHotkeys(clearedPromptIds);
 
             // Re-register prompt hotkeys so the cleared keys leave the hook.
-            var hotkeyService = App.Services.GetRequiredService<Services.Input.HotkeyService>();
-            hotkeyService.RegisterPromptHotkeys(
-                prompts.Where(p => !string.IsNullOrEmpty(p.Hotkey))
-                       .Select(p => (p.Id, p.Hotkey!)));
+            ((App)App.Current).RegisterPromptHotkeys();
         }
 
         App.Services.GetRequiredService<Services.Input.HotkeyService>().ReloadHotkeys();

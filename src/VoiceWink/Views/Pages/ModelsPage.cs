@@ -79,6 +79,7 @@ public sealed class ModelsPage : Page
             // Detach-before-attach: Loaded can refire without a paired Unloaded — a
             // second subscription would double-fire every VM change (Codex R1).
             _viewModel.PropertyChanged -= _vmPropertyChanged;
+            _viewModel.ReloadSelectionFromSettings(); // SET-3: a settings import may have changed the model or language; before the subscribe, which would queue extra rebuilds.
             _viewModel.PropertyChanged += _vmPropertyChanged;
             GpuWarmup.Instance.SelfTestChanged -= _onGpuSelfTestChanged;
             GpuWarmup.Instance.SelfTestChanged += _onGpuSelfTestChanged;

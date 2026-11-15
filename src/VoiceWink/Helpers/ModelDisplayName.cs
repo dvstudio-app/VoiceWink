@@ -1,4 +1,5 @@
 using VoiceWink.Models;
+using VoiceWink.Models.Enums;
 
 namespace VoiceWink.Helpers;
 
@@ -35,8 +36,9 @@ internal static class ModelDisplayName
     /// so.</summary>
     internal const string Unnamed = "(unnamed model)";
 
-    /// <summary>Rendered by <see cref="Resolve"/> for a name NO catalogue claims — a retired id, a
-    /// hand-edited one, or one an imported backup carried in.
+    /// <summary>Rendered by <see cref="Resolve"/> for a name NO catalogue claims — a hand-edited id or
+    /// one an imported backup carried in (a retired cloud id in <see cref="CloudModels.Retired"/> renders
+    /// its successor here, and its own name in History).
     ///
     /// <para>Deliberately says "unrecognised" and not "no longer available": the two cases are
     /// indistinguishable here (retired-name machinery was removed once no user selection pointed at
@@ -97,22 +99,29 @@ internal static class ModelDisplayName
     /// <c>UntrustedTextSanitizer</c> is still used by <c>UnknownTranscriptionModelException</c>.</para></summary>
     internal static string ResolveForHistory(string? modelName)
     {
+        // A row recorded on a retired model keeps that model's own name, never its successor's (TRN-84).
+        if (CloudModels.FindRetired(modelName) is { } retired)
+            return ForHistory(retired.Provider, retired.DisplayName);
+
         var cloud = FindCloud(modelName);
         if (cloud != null)
-        {
-            // PREFIX-only strip, deliberately not Replace(): Replace removes EVERY occurrence, so a
-            // future catalogue row carrying the provider token mid-name would render mangled. Today
-            // all cloud DisplayNames happen to start with "{Provider} ", so the two agree — this
-            // makes that a non-issue rather than an invariant a test has to keep watching (Kimi diff
-            // review offered either; removing the dependency beats pinning it).
-            var provider = $"{cloud.Provider} ";
-            var name = cloud.DisplayName.StartsWith(provider, StringComparison.Ordinal)
-                ? cloud.DisplayName[provider.Length..]
-                : cloud.DisplayName;
-            return $"{cloud.Provider}/{name}";
-        }
+            return ForHistory(cloud.Provider, cloud.DisplayName);
 
         return Resolve(modelName);
+    }
+
+    private static string ForHistory(ModelProvider provider, string displayName)
+    {
+        // PREFIX-only strip, deliberately not Replace(): Replace removes EVERY occurrence, so a
+        // future catalogue row carrying the provider token mid-name would render mangled. Today
+        // all cloud DisplayNames happen to start with "{Provider} ", so the two agree — this
+        // makes that a non-issue rather than an invariant a test has to keep watching (Kimi diff
+        // review offered either; removing the dependency beats pinning it).
+        var prefix = $"{provider} ";
+        var name = displayName.StartsWith(prefix, StringComparison.Ordinal)
+            ? displayName[prefix.Length..]
+            : displayName;
+        return $"{provider}/{name}";
     }
 
     private static TranscriptionModelInfo? FindCloud(string? modelName)

@@ -78,13 +78,20 @@ public partial class DictionaryViewModel : ObservableObject
         foreach (var r in replacements) WordReplacements.Add(r);
     }
 
+    /// <summary>Command form over <see cref="NewVocabularyWord"/>; clears it only on a save (DCT-10).</summary>
     [RelayCommand]
     public async Task AddVocabularyWordAsync()
     {
-        if (string.IsNullOrWhiteSpace(NewVocabularyWord)) return;
-        await _vocabulary.AddAsync(NewVocabularyWord);
-        NewVocabularyWord = "";
+        if (await AddVocabularyWordAsync(NewVocabularyWord))
+            NewVocabularyWord = "";
+    }
+
+    /// <summary>Adds the given word; false when it is blank or already in the list (DCT-10, argument form as DCT-2's replacements).</summary>
+    public async Task<bool> AddVocabularyWordAsync(string word)
+    {
+        if (!await _vocabulary.AddAsync(word)) return false;
         await LoadAsync();
+        return true;
     }
 
     [RelayCommand]

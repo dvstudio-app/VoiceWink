@@ -12,7 +12,7 @@ public enum LlamaServerLogLineKind
     /// <summary><c>load_tensors: offloaded X/Y layers to GPU</c>.</summary>
     LayersOffloaded,
     /// <summary><c>init: chat template, thinking = 0|1</c> — the server's own statement of whether
-    /// the template will think. LAI-2 runs with thinking OFF on the command line; a 1 here is a
+    /// the template will think. LAI-24: a value other than the one the child was launched for is a
     /// contract failure the manager refuses.</summary>
     Thinking,
     /// <summary><c>common_params_fit_impl: projected to use N MiB of device memory vs. M MiB of free

@@ -12,7 +12,11 @@ public static class BackupImportSummary
     {
         var lines = new List<string>();
         if (parts.HasFlag(BackupParts.Settings))
-            lines.Add($"{result.AppliedCount} setting(s) applied. Restart VoiceWink for all changes to take effect.");
+        {
+            // SET-3: the import applies at once, so no restart sentence; the refused count says what the file held that was not applied.
+            var applied = $"{result.AppliedCount} setting{(result.AppliedCount == 1 ? "" : "s")} applied";
+            lines.Add(result.SettingsRefused > 0 ? $"{applied}, {result.SettingsRefused} refused." : $"{applied}.");
+        }
 
         if (result.DictionaryFailed)
             lines.Add("The Dictionary couldn't be imported. Nothing was added to it.");
@@ -24,4 +28,8 @@ public static class BackupImportSummary
 
         return string.Join("\n\n", lines);
     }
+
+    /// <summary>SET-3: no setting applied and no Dictionary merged — e.g. a JSON file that is not a backup, whose every key is refused.</summary>
+    public static bool ImportedNothing(ImportExportService.ImportResult result) =>
+        result.AppliedCount == 0 && result.Dictionary is null;
 }

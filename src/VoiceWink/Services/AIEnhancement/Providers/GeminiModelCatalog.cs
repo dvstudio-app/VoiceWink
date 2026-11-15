@@ -19,9 +19,8 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 /// until OpenAI shipped the same id shape (<c>gpt-live-1</c>, a <c>v1/live/sessions</c>-only
 /// model, weekly model review 2026-09-12); the segment rule now lives in the shared baseline as
 /// <c>ModelDisplayPolicy.HasLiveSegment</c>, which <c>IsChatModel</c> applies for every provider,
-/// so this catalog carries no rule of its own any more — it narrows the injected baseline by
-/// nothing today and exists for the curated-list contract (<c>Curated=true</c>, the log line, and
-/// a home for the next Gemini-only rule). The accepted mirror risk — a future genuinely-chat
+/// so this catalog no longer carries the Live rule. Its one rule is <see cref="IsDecisionsApiModel"/>
+/// (ENH-40). The accepted mirror risk — a future genuinely-chat
 /// <c>…-live-…</c> id would be wrongly hidden — is watched by the weekly <c>/vw-model-review</c>
 /// (which verifies against the native metadata). Recovery is no longer a user-side matter: while
 /// the rule was display-only here, ShowAllModels and the AI Enhancement page's editable combo were
@@ -35,9 +34,9 @@ namespace VoiceWink.Services.AIEnhancement.Providers;
 internal static class GeminiModelCatalog
 {
     /// <summary>
-    /// Applies the shared id baseline. It is injected (<c>ModelDisplayPolicy.IsChatModel</c>) so
-    /// this stays pure; it handles the Live line, embeddings/TTS/Veo and dated snapshots for Gemini,
-    /// exactly as it does on the uncurated path.
+    /// Applies the shared id baseline, then <see cref="IsDecisionsApiModel"/>. The baseline is
+    /// injected (<c>ModelDisplayPolicy.IsChatModel</c>) so this stays pure; it handles the Live line,
+    /// embeddings/TTS/Veo and dated snapshots for Gemini, exactly as it does on the uncurated path.
     /// </summary>
     internal static List<string> Curate(
         IReadOnlyList<string> modelIds,
@@ -49,7 +48,7 @@ internal static class GeminiModelCatalog
             if (string.IsNullOrWhiteSpace(id))
                 continue;
 
-            if (!isChatModel(id))
+            if (!isChatModel(id) || IsDecisionsApiModel(id))
                 continue;
 
             kept.Add(id);
@@ -58,4 +57,11 @@ internal static class GeminiModelCatalog
         kept.Sort(StringComparer.OrdinalIgnoreCase);
         return kept;
     }
+
+    /// <summary>ENH-40: the Gemini Decision line is served only by the Decisions API and cannot generate text; display-only, so a saved selection is not cleared.</summary>
+    internal static bool IsDecisionsApiModel(string modelId)
+        => modelId.Equals(DecisionsApiFamily, StringComparison.OrdinalIgnoreCase)
+        || modelId.StartsWith(DecisionsApiFamily + "-", StringComparison.OrdinalIgnoreCase);
+
+    private const string DecisionsApiFamily = "gemini-decision";
 }

@@ -78,6 +78,9 @@ public static class AppDefaults
     // App Mode
     public const string AppModeConfigs = "appModeConfigs";
 
+    /// <summary>ENH-38: the last unreadable <see cref="AppModeConfigs"/> value, kept from overwrites; not in <see cref="Defaults"/>, so export/import skip it.</summary>
+    public const string AppModeConfigsUnreadableCopy = "appModeConfigsUnreadableCopy";
+
     /// <summary>
     /// Pre-rename settings key for App Mode configs (the feature was called "Power Mode" until
     /// 2026-07-08). Read-and-removed one-way by <c>AppModeSettingsMigration.Run</c>; deliberately
@@ -424,6 +427,9 @@ public static class AppDefaults
     /// </summary>
     public const string GpuAccelerationEnabled = "gpuAccelerationEnabled";
 
+    /// <summary>LAI-24: the built-in models think before they reply. Default OFF; a flip restarts the loaded model.</summary>
+    public const string BuiltInThinkingEnabled = "builtInThinkingEnabled";
+
     // Legal acceptance (LGL-1). Stored values are SHA-256 hex (lowercase) of the
     // bundled document body, not version numbers. Empty string means "unset".
     // Hash-based so any body edit re-prompts even without a version-header bump,
@@ -624,6 +630,7 @@ public static class AppDefaults
         [KeepRecordingsForDebug] = false,
         [CrashReportingOptIn] = false,
         [GpuAccelerationEnabled] = true,
+        [BuiltInThinkingEnabled] = false,
         [AiEnhancementEnabled] = false,
         [AiProvider] = "OpenAI",
         [AiImageProvider] = "OpenAI",

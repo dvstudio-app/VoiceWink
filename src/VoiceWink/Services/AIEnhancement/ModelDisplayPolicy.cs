@@ -227,8 +227,8 @@ internal static class ModelDisplayPolicy
     ///
     /// <para>Two stages, in order. First the CAPABILITY decision: a provider-curated list
     /// (<see cref="Providers.ProviderModelList.Curated"/> — Mistral capabilities, OpenRouter
-    /// modalities, and Gemini, whose curation is the shared <see cref="IsChatModel"/> baseline applied
-    /// inside its branch) already ran the capability decision, so it is not re-run here; otherwise
+    /// modalities, and Gemini, whose curation is the shared <see cref="IsChatModel"/> baseline plus
+    /// its own Decisions-API rule) already ran the capability decision, so it is not re-run here; otherwise
     /// <see cref="IsChatModel"/> / <see cref="IsImageModel"/> run as before. Then the PRODUCT policy —
     /// hide previews and dated snapshots — which applies to curated lists TOO. Skipping it for
     /// curated lists would regress Mistral, whose curation does not remove ordinary previews and

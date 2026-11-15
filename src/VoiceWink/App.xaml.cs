@@ -782,6 +782,12 @@ public partial class App : Application, Services.IAppLifetime
         services.AddSingleton<AudioDeviceManager>();
         // AUD-1: recording-device selection + fallback policy (hub rule keeps it out of MainViewModel)
         services.AddSingleton<Services.Audio.RecordingDeviceSelectionService>();
+        // HIS-11: which microphone made each recording, kept until its History row is written.
+        services.AddSingleton(sp =>
+        {
+            var devices = sp.GetRequiredService<AudioDeviceManager>();
+            return new Services.Audio.RecordingDeviceLedger(devices.FindCachedName, () => devices.RefreshDevicesFreshAsync());
+        });
         // AUD-6: standing warm capture — instant recording start. The gate closure re-reads the
         // setting + license per (re)start; onboarding comes from the same flag that gates
         // StartGatedRuntimeServices, whose warm-up path is the only startup caller — an
@@ -830,11 +836,9 @@ public partial class App : Application, Services.IAppLifetime
         // on the container resolving an optional parameter.
         services.AddSingleton(sp => new WatchdogForegroundObserver(
             sp.GetRequiredService<IActiveWindowService>()));
-        services.AddSingleton(_ => new RawKeyboardSink());
         services.AddSingleton(sp => new HotkeyService(
             sp.GetRequiredService<SettingsService>(),
-            sp.GetRequiredService<WatchdogForegroundObserver>(),
-            sp.GetRequiredService<RawKeyboardSink>()));
+            sp.GetRequiredService<WatchdogForegroundObserver>()));
 
         // System services (cont.)
         services.AddSingleton<DictionaryTransfer>();
@@ -903,7 +907,9 @@ public partial class App : Application, Services.IAppLifetime
         services.AddSingleton(sp => new global::VoiceWink.Services.AIEnhancement.LocalEngine.OnThisPcEngine(
             sp.GetRequiredService<global::VoiceWink.Services.AIEnhancement.LocalEngine.LocalModelStore>(),
             sp.GetRequiredService<IHttpClientFactory>(),
-            gpuAccelerationEnabled ? global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Auto : global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Cpu));
+            gpuAccelerationEnabled ? global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Auto : global::VoiceWink.Services.AIEnhancement.LocalEngine.LlamaLaunchMode.Cpu,
+            // LAI-24: the Thinking switch, read at each dictation and prepare.
+            () => sp.GetRequiredService<SettingsService>().GetBool(Helpers.AppDefaults.BuiltInThinkingEnabled, false)));
         // LNC-15: Express setup's background download of the built-in AI model, taken into use once
         // it is in — through the AI Enhancement page's own view model (a row's Select, a finished
         // download's list refresh, the switch), so an open page shows the change and the switch's
@@ -1290,7 +1296,7 @@ public partial class App : Application, Services.IAppLifetime
             // Create and show main window. LGL-1: legal route is deferred so the
             // license-route + runtime services can't fire before acceptance.
             _mainWindow = new MainWindow(deferLicenseRoute: true, Services.GetRequiredService<LifetimeMetricsService>(),
-                Services.GetRequiredService<ClipboardService>());
+                Services.GetRequiredService<ClipboardService>(), Services.GetRequiredService<AIEnhancementService>());
             MainWindow = _mainWindow;
             MainWindowInstance = _mainWindow;
             // Wire OnboardingCompleted so the wizard's last step triggers gated
@@ -1376,38 +1382,48 @@ public partial class App : Application, Services.IAppLifetime
             {
                 try
                 {
-                    // UI-7: before RestoreMainWindow, which is what makes VoiceWink the foreground.
-                    CapturePickerForeground();
-                    // UI-7: the scope opens BEFORE RestoreMainWindow and closes when the dialog
-                    // does. Arming it around ShowAsync alone left the 200 ms below unguarded —
-                    // VoiceWink already held the foreground there while the flag was still clear,
-                    // so a record hotkey in that window captured our own dialog and was not
-                    // suppressed (Kimi round 4). Arming this early costs nothing: suppression also
-                    // requires the foreground to BE ours, so nothing is suppressed until
-                    // RestoreMainWindow has actually taken it.
-                    using (viewModel.BeginPickerDialogVisible())
+                    // UI-5c: the slot first — a wait behind a page dialog holds no scope and no capture.
+                    using (await AcquirePickerSlotAsync(ct))
                     {
-                        // Don't hide MiniRecorder — user should see recording is active
-                        RestoreMainWindow();
-                        await Task.Delay(200); // Let window restore complete before showing dialog
-                        // Re-force foreground after delay — the first call can lose focus
-                        // if the OS processes other window messages during the delay.
-                        if (_mainWindow != null)
+                        // UI-7: before RestoreMainWindow, which is what makes VoiceWink the foreground.
+                        CapturePickerForeground();
+                        try
                         {
-                            var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow);
-                            Helpers.NativeInterop.SetForegroundWindow(hwnd);
-                        }
-                        var mainWindow = App.MainWindow;
-                        if (mainWindow?.Content is not FrameworkElement root)
-                            return null;
+                            // UI-7: the scope opens BEFORE RestoreMainWindow and closes when the dialog
+                            // does. Arming it around ShowAsync alone left the 200 ms below unguarded —
+                            // VoiceWink already held the foreground there while the flag was still clear,
+                            // so a record hotkey in that window captured our own dialog and was not
+                            // suppressed (Kimi round 4). Arming this early costs nothing: suppression also
+                            // requires the foreground to BE ours, so nothing is suppressed until
+                            // RestoreMainWindow has actually taken it.
+                            using (viewModel.BeginPickerDialogVisible())
+                            {
+                                // Don't hide MiniRecorder — user should see recording is active
+                                RestoreMainWindow();
+                                await Task.Delay(200); // Let window restore complete before showing dialog
+                                // Re-force foreground after delay — the first call can lose focus
+                                // if the OS processes other window messages during the delay.
+                                if (_mainWindow != null)
+                                {
+                                    var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(_mainWindow);
+                                    Helpers.NativeInterop.SetForegroundWindow(hwnd);
+                                }
+                                ct.ThrowIfCancellationRequested(); // UI-5d: no await between this and the show
+                                var mainWindow = App.MainWindow;
+                                if (mainWindow?.Content is not FrameworkElement root)
+                                    return null;
 
-                        // No prompt-title suffix for image generation: the image description is
-                        // already shown in the dialog body, and an image redo can fall back to the
-                        // active TEXT prompt ("Improve Transcription"), meaningless here.
-                        // UI-5: waits while an About-page dialog holds the window's one dialog slot.
-                        using (await Helpers.DialogLease.MainWindow.AcquireAsync(ct))
-                            return await ShowEnhancementOptionsDialogAsync(
-                                root, isImageGeneration: true, pickerContext, "Generate Image", "Generate", ct);
+                                // No prompt-title suffix for image generation: the image description is
+                                // already shown in the dialog body, and an image redo can fall back to the
+                                // active TEXT prompt ("Improve Transcription"), meaningless here.
+                                return await ShowEnhancementOptionsDialogAsync(
+                                    root, isImageGeneration: true, pickerContext, "Generate Image", "Generate", ct);
+                            }
+                        }
+                        finally
+                        {
+                            ReleasePickerForeground();
+                        }
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1419,61 +1435,32 @@ public partial class App : Application, Services.IAppLifetime
                     Log.Error(ex, "Failed to show image options picker");
                     return null;
                 }
-                finally
-                {
-                    ReleasePickerForeground();
-                }
             };
 
             // TRN-64: the restart offer after a REFUSED Whisper decode (its GPU failed, or never
-            // finished, its self-test in this process). Thin routing, the retry picker's exact
-            // shape: the decision (once per session, after the retry pill) stays in the ViewModel;
-            // the App only hosts the dialog. Returns whether it was shown, so the ViewModel can
+            // finished, its self-test in this process). Thin routing through the retry picker's
+            // host (UI-5c), which skips it while another picker is up; the decision (once per
+            // session, after the retry pill) stays in the ViewModel; the App only hosts the dialog. Returns whether it was shown, so the ViewModel can
             // release its one-shot when it was not.
-            viewModel.ShowGpuSelfTestRestartRequested += async refusal =>
-            {
-                try
+            viewModel.ShowGpuSelfTestRestartRequested += refusal =>
+                ShowPickerDialogAsync(viewModel, "GPU self-test restart offer", CancellationToken.None, async xamlRoot =>
                 {
-                    CapturePickerForeground();
-                    using (viewModel.BeginPickerDialogVisible())
+                    var dialog = new Views.Dialogs.RestartToApplyDialog(
+                        restartService,
+                        Views.Dialogs.RestartToApplyDialog.GpuSelfTestBody(refusal),
+                        global::VoiceWink.Services.System.AppRestartReason.GpuSelfTestFailed)
                     {
-                        RestoreMainWindow();
-                        await Task.Delay(100); // Let window activate before showing dialog
-
-                        if (App.MainWindow?.Content is not FrameworkElement root || root.XamlRoot is null)
-                        {
-                            Log.Warning("GPU self-test restart offer skipped — no XamlRoot available");
-                            return false;
-                        }
-                        var dialog = new Views.Dialogs.RestartToApplyDialog(
-                            restartService,
-                            Views.Dialogs.RestartToApplyDialog.GpuSelfTestBody(refusal),
-                            global::VoiceWink.Services.System.AppRestartReason.GpuSelfTestFailed)
-                        {
-                            XamlRoot = root.XamlRoot,
-                        };
-                        using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
-                            await dialog.ShowAsync();
-                        ReleasePickerForeground();
-                        return true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log.Error(ex, "Failed to show the GPU self-test restart offer");
-                    return false;
-                }
-                finally
-                {
-                    ReleasePickerForeground();
-                }
-            };
+                        XamlRoot = xamlRoot,
+                    };
+                    await dialog.ShowAsync();
+                    return true;
+                });
 
             // TRN-17: transcription-retry picker (model + recognition language, this run only).
             // Thin routing by design — the dialog is a real class in Views/Dialogs, and the
             // decisions stay in the ViewModel because REL-12's guard order belongs there.
-            viewModel.ShowTranscriptionRetryPickerRequested += request =>
-                ShowPickerDialogAsync(viewModel, "Retry picker", async xamlRoot =>
+            viewModel.ShowTranscriptionRetryPickerRequested += (request, ct) =>
+                ShowPickerDialogAsync(viewModel, "Retry picker", ct, async xamlRoot =>
                 {
                     var dialog = new Views.Dialogs.TranscriptionRetryOptionsDialog(request) { XamlRoot = xamlRoot };
                     var result = await dialog.ShowAsync();
@@ -1481,66 +1468,76 @@ public partial class App : Application, Services.IAppLifetime
                 });
 
             // REL-20: the two-choice dialog after a delivered dictation; the same host as the retry picker.
-            viewModel.ShowRedoChoiceRequested += () =>
-                ShowPickerDialogAsync<Helpers.RedoChoice?>(viewModel, "Redo choice", async xamlRoot =>
+            viewModel.ShowRedoChoiceRequested += ct =>
+                ShowPickerDialogAsync<Helpers.RedoChoice?>(viewModel, "Redo choice", ct, async xamlRoot =>
                 {
                     var dialog = new Views.Dialogs.RedoChoiceDialog { XamlRoot = xamlRoot };
                     return Views.Dialogs.RedoChoiceDialog.ChoiceFor(await dialog.ShowAsync());
                 });
 
             // Model picker dialog for redo — shown on main window which has XamlRoot
-            viewModel.ShowModelPickerRequested += async (isImageGeneration, capturedContext) =>
+            viewModel.ShowModelPickerRequested += async (isImageGeneration, capturedContext, ct) =>
             {
                 try
                 {
-                    // UI-7: before RestoreMainWindow, which is what makes VoiceWink the foreground.
-                    CapturePickerForeground();
-
-                    // UI-7: the scope opens BEFORE RestoreMainWindow and closes as soon as the
-                    // dialog returns — both ends matter, for different reasons.
-                    //
-                    // EARLY, because RestoreMainWindow foregrounds VoiceWink and the 100 ms below
-                    // was outside the scope: a record hotkey landing there captured our own dialog
-                    // unsuppressed (Kimi round 4). Arming early is free — suppression also requires
-                    // the foreground to BE ours, so nothing is suppressed until it actually is.
-                    //
-                    // CLOSED EARLY, because this handler goes on to await RedoEnhancementAsync, a
-                    // multi-second cloud call. Releasing only in the outer finally left VoiceWink in
-                    // front for the whole of it and the flag set long after the dialog was gone
-                    // (Codex round 2).
                     MainViewModel.EnhancementDialogSelection? selection;
-                    using (viewModel.BeginPickerDialogVisible())
+                    // UI-5c: the slot first — a wait behind a page dialog holds no scope and no
+                    // capture. Released with the dialog, never held through the redo's cloud call.
+                    using (await AcquirePickerSlotAsync(ct))
                     {
-                        // Restore/activate main window so the dialog is visible
-                        // (main window may be minimized to tray when redo is clicked)
-                        RestoreMainWindow();
-                        await Task.Delay(100); // Let window activate before showing dialog
-
-                        var mainWindow = App.MainWindow;
-                        if (mainWindow?.Content is not FrameworkElement root)
+                        // UI-7: before RestoreMainWindow, which is what makes VoiceWink the foreground.
+                        CapturePickerForeground();
+                        try
                         {
-                            viewModel.CancelModelPicker();
-                            return;
+                            // UI-7: the scope opens BEFORE RestoreMainWindow and closes as soon as the
+                            // dialog returns — both ends matter, for different reasons.
+                            //
+                            // EARLY, because RestoreMainWindow foregrounds VoiceWink and the 100 ms below
+                            // was outside the scope: a record hotkey landing there captured our own dialog
+                            // unsuppressed (Kimi round 4). Arming early is free — suppression also requires
+                            // the foreground to BE ours, so nothing is suppressed until it actually is.
+                            //
+                            // CLOSED EARLY, because this handler goes on to await RedoEnhancementAsync, a
+                            // multi-second cloud call. Releasing only in the outer finally left VoiceWink in
+                            // front for the whole of it and the flag set long after the dialog was gone
+                            // (Codex round 2).
+                            using (viewModel.BeginPickerDialogVisible())
+                            {
+                                // Restore/activate main window so the dialog is visible
+                                // (main window may be minimized to tray when redo is clicked)
+                                RestoreMainWindow();
+                                await Task.Delay(100); // Let window activate before showing dialog
+                                ct.ThrowIfCancellationRequested(); // UI-5d: no await between this and the show
+
+                                var mainWindow = App.MainWindow;
+                                if (mainWindow?.Content is not FrameworkElement root)
+                                {
+                                    viewModel.CancelModelPicker();
+                                    return;
+                                }
+
+                                // IsNewGeneration marks the IMG-1 text-first entry (new generation,
+                                // no lineage) — "Regenerate" would be wrong there.
+                                // Image titles carry NO prompt-title suffix: the image description is in the
+                                // dialog body, and an image redo (esp. from History) can fall back to the
+                                // active TEXT prompt ("Improve Transcription"), misleading for an image.
+                                // Text re-enhance keeps the prompt name — there it's the real prompt.
+                                var title = isImageGeneration
+                                    ? (capturedContext.IsNewGeneration ? "Generate Image" : "Regenerate Image")
+                                    : $"Re-enhance • {capturedContext.Prompt?.Title ?? "Default"}";
+
+                                var primaryText = isImageGeneration && capturedContext.IsNewGeneration
+                                    ? "Generate"
+                                    : "Run";
+                                selection = await ShowEnhancementOptionsDialogAsync(
+                                    root, isImageGeneration, capturedContext, title, primaryText);
+                            }
                         }
-
-                        // IsNewGeneration marks the IMG-1 text-first entry (new generation,
-                        // no lineage) — "Regenerate" would be wrong there.
-                        // Image titles carry NO prompt-title suffix: the image description is in the
-                        // dialog body, and an image redo (esp. from History) can fall back to the
-                        // active TEXT prompt ("Improve Transcription"), misleading for an image.
-                        // Text re-enhance keeps the prompt name — there it's the real prompt.
-                        var title = isImageGeneration
-                            ? (capturedContext.IsNewGeneration ? "Generate Image" : "Regenerate Image")
-                            : $"Re-enhance • {capturedContext.Prompt?.Title ?? "Default"}";
-
-                        var primaryText = isImageGeneration && capturedContext.IsNewGeneration
-                            ? "Generate"
-                            : "Run";
-                        using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
-                            selection = await ShowEnhancementOptionsDialogAsync(
-                                root, isImageGeneration, capturedContext, title, primaryText);
+                        finally
+                        {
+                            ReleasePickerForeground();
+                        }
                     }
-                    ReleasePickerForeground();
 
                     if (selection is null || string.IsNullOrWhiteSpace(selection.Model))
                     {
@@ -1621,14 +1618,15 @@ public partial class App : Application, Services.IAppLifetime
 
                     await viewModel.ConfirmModelPickerAsync(selectedModel, selectedProvider, ctx);
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    Log.Information("Model picker not shown — its request went stale"); // UI-5d
+                    viewModel.CancelModelPicker();
+                }
                 catch (Exception ex)
                 {
                     Log.Error(ex, "Failed to show model picker for redo");
                     viewModel.CancelModelPicker();
-                }
-                finally
-                {
-                    ReleasePickerForeground();
                 }
             };
 
@@ -2979,6 +2977,8 @@ public partial class App : Application, Services.IAppLifetime
             AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ReferenceImagePath TEXT");
             AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ImageVersionCount INTEGER");
             AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN ImageThinking TEXT");
+            AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN CaptureDeviceName TEXT");
+            AddColumnIfMissing(db, "ALTER TABLE TranscriptionRecords ADD COLUMN CaptureDeviceTag TEXT");
 
             _ = db.WordReplacements.Any();
             _ = db.TranscriptionRecords.Any();
@@ -4729,13 +4729,15 @@ public partial class App : Application, Services.IAppLifetime
     private readonly Helpers.PickerForegroundHolder _pickerForeground = new();
 
     /// <summary>
-    /// The host steps a picker dialog shares (TRN-17 retry picker, REL-20 chooser): skip while another
-    /// dialog is on screen (one ContentDialog per XamlRoot — TRN-64), capture the prior foreground
-    /// BEFORE RestoreMainWindow (UI-7), open the picker-visible scope before the restore so the
-    /// 100 ms below is inside it, take the dialog slot (UI-5) and give the foreground back the moment
-    /// the dialog closes. Every failure returns <c>default</c>, which the ViewModel reads as a cancel.
+    /// The host steps a picker dialog shares (TRN-17 retry picker, REL-20 chooser, TRN-64 GPU offer):
+    /// skip while another picker is on screen (one ContentDialog per XamlRoot — TRN-64), take the
+    /// dialog slot (UI-5) FIRST (UI-5c), then capture the prior foreground BEFORE RestoreMainWindow
+    /// (UI-7), open the picker-visible scope before the restore so the 100 ms below is inside it, and
+    /// give the foreground back the moment the dialog closes. Every failure returns <c>default</c>,
+    /// which the ViewModel reads as a cancel; so does <paramref name="ct"/> tripping before the show (UI-5d).
     /// </summary>
-    private async Task<T> ShowPickerDialogAsync<T>(MainViewModel viewModel, string name, Func<XamlRoot, Task<T>> show)
+    private async Task<T> ShowPickerDialogAsync<T>(
+        MainViewModel viewModel, string name, CancellationToken ct, Func<XamlRoot, Task<T>> show)
     {
         try
         {
@@ -4744,36 +4746,54 @@ public partial class App : Application, Services.IAppLifetime
                 Log.Warning("{Picker} skipped — another dialog is open", name);
                 return default!;
             }
-            CapturePickerForeground();
-            using (viewModel.BeginPickerDialogVisible())
+            // UI-5c: the slot first — a wait behind a page dialog holds no scope and no capture.
+            using (await AcquirePickerSlotAsync(ct))
             {
-                // The pill can be tapped with the main window minimized to tray; a ContentDialog
-                // needs a XamlRoot to show on.
-                RestoreMainWindow();
-                await Task.Delay(100); // Let window activate before showing dialog
-
-                if (App.MainWindow?.Content is not FrameworkElement root || root.XamlRoot is null)
+                CapturePickerForeground();
+                try
                 {
-                    Log.Warning("{Picker} skipped — no XamlRoot available", name);
-                    return default!;
-                }
+                    using (viewModel.BeginPickerDialogVisible())
+                    {
+                        // The pill can be tapped with the main window minimized to tray; a ContentDialog
+                        // needs a XamlRoot to show on.
+                        RestoreMainWindow();
+                        await Task.Delay(100); // Let window activate before showing dialog
+                        ct.ThrowIfCancellationRequested(); // UI-5d: no await between this and the show
 
-                T result;
-                using (await Helpers.DialogLease.MainWindow.AcquireAsync()) // UI-5
-                    result = await show(root.XamlRoot);
-                ReleasePickerForeground();
-                return result;
+                        if (App.MainWindow?.Content is not FrameworkElement root || root.XamlRoot is null)
+                        {
+                            Log.Warning("{Picker} skipped — no XamlRoot available", name);
+                            return default!;
+                        }
+
+                        return await show(root.XamlRoot);
+                    }
+                }
+                finally
+                {
+                    ReleasePickerForeground();
+                }
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Log.Information("{Picker} not shown — its request went stale", name); // UI-5d
+            return default!;
         }
         catch (Exception ex)
         {
             Log.Error(ex, "Failed to show the {Picker}", name);
             return default!;
         }
-        finally
-        {
-            ReleasePickerForeground();
-        }
+    }
+
+    /// <summary>UI-5c: the main window's dialog slot for a picker; a wait shows the window first, so the dialog holding the slot is in front.</summary>
+    private async Task<IDisposable> AcquirePickerSlotAsync(CancellationToken ct)
+    {
+        var slot = Helpers.DialogLease.MainWindow.AcquireAsync(ct);
+        if (!slot.IsCompleted)
+            RestoreMainWindow(); // no scope and no capture: the page dialog is not a picker
+        return await slot;
     }
 
     /// <summary>

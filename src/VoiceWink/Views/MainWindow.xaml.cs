@@ -60,6 +60,9 @@ public sealed partial class MainWindow : Window
     private readonly Services.Data.LifetimeMetricsService _lifetimeMetrics;
     private readonly Services.System.ClipboardService _clipboard;
 
+    // TRN-100: Transcribe File reads the active prompt's language override; injected so the page adds no service lookup.
+    private readonly Services.AIEnhancement.AIEnhancementService _enhancement;
+
     // Home shows the recording hotkey (2026-10-14 redesign); the window reads it when it builds the
     // page, so a change made in Settings shows on the next visit.
     private readonly Services.System.SettingsService _settings;
@@ -92,10 +95,11 @@ public sealed partial class MainWindow : Window
     /// ContentControl mid-modal. <c>false</c> keeps the legacy auto-route behaviour.
     /// </summary>
     public MainWindow(bool deferLicenseRoute, Services.Data.LifetimeMetricsService lifetimeMetrics,
-        Services.System.ClipboardService clipboard)
+        Services.System.ClipboardService clipboard, Services.AIEnhancement.AIEnhancementService enhancement)
     {
         _lifetimeMetrics = lifetimeMetrics;   // before BuildUI: building the UI navigates to Home
         _clipboard = clipboard;
+        _enhancement = enhancement;
         // Version deliberately NOT in the title (owner 2026-07-10) — it lives on the
         // About and Updates pages; the "(Debug)" marker went the same way (owner
         // 2026-09-22), so every configuration carries the plain title.
@@ -966,7 +970,7 @@ public sealed partial class MainWindow : Window
             "enhancement" => new EnhancementPage(),
             "dictionary" => new DictionaryPage(),
             "appmode" => new AppModePage(),
-            "transcribe" => new AudioTranscribePage(),
+            "transcribe" => new AudioTranscribePage(_enhancement.GetActivePrompt),
             "metrics" => new MetricsPage(),
             "logviewer" => new LogViewerPage(),
             "license" => new LicensePage(TakeStartupForcedLicenseRefresh),

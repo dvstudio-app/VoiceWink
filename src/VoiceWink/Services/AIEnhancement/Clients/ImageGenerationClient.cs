@@ -170,7 +170,7 @@ public sealed class ImageGenerationClient
             // cannot rewrite. `ex` still rides the thrown TimeoutException as InnerException.
             Logger.Warning("Image URL download timed out after {Timeout:F0}s (model={Model})",
                 timeoutSeconds, model);
-            throw new TimeoutException(
+            throw new ImageGenerationTimeoutException(
                 $"Image generation timed out after {timeoutSeconds:F0}s. Try a smaller size or lower quality, or rephrase the prompt.",
                 ex);
         }

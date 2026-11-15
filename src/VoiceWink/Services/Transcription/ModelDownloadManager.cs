@@ -46,7 +46,13 @@ public sealed class ModelDownloadManager
     private const int DefaultMaxDownloadAttempts = 4;
     private static readonly TimeSpan DefaultStallTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultRetryBackoff = TimeSpan.FromSeconds(2);
+    /// <summary>NET-9: how long a source that was delivering bytes keeps retrying a network drop after the count budget is spent.</summary>
+    private static readonly TimeSpan DefaultOutageWindow = TimeSpan.FromSeconds(90);
+    /// <summary>NET-9: the pause between retries inside the outage window, as a multiple of the base pause.</summary>
+    internal const int OutagePauseMultiplier = 5;
     private readonly int _maxDownloadAttempts;
+    private readonly TimeSpan _outageWindow;
+    private readonly TimeProvider _timeProvider;
     /// <summary>NET-5 test seam: replaces the FileStream the download writes its partial through.
     /// Null in production (the public ctor never sets it). Exists because a genuine disk-full
     /// cannot be produced in a unit test, and the dispose-replaces-the-exception hazard this fix
@@ -113,7 +119,7 @@ public sealed class ModelDownloadManager
     /// </summary>
     public ModelDownloadManager(IHttpClientFactory httpFactory, string modelsDirectory)
         : this(httpFactory, DefaultMaxDownloadAttempts, DefaultStallTimeout, DefaultRetryBackoff,
-               modelsDirectory, catalog: null) { }
+               modelsDirectory, catalog: null, outageWindow: DefaultOutageWindow) { }
 
     /// <summary>
     /// LAI-3: a second manager over ANOTHER root and catalog — the local AI-enhancement models under
@@ -124,7 +130,7 @@ public sealed class ModelDownloadManager
     internal static ModelDownloadManager ForCatalog(
         IHttpClientFactory httpFactory, string modelsDirectory, IReadOnlyList<TranscriptionModelInfo> catalog)
         => new(httpFactory, DefaultMaxDownloadAttempts, DefaultStallTimeout, DefaultRetryBackoff,
-               modelsDirectory, catalog, auxiliaryBundles: []);
+               modelsDirectory, catalog, auxiliaryBundles: [], outageWindow: DefaultOutageWindow);
 
     /// <summary>
     /// Test seam: lets download retry/resume tests use a small attempt count and ms-scale timers
@@ -144,12 +150,17 @@ public sealed class ModelDownloadManager
         TimeSpan stallTimeout, TimeSpan retryBackoff, string modelsDirectory,
         IReadOnlyList<TranscriptionModelInfo>? catalog = null,
         IReadOnlyList<TranscriptionModelInfo>? auxiliaryBundles = null,
-        Func<string, bool, Stream>? partialOpener = null)
+        Func<string, bool, Stream>? partialOpener = null,
+        TimeSpan? outageWindow = null,
+        TimeProvider? timeProvider = null)
     {
         _httpFactory = httpFactory;
         _partialOpener = partialOpener;
         _modelsDirectory = modelsDirectory;
         _maxDownloadAttempts = maxDownloadAttempts;
+        // NET-9: null leaves the window off, so a test that does not ask for it keeps today's exact attempt counts.
+        _outageWindow = outageWindow ?? TimeSpan.Zero;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _stallTimeout = stallTimeout;
         _retryBackoff = retryBackoff;
         _catalog = catalog ?? PredefinedModels.Models;
@@ -213,6 +224,17 @@ public sealed class ModelDownloadManager
             || !Helpers.VerifiedFileAccess.DirectoryResolvesDirectly(staging)
             || !Helpers.VerifiedFileAccess.IsDirectoryVerifiedUnder(staging, _modelsDirectory))
             return kept;
+
+        // NET-13: a link directly inside staging forfeits every partial, so the free-space gate and the download agree (the download then deletes staging whole, which unlinks it).
+        try
+        {
+            if (new DirectoryInfo(staging).EnumerateFileSystemInfos().Any(e => (e.Attributes & FileAttributes.ReparsePoint) != 0))
+                return kept;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return kept;
+        }
 
         var stagingFull = Path.GetFullPath(staging);
         foreach (var file in model.Files!)
@@ -683,20 +705,12 @@ public sealed class ModelDownloadManager
             {
                 // A failed sweep must not fall into the catch's wholesale delete and take the partial with it.
                 preserveStaging = true;
-                var entries = new DirectoryInfo(staging).EnumerateFileSystemInfos().ToList();
-                // A link inside staging would make the per-entry sweep refuse every later install; the wholesale delete unlinks it.
-                if (entries.Exists(e => (e.Attributes & FileAttributes.ReparsePoint) != 0))
+                // ResumablePartials returned nothing when staging held a link (NET-13), so this sweep only meets plain entries.
+                foreach (var entry in new DirectoryInfo(staging).EnumerateFileSystemInfos().ToList())
                 {
-                    kept.Clear();
-                }
-                else
-                {
-                    foreach (var entry in entries)
-                    {
-                        var full = Path.GetFullPath(entry.FullName);
-                        if (!kept.Exists(k => string.Equals(k.Path, full, StringComparison.OrdinalIgnoreCase)))
-                            DeleteOccupantFailClosed(full, "stale staging entry");
-                    }
+                    var full = Path.GetFullPath(entry.FullName);
+                    if (!kept.Exists(k => string.Equals(k.Path, full, StringComparison.OrdinalIgnoreCase)))
+                        DeleteOccupantFailClosed(full, "stale staging entry");
                 }
                 preserveStaging = false;
             }
@@ -717,6 +731,8 @@ public sealed class ModelDownloadManager
             Logger.Information("Installing model bundle {Name} ({Count} files)", model.Name, files.Count);
 
             long completedBytes = 0;
+            // NET-9: per source slot (mirror, fallback), so a drop between members keeps the window the last member earned.
+            var progressBySource = new long?[2];
             foreach (var file in files)
             {
                 ct.ThrowIfCancellationRequested();
@@ -729,7 +745,7 @@ public sealed class ModelDownloadManager
                 var fileProgress = progress is null ? null : new SynchronousProgress<double>(p =>
                     progress.Report(Math.Clamp((fileStart + (p * file.FileSizeBytes)) / totalBytes, 0, 0.99)));
 
-                await DownloadBundleFileAsync(model, file, target, fileProgress, ct).ConfigureAwait(false);
+                var servedBy = await DownloadBundleFileAsync(model, file, target, fileProgress, ct, progressBySource).ConfigureAwait(false);
                 await VerifyBundleFileHashAsync(model, file, target, ct).ConfigureAwait(false);
 
                 // The declared size is not merely a download hint here — it is half the installed
@@ -744,6 +760,8 @@ public sealed class ModelDownloadManager
                         $"but {actualLength} were written — the catalog entry is wrong.");
                 }
 
+                // NET-9: re-stamp after the second hash, so a slow check of a large member does not eat the next member's window.
+                RecordProgress(progressBySource, servedBy);
                 completedBytes += file.FileSizeBytes;
             }
 
@@ -811,8 +829,8 @@ public sealed class ModelDownloadManager
     /// read per install): the transaction's gate stays independent of the download's, so a
     /// future change to either cannot silently strip the other's coverage.
     /// </summary>
-    private async Task DownloadBundleFileAsync(TranscriptionModelInfo model, ModelFile file,
-        string targetPath, IProgress<double>? progress, CancellationToken ct)
+    private async Task<int> DownloadBundleFileAsync(TranscriptionModelInfo model, ModelFile file,
+        string targetPath, IProgress<double>? progress, CancellationToken ct, long?[] progressBySource)
     {
         var tempPath = targetPath + ".download";
         var fileDescriptor = new TranscriptionModelInfo
@@ -826,10 +844,11 @@ public sealed class ModelDownloadManager
             FileSizeIsExact = true,
         };
 
-        await DownloadAndVerifyFromSourcesAsync(fileDescriptor, file.Sha256Hash, tempPath, progress, ct)
+        var servedBy = await DownloadAndVerifyFromSourcesAsync(fileDescriptor, file.Sha256Hash, tempPath, progress, ct, progressBySource)
             .ConfigureAwait(false);
 
         File.Move(tempPath, targetPath, overwrite: true);
+        return servedBy;
     }
 
     /// <summary>
@@ -866,8 +885,9 @@ public sealed class ModelDownloadManager
     /// <para>A null <paramref name="expectedSha256"/> skips the hash gate (the legacy single-file
     /// contract for rows without a pin); transport failures still fall back.</para>
     /// </summary>
-    private async Task DownloadAndVerifyFromSourcesAsync(TranscriptionModelInfo descriptor,
-        string? expectedSha256, string tempPath, IProgress<double>? progress, CancellationToken ct)
+    private async Task<int> DownloadAndVerifyFromSourcesAsync(TranscriptionModelInfo descriptor,
+        string? expectedSha256, string tempPath, IProgress<double>? progress, CancellationToken ct,
+        long?[]? progressBySource = null)
     {
         var sources = new List<string> { descriptor.DownloadUrl! };
         if (!string.IsNullOrEmpty(descriptor.FallbackUrl))
@@ -889,8 +909,11 @@ public sealed class ModelDownloadManager
             var startedWithPartial = File.Exists(tempPath) && new FileInfo(tempPath).Length > 0;
             try
             {
+                // NET-9: when this source last delivered bytes in this call; a bundle carries it from member to member.
+                long? lastProgressTimestamp = progressBySource is { } carried && s < carried.Length ? carried[s] : null;
                 for (var attempt = 1; ; attempt++)
                 {
+                    var partialBefore = PartialLength(tempPath);
                     try
                     {
                         await StreamModelToTempAsync(descriptor, sources[s], tempPath, progress, ct)
@@ -904,8 +927,21 @@ public sealed class ModelDownloadManager
                         File.Delete(tempPath);
                         throw;
                     }
-                    catch (Exception ex) when (attempt < _maxDownloadAttempts && IsTransientDownloadError(ex, ct))
+                    catch (Exception ex) when (IsTransientDownloadError(ex, ct))
                     {
+                        // NET-9: progress = the partial is longer than before this attempt (a 416, a Range mismatch or a shorter 200-overwrite is not).
+                        if (PartialLength(tempPath) > partialBefore)
+                            lastProgressTimestamp = RecordProgress(progressBySource, s);
+                        var pause = RetryPause(attempt, _maxDownloadAttempts, _retryBackoff,
+                            lastProgressTimestamp is { } since ? _timeProvider.GetElapsedTime(since) : null,
+                            _outageWindow);
+                        if (pause is null) throw;
+                        if (attempt == _maxDownloadAttempts)
+                        {
+                            Logger.Information(
+                                "Model download from {Url}: network drop after progress; still retrying for up to {Window} since the last bytes arrived",
+                                sources[s], _outageWindow);
+                        }
                         // LOG-1 (owner report 2026-07-15; extended here 2026-09-16, NET-4): type +
                         // message only, never the exception OBJECT. This is the exact shape LOG-1
                         // was written for and the one production site it did not reach — a
@@ -938,10 +974,10 @@ public sealed class ModelDownloadManager
                         // diagnostic; the inner TYPE was.
                         var innerErrorType = ex.InnerException?.GetType().Name;
                         Logger.Warning(
-                            "Model download attempt {Attempt}/{Max} from {Url} failed transiently; retrying (resuming from partial) after {Backoff}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
-                            attempt, _maxDownloadAttempts, sources[s], _retryBackoff,
+                            "Model download attempt {Attempt} (budget {Max}) from {Url} failed transiently; retrying (resuming from partial) after {Backoff}: {ErrorType}({InnerErrorType}): {ErrorMessage}",
+                            attempt, _maxDownloadAttempts, sources[s], pause.Value,
                             ex.GetType().Name, innerErrorType, ex.Message);
-                        await Task.Delay(_retryBackoff, ct).ConfigureAwait(false);
+                        await Task.Delay(pause.Value, ct).ConfigureAwait(false);
                     }
                 }
 
@@ -949,7 +985,8 @@ public sealed class ModelDownloadManager
                 {
                     await VerifyTempFileHashAsync(descriptor, expectedSha256, tempPath, ct).ConfigureAwait(false);
                 }
-                return;
+                RecordProgress(progressBySource, s); // a finished member is progress for the next one
+                return s;
             }
             catch (ModelChecksumMismatchException ex) when (startedWithPartial
                                                             && !cleanRetryUsedForSource[s]
@@ -1020,6 +1057,35 @@ public sealed class ModelDownloadManager
         // Unreachable while callers validate DownloadUrl before dispatch (the last source either
         // returned or let its exception propagate) — kept for totality over the source list.
         throw new InvalidOperationException($"No download source succeeded for model '{descriptor.DisplayName}'.");
+    }
+
+    /// <summary>
+    /// NET-9: the pause before retrying a transient failure, or null to stop. The first
+    /// <paramref name="maxAttempts"/> attempts keep the base pause; after that a source retries only
+    /// while less than <paramref name="outageWindow"/> has passed since an attempt that grew the
+    /// partial (<paramref name="sinceProgress"/>, null = none this call), at a longer pause.
+    /// </summary>
+    internal static TimeSpan? RetryPause(int attempt, int maxAttempts, TimeSpan basePause,
+        TimeSpan? sinceProgress, TimeSpan outageWindow)
+    {
+        if (attempt < maxAttempts) return basePause;
+        if (sinceProgress is { } since && since < outageWindow) return basePause * OutagePauseMultiplier;
+        return null;
+    }
+
+    /// <summary>NET-9: stamps source <paramref name="s"/> as having delivered bytes now, in the bundle's carried slots when there are any.</summary>
+    private long RecordProgress(long?[]? progressBySource, int s)
+    {
+        var now = _timeProvider.GetTimestamp();
+        if (progressBySource is not null && s < progressBySource.Length) progressBySource[s] = now;
+        return now;
+    }
+
+    /// <summary>NET-9: the partial's length, 0 when it is absent.</summary>
+    private static long PartialLength(string tempPath)
+    {
+        var info = new FileInfo(tempPath);
+        return info.Exists ? info.Length : 0;
     }
 
     /// <summary>
@@ -1173,8 +1239,42 @@ public sealed class ModelDownloadManager
                         $"Refusing to delete {what}: '{path}' does not resolve inside the models directory " +
                         "(a reparse point, or its real path could not be read).");
                 }
+                // NET-13: a path that is itself a link is removed whole below, never enumerated (its target is another folder).
+                if (Helpers.VerifiedFileAccess.DirectoryResolvesDirectly(path))
+                    UnlinkDirectLinks(path);
                 Directory.Delete(path, recursive: true);
                 return;
+        }
+    }
+
+    /// <summary>NET-13: removes the links directly inside a directory without following them; a recursive delete over a junction throws without admin rights.</summary>
+    private static void UnlinkDirectLinks(string directory)
+    {
+        // shortcut: a link in a subfolder still fails one recursive delete (the next succeeds); walk contained subfolders if a shipped bundle ever nests files.
+        List<FileSystemInfo> entries;
+        try
+        {
+            entries = new DirectoryInfo(directory).EnumerateFileSystemInfos().ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return; // The recursive delete that follows fails closed and reports it.
+        }
+        foreach (var entry in entries)
+        {
+            if ((entry.Attributes & FileAttributes.ReparsePoint) == 0)
+                continue;
+            try
+            {
+                if (entry is DirectoryInfo link)
+                    link.Delete(recursive: false); // RemoveDirectory: deletes the link, never the target
+                else
+                    entry.Delete();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The recursive delete that follows fails closed and reports it.
+            }
         }
     }
 

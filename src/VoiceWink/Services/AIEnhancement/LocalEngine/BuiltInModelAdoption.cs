@@ -158,8 +158,14 @@ internal sealed class BuiltInModelAdoption
         {
             return Task.CompletedTask;
         }
-        if (LocalModelCatalog.Find(id) is null || !ShouldAdopt())
+        var entry = LocalModelCatalog.Find(id);
+        // LAI-22: a retired model's interrupted download is not restarted, and nothing is started in its place.
+        var retiredMissing = entry is not null && !LocalModelRecommendation.IsListed(entry, _isInstalled(id));
+        if (entry is null || retiredMissing || !ShouldAdopt())
         {
+            // LAI-22: an AI switch turned on during that download would otherwise stay on with no model.
+            if (retiredMissing)
+                RemoveAiOnIfNothingCanServe();
             Logger.Information("Express setup: dropping the pending built-in model download (no longer wanted)");
             ClearPending();
             return Task.CompletedTask;

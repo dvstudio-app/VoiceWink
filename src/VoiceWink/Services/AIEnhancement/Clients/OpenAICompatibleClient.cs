@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Serilog;
+using Serilog.Events;
 using VoiceWink.Helpers;
 
 namespace VoiceWink.Services.AIEnhancement.Clients;
@@ -190,6 +191,9 @@ public sealed class OpenAICompatibleClient
     {
         var endpoint = $"{config.GetBaseUrl().TrimEnd('/')}/chat/completions";
         using var request = NewChatRequest(config, endpoint, BuildGenericChatBody(config, systemPrompt, userText, stream: true));
+        // LAI-22: llama-server closes the connection after a streamed reply, so pooling it fails a request sent right after.
+        if (config.Provider == AIProvider.OnThisPc)
+            request.Headers.ConnectionClose = true;
         var result = await LocalReplyStream.SendAsync(
             http, request, LocalStreamFraming.Sse, config.ReplyWindows, systemPrompt.Length + userText.Length, config.ReplyProgress,
             async (response, token) =>
@@ -299,7 +303,7 @@ public sealed class OpenAICompatibleClient
         {
             // No content field anywhere (or content as parts): contract drift, reported exactly as the
             // one-object path's shape miss is — same template and reason (self-review, 2026-10-18).
-            Logger.Error("{Provider} response shape unexpected: {Reason}; Body={Body}",
+            Logger.Write(ShapeMissLevel(config), "{Provider} response shape unexpected: {Reason}; Body={Body}",
                 "Chat", "API response missing 'choices[0].message.content'", "(streamed)");
             throw new InvalidOperationException("API response missing 'choices[0].message.content'");
         }
@@ -335,6 +339,7 @@ public sealed class OpenAICompatibleClient
         // Error and reach Sentry, while the provider-outcome branch BELOW stays outside so its
         // deliberate throw keeps Warning semantics. A miss returns null instead of throwing:
         // the shape questions are re-asked below, where the outcome gets classified.
+        // LAI-25: every Error/Sentry statement in this method holds for cloud providers and OnThisPc; a Local server's misses log Warning (ShapeMissLevel).
         // ENH-27, closing the second half of audit finding F12. Until 2026-09-15 a truncated
         // answer only LOGGED and then pasted: the user's document silently took a sentence that
         // stops mid-word, with nothing on screen to say so. It is now REFUSED, which hands the
@@ -395,7 +400,7 @@ public sealed class OpenAICompatibleClient
             }
 
             return null;
-        });
+        }, ShapeMissLevel(config));
         // Empty-but-present content is a RESULT (""), not a miss — null means only that the
         // happy path did not match, never that the model returned nothing.
         if (extracted != null)
@@ -441,12 +446,16 @@ public sealed class OpenAICompatibleClient
         // fingerprint they already had. Wrong-kind access ({"choices":{}}) still throws INSIDE
         // the guard and is NOT an example of the shared reason string — the guard logs
         // ex.Message there, which is JsonElement's kind error, not this one.
-        Logger.Error("{Provider} response shape unexpected: {Reason}; Body={Body}",
+        Logger.Write(ShapeMissLevel(config), "{Provider} response shape unexpected: {Reason}; Body={Body}",
             "Chat",
             "API response missing 'choices[0].message.content'",
             responseJson.TruncateForLog());
         throw new InvalidOperationException("API response missing 'choices[0].message.content'");
     }
+
+    /// <summary>LAI-25: a reply shape miss is Error (Sentry) for our providers and the pinned build, Warning for the user's own server.</summary>
+    private static LogEventLevel ShapeMissLevel(AIProviderConfig config) =>
+        config.Provider == AIProvider.LocalServer ? LogEventLevel.Warning : LogEventLevel.Error;
 
     /// <summary>
     /// Call the OpenAI Responses API (/v1/responses) for models that don't support chat completions.

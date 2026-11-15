@@ -7,7 +7,7 @@ namespace VoiceWink.Services.Transcription.Clients;
 
 /// <summary>
 /// OpenAI audio transcription client — uses the /v1/audio/transcriptions endpoint.
-/// Supports gpt-transcribe, gpt-4o-transcribe and gpt-4o-mini-transcribe.
+/// The catalog's one OpenAI model is gpt-transcribe since TRN-84 retired the GPT-4o pair.
 ///
 /// <para>Two request shapes live behind one endpoint. <c>gpt-transcribe</c> (2026-07-31) replaced
 /// the singular <c>language</c> field with a <c>languages[]</c> array and added a structured
@@ -43,7 +43,7 @@ public sealed class OpenAITranscriptionClient : ITranscriptionService
     /// would be meaningless, not merely unused.</summary>
     public string? GenerativeModelId => null;
 
-    public OpenAITranscriptionClient(HttpClient http, string apiKey, string model = "gpt-4o-mini-transcribe")
+    public OpenAITranscriptionClient(HttpClient http, string apiKey, string model = "gpt-transcribe")
     {
         _http = http;
         _apiKey = apiKey;

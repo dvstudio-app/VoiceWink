@@ -76,7 +76,7 @@ internal static class HttpResponseExtensions
             // of the object. Nothing here needs a local dump, so this site simply carries none.
             logger.Warning("Image generation timed out after {Timeout:F0}s ({Detail})",
                 timeoutSeconds, requestDescription);
-            throw new TimeoutException(
+            throw new ImageGenerationTimeoutException(
                 $"Image generation timed out after {timeoutSeconds:F0}s. Try a smaller size or lower quality, or rephrase the prompt.",
                 ex);
         }

@@ -42,7 +42,8 @@ public sealed class RedoCoordinator
     private long _generation;
 
     /// <summary>REL-20: bumped only by <see cref="InvalidatePending"/> (recording start, explicit
-    /// dismiss) — never by a re-arm, so an image job finishing cannot make an open picker stale.</summary>
+    /// dismiss, a History delete covering the picker's content — UI-5d) — never by a re-arm, so an
+    /// image job finishing cannot make an open picker stale.</summary>
     public long Generation => Interlocked.Read(ref _generation);
 
     /// <summary>REL-20: makes every open AI-picker ticket stale.</summary>

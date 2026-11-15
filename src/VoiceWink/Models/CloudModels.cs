@@ -35,32 +35,30 @@ public static class CloudModels
         // 2026-07-23 once no user selection pointed at it anymore)
         new() { Name = "scribe_v2", DisplayName = "ElevenLabs Scribe V2", Provider = ModelProvider.ElevenLabs },
 
-        // OpenAI — GPT Transcribe leads (★5 accuracy vs ★4 for both siblings, and cheaper per minute than
-        // GPT-4o Transcribe). Promoted 2026-08-02 by owner decision; it shipped last on 2026-08-01
-        // only because changing a provider's default is a product call, not a side effect of adding
-        // a row. That call has now been made, and generalised into the rule above.
-        //
-        // Rows 2 and 3 INVERT on the stars, and that is DELIBERATE (owner decision 2026-08-03,
-        // asked and answered while this card was open). TRN-3 moved gpt-4o-mini-transcribe to ★4
-        // accuracy on a measured value (since removed — LNC-6 data-licence decision), so it ties
-        // gpt-4o-transcribe on accuracy while listed below it. The old speed half of this argument
-// (★4 vs ★3) is GONE: every cloud row carries ★5 since the 2026-08-31 levelling.
-        // Flagship-above-mini is kept: the two are not the same model tier, and the stars do not
-        // carry price, context or output quality.
-        //
-        // Nothing enforces this either way — the leader rule and CloudModelOrderTests bind
-        // POSITION 1 ONLY, which is unchanged, so onboarding still defaults to gpt-transcribe.
-        // Recorded here because catalog order IS the render order on the Models page and in
-        // onboarding, so a future reader comparing these two rows against the star table will
-        // notice the inversion and should not "fix" it.
+        // OpenAI — GPT Transcribe, the provider's only row since TRN-84 retired the GPT-4o pair.
         new() { Name = "gpt-transcribe", DisplayName = "OpenAI GPT Transcribe", Provider = ModelProvider.OpenAI },
-        new() { Name = "gpt-4o-transcribe", DisplayName = "OpenAI GPT-4o Transcribe", Provider = ModelProvider.OpenAI },
-        new() { Name = "gpt-4o-mini-transcribe", DisplayName = "OpenAI GPT-4o Mini Transcribe", Provider = ModelProvider.OpenAI },
     ];
+
+    /// <summary>A cloud model the provider shut down: a saved selection naming it runs on its successor (TRN-84).</summary>
+    public sealed record RetiredModel(string Name, string DisplayName, ModelProvider Provider, string Successor);
+
+    /// <summary>Retired cloud ids; OpenAI shuts both down on 2027-02-26 and names gpt-transcribe as the replacement (TRN-84).</summary>
+    public static readonly RetiredModel[] Retired =
+    [
+        new("gpt-4o-transcribe", "OpenAI GPT-4o Transcribe", ModelProvider.OpenAI, "gpt-transcribe"),
+        new("gpt-4o-mini-transcribe", "OpenAI GPT-4o Mini Transcribe", ModelProvider.OpenAI, "gpt-transcribe"),
+    ];
+
+    private static readonly Dictionary<string, RetiredModel> _retired =
+        Retired.ToDictionary(r => r.Name, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Canonical-name lookup for live models (case-insensitive → exact casing).</summary>
     private static readonly Dictionary<string, string> _canonicalNames =
         Models.ToDictionary(m => m.Name, m => m.Name, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The retired row a name denotes (any casing), or null for a live or unknown name.</summary>
+    public static RetiredModel? FindRetired(string? modelName)
+        => !string.IsNullOrEmpty(modelName) && _retired.TryGetValue(modelName, out var r) ? r : null;
 
     /// <summary>O(1) lookup for cloud model names — avoids repeated .Any() linear scans.</summary>
     private static readonly HashSet<string> _cloudModelNames =
@@ -68,13 +66,15 @@ public static class CloudModels
 
     /// <summary>
     /// Resolve a model name to its canonical form: live names normalize to catalog
-    /// casing (so the registry's lookups can stay exact), unknown names pass through
-    /// unchanged.
+    /// casing (so the registry's lookups can stay exact), a retired name resolves to its
+    /// successor (TRN-84), unknown names pass through unchanged.
     /// </summary>
     public static string Canonicalize(string? modelName)
     {
         if (string.IsNullOrEmpty(modelName))
             return modelName ?? "";
+        if (FindRetired(modelName) is { } retired)
+            return retired.Successor;
         return _canonicalNames.TryGetValue(modelName, out var canonical) ? canonical : modelName;
     }
 

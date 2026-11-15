@@ -9,8 +9,8 @@ namespace VoiceWink.Services.AIEnhancement.LocalEngine;
 internal interface ILlamaServerLauncher
 {
     /// <summary>Launch llama-server from <paramref name="exePath"/> on <paramref name="modelPath"/>.
-    /// Null = no child exists.</summary>
-    ILlamaServerChild? TryLaunch(string exePath, string modelPath, string apiKey, LlamaLaunchMode mode);
+    /// Null = no child exists. <paramref name="thinking"/>: LAI-24, the model thinks before it replies.</summary>
+    ILlamaServerChild? TryLaunch(string exePath, string modelPath, string apiKey, LlamaLaunchMode mode, bool thinking = false);
 }
 
 /// <summary>One launched llama-server. The Parakeet child's contract (PID-keyed port readback,
@@ -68,10 +68,10 @@ internal sealed class NativeLlamaServerLauncher : ILlamaServerLauncher
         _threads = threads ?? ParakeetServerPolicy.ServerDecodeThreads;
     }
 
-    public ILlamaServerChild? TryLaunch(string exePath, string modelPath, string apiKey, LlamaLaunchMode mode)
+    public ILlamaServerChild? TryLaunch(string exePath, string modelPath, string apiKey, LlamaLaunchMode mode, bool thinking = false)
     {
         var commandLine = LlamaServerLaunch.BuildCommandLine(
-            exePath, LlamaServerLaunch.BuildArguments(modelPath, apiKey, mode, _threads));
+            exePath, LlamaServerLaunch.BuildArguments(modelPath, apiKey, mode, _threads, thinking));
         var observation = new Observation();
         var handle = NativeChildLauncher.TryLaunch(
             "llama-server",

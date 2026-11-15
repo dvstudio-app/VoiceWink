@@ -78,6 +78,10 @@ public partial class HistoryViewModel : ObservableObject
     // always null in production (the explicit initializer is what marks that intent).
     internal Func<Task>? _afterItemsQueryHook = null;
 
+    // HIS-6: a refresh waits for in-flight single-row deletes, so it never applies before a delete has moved the selection on.
+    private int _deletesInFlight;
+    private TaskCompletionSource? _deletesSettled;
+
     public HistoryViewModel(TranscriptionHistoryService history, CsvExportService csvExport)
     {
         _history = history;
@@ -88,31 +92,33 @@ public partial class HistoryViewModel : ObservableObject
     public async Task LoadAsync()
     {
         _typeFilter = null; // Reset filter on fresh page load (page UI defaults to "All")
-        await LoadAsync(null);
+        await LoadAsync(keepSelection: false);
     }
 
     public async Task RefreshAsync()
     {
-        var selectedId = SelectedTranscription?.Id;
+        while (_deletesSettled is { } settled)
+            await settled.Task;
 
         if (IsSearchActive && !string.IsNullOrWhiteSpace(SearchQuery))
         {
             var loadedPages = Math.Max(1, _searchPage + 1);
-            await SearchAsync(selectedId, loadedPages * PageSize, loadedPages - 1);
+            await SearchAsync(keepSelection: true, loadedPages * PageSize, loadedPages - 1);
         }
         else
         {
             var loadedPages = Math.Max(1, CurrentPage + 1);
-            await LoadAsync(selectedId, loadedPages * PageSize, loadedPages - 1);
+            await LoadAsync(keepSelection: true, loadedPages * PageSize, loadedPages - 1);
         }
     }
 
-    private async Task LoadAsync(int? selectedIdToRestore)
+    private async Task LoadAsync(bool keepSelection)
     {
-        await LoadAsync(selectedIdToRestore, PageSize, 0);
+        await LoadAsync(keepSelection, PageSize, 0);
     }
 
-    private async Task LoadAsync(int? selectedIdToRestore, int pageSize, int currentPageToRestore)
+    // HIS-6: keepSelection reads the selection at APPLY time — a delete's own refresh starts before the delete moves it on.
+    private async Task LoadAsync(bool keepSelection, int pageSize, int currentPageToRestore)
     {
         var generation = ++_loadGeneration;
         IsSearchActive = false;
@@ -124,6 +130,7 @@ public partial class HistoryViewModel : ObservableObject
         if (generation != _loadGeneration)
             return; // superseded by a newer load/search — a stale snapshot must not apply
 
+        var selectedId = keepSelection ? SelectedTranscription?.Id : null;
         TotalCount = totalCount;
         Transcriptions.Clear();
         foreach (var item in items)
@@ -132,8 +139,8 @@ public partial class HistoryViewModel : ObservableObject
         HasMore = pageSize == PageSize
             ? items.Count == PageSize
             : TotalCount > items.Count;
-        SelectedTranscription = selectedIdToRestore.HasValue
-            ? Transcriptions.FirstOrDefault(t => t.Id == selectedIdToRestore.Value)
+        SelectedTranscription = selectedId.HasValue
+            ? Transcriptions.FirstOrDefault(t => t.Id == selectedId.Value)
             : null;
         MarkApplied(generation); // ONLY a completed apply — a throw above leaves it behind
     }
@@ -158,7 +165,7 @@ public partial class HistoryViewModel : ObservableObject
     /// filter: a search when there is a term, the plain list when there is none. HIS-14: the
     /// search box and the filter tabs are one state, so neither may reset the other.</summary>
     public Task ReloadAsync()
-        => string.IsNullOrWhiteSpace(SearchQuery) ? LoadAsync(null) : SearchAsync(null);
+        => string.IsNullOrWhiteSpace(SearchQuery) ? LoadAsync(keepSelection: false) : SearchAsync(keepSelection: false);
 
     [RelayCommand]
     public async Task LoadMoreAsync()
@@ -204,15 +211,15 @@ public partial class HistoryViewModel : ObservableObject
     [RelayCommand]
     public async Task SearchAsync()
     {
-        await SearchAsync(null);
+        await SearchAsync(keepSelection: false);
     }
 
-    private async Task SearchAsync(int? selectedIdToRestore)
+    private async Task SearchAsync(bool keepSelection)
     {
-        await SearchAsync(selectedIdToRestore, PageSize, 0);
+        await SearchAsync(keepSelection, PageSize, 0);
     }
 
-    private async Task SearchAsync(int? selectedIdToRestore, int pageSize, int searchPageToRestore)
+    private async Task SearchAsync(bool keepSelection, int pageSize, int searchPageToRestore)
     {
         var generation = ++_loadGeneration;
         IsSearchActive = true;
@@ -224,6 +231,7 @@ public partial class HistoryViewModel : ObservableObject
         if (generation != _loadGeneration)
             return; // superseded — see LoadAsync's fence
 
+        var selectedId = keepSelection ? SelectedTranscription?.Id : null;
         TotalCount = totalCount;
         Transcriptions.Clear();
         foreach (var item in items)
@@ -232,14 +240,33 @@ public partial class HistoryViewModel : ObservableObject
         HasMore = pageSize == PageSize
             ? items.Count == PageSize
             : TotalCount > items.Count;
-        SelectedTranscription = selectedIdToRestore.HasValue
-            ? Transcriptions.FirstOrDefault(t => t.Id == selectedIdToRestore.Value)
+        SelectedTranscription = selectedId.HasValue
+            ? Transcriptions.FirstOrDefault(t => t.Id == selectedId.Value)
             : null;
         MarkApplied(generation);
     }
 
     [RelayCommand]
     public async Task DeleteAsync(TranscriptionRecord transcription)
+    {
+        _deletesInFlight++;
+        _deletesSettled ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            await DeleteCoreAsync(transcription);
+        }
+        finally
+        {
+            if (--_deletesInFlight == 0)
+            {
+                var settled = _deletesSettled;
+                _deletesSettled = null;
+                settled?.TrySetResult();
+            }
+        }
+    }
+
+    private async Task DeleteCoreAsync(TranscriptionRecord transcription)
     {
         // Join the freshness protocol (Codex diff r2/r3): invalidate any held stale
         // snapshot BEFORE the mutation — it must not resurrect the deleted row — and
@@ -252,15 +279,25 @@ public partial class HistoryViewModel : ObservableObject
         // authoritative list and count either way).
         var generation = ++_loadGeneration;
         await _history.DeleteAsync(transcription.Id);
-        if (Transcriptions.Remove(transcription))
+        // HIS-6: compared by Id, never by a stale index or instance (HIS-5's lesson).
+        var selectionFollows = SelectedTranscription == null || SelectedTranscription.Id == transcription.Id;
+        var removedIndex = Transcriptions.IndexOf(transcription);
+        if (removedIndex >= 0)
+        {
+            Transcriptions.RemoveAt(removedIndex);
             TotalCount--;
-        if (SelectedTranscription == transcription)
-            SelectedTranscription = null;
+        }
+        if (selectionFollows)
+            SelectedTranscription = removedIndex >= 0 ? RowAtOrLast(Transcriptions, removedIndex) : null;
         MarkApplied(generation);
         // (Home's "Last transcription" is kept in sync by the service's HistoryChanged →
         // SyncLastTranscriptionWithHistoryAsync wiring in App; the old TranscriptionsDeleted
         // event and its newest-row probe were removed as dead weight — nothing subscribed.)
     }
+
+    /// <summary>HIS-6: the row that took a removed row's index, the new last row when the removed one was last, null when empty.</summary>
+    internal static TranscriptionRecord? RowAtOrLast(IList<TranscriptionRecord> rows, int index)
+        => rows.Count == 0 ? null : rows[Math.Min(index, rows.Count - 1)];
 
     [RelayCommand]
     public async Task DeleteAllAsync()

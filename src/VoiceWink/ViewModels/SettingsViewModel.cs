@@ -23,6 +23,8 @@ public partial class SettingsViewModel : ObservableObject
     private readonly Services.Audio.StandingCaptureService _standingCapture;
     private readonly Services.Updates.IUpdateScheduler? _updateScheduler;
     private readonly Func<bool> _altGrLayoutProbe;
+    /// <summary>LAI-24: told when the reset changes the Thinking switch, so the loaded model restarts; null in tests.</summary>
+    private readonly Services.AIEnhancement.AIEnhancementService? _enhancement;
 
     [ObservableProperty] private string _hotkeyModifier;
     [ObservableProperty] private string _pasteLastHotkeyModifier;
@@ -57,9 +59,11 @@ public partial class SettingsViewModel : ObservableObject
         Services.Audio.AudioDeviceManager deviceManager,
         Services.Audio.StandingCaptureService standingCapture,
         Services.Updates.IUpdateScheduler? updateScheduler = null,
-        Func<bool>? altGrLayoutProbe = null)
+        Func<bool>? altGrLayoutProbe = null,
+        Services.AIEnhancement.AIEnhancementService? enhancement = null)
     {
         _settings = settings;
+        _enhancement = enhancement;
         _hotkeyService = hotkeyService;
         _autostart = autostart;
         _deviceManager = deviceManager;
@@ -109,6 +113,15 @@ public partial class SettingsViewModel : ObservableObject
         ThemeMode = _settings.GetString(AppDefaults.ThemeMode, "System");
         LaunchAtLogin = _settings.GetBool(AppDefaults.LaunchAtLogin, true);
         InstantRecordingEnabled = _settings.GetBool(AppDefaults.InstantRecordingEnabled, true);
+    }
+
+    /// <summary>SET-3: applies a just-imported settings file without a restart — the live effects ResetAllSettings applies, read from the store.</summary>
+    public void ApplyImportedSettings()
+    {
+        ReloadFromSettings();
+        _autostart.Apply(LaunchAtLogin); // SET-3: the Run entry can differ from the cached flag, which the change-only handler would skip.
+        LogLevelControl.Apply(_settings.GetBoolDefaulted(AppDefaults.VerboseLoggingEnabled));
+        _updateScheduler?.OnAutomaticSettingChanged(_settings.GetBoolDefaulted(AppDefaults.AutomaticUpdateCheckEnabled));
     }
 
     /// <summary>
@@ -367,6 +380,13 @@ public partial class SettingsViewModel : ObservableObject
         // that row makes, so a reset re-arms the self-test exactly like a manual flip, and no-ops
         // when the value is already the default.
         GpuAccelerationPreference.Write(_settings, (bool)AppDefaults.Defaults[AppDefaults.GpuAccelerationEnabled]);
+        // LAI-24: the built-in models' Thinking switch; a change restarts the loaded model.
+        var thinkingDefault = (bool)AppDefaults.Defaults[AppDefaults.BuiltInThinkingEnabled];
+        if (_settings.GetBool(AppDefaults.BuiltInThinkingEnabled, thinkingDefault) != thinkingDefault)
+        {
+            _settings.SetBool(AppDefaults.BuiltInThinkingEnabled, thinkingDefault);
+            _enhancement?.SyncOnThisPcResidency();
+        }
         _settings.SetBool(AppDefaults.IsHistoryEnabled, (bool)AppDefaults.Defaults[AppDefaults.IsHistoryEnabled]);
         _settings.SetBool(AppDefaults.IsTranscriptionCleanupEnabled, (bool)AppDefaults.Defaults[AppDefaults.IsTranscriptionCleanupEnabled]);
         _settings.SetInt(AppDefaults.TranscriptionRetentionMinutes, (int)AppDefaults.Defaults[AppDefaults.TranscriptionRetentionMinutes]);

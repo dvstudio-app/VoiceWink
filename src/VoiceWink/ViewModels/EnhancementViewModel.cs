@@ -90,6 +90,9 @@ public partial class EnhancementViewModel : ObservableObject
     /// <summary>LAI-4: the engine host the models card hands a finished download or a delete to.</summary>
     internal Services.AIEnhancement.LocalEngine.OnThisPcEngine? OnThisPc { get; }
 
+    /// <summary>LAI-22: the switch from a retired built-in model to this PC's pick; null without a store.</summary>
+    internal Services.AIEnhancement.LocalEngine.RetiredModelSwitch? RetiredSwitch { get; }
+
     /// <summary>A fresh "speed ratings were updated" tracker for one page instance (2026-10-03).</summary>
     internal SpeedRatingsNotice.Tracker CreateSpeedNotice() => new(
         () => _settings.GetString(AppDefaults.SpeedRatingsShownEngine, ""),
@@ -101,6 +104,20 @@ public partial class EnhancementViewModel : ObservableObject
     {
         get => GpuAccelerationPreference.Read(_settings);
         set => GpuAccelerationPreference.Write(_settings, value);
+    }
+
+    /// <summary>LAI-24: the built-in models think before they reply; a change restarts the loaded model.</summary>
+    public bool BuiltInThinkingEnabled
+    {
+        get => _settings.GetBool(AppDefaults.BuiltInThinkingEnabled, false);
+        set
+        {
+            if (value == BuiltInThinkingEnabled)
+                return;
+            _settings.SetBool(AppDefaults.BuiltInThinkingEnabled, value);
+            Logger.Information("Built-in models thinking set: {Thinking}", value ? "on" : "off");
+            _enhancement.SyncOnThisPcResidency();
+        }
     }
 
     /// <summary>TRN-59: the restart a GPU acceleration flip offers; null in tests.</summary>
@@ -130,6 +147,18 @@ public partial class EnhancementViewModel : ObservableObject
         _enhancement = enhancement;
         _apiKeys = apiKeys;
         _settings = settings;
+        // LAI-22: owned here because the view model outlives the page, whose rows rebuild.
+        RetiredSwitch = localModels is null ? null : new Services.AIEnhancement.LocalEngine.RetiredModelSwitch(
+            localModels.StartDownload, localModels.IsInstalled,
+            // The shown provider too: a cloud provider picked without a key yet is not stored.
+            id => IsOnThisPcSelected && enhancement.SelectedProvider == AIProvider.OnThisPc
+                  && string.Equals(enhancement.SelectedModel, id, StringComparison.Ordinal),
+            // The model lists too, as the Express adoption does: the page may be closed by now.
+            id => { UseBuiltInModel(id); RefreshOnThisPcModels(); },
+            onThisPc is null ? null : onThisPc.StartFirstUseCheck,
+            onThisPc is null ? null : onThisPc.WhenFirstUseCheckSettledAsync,
+            onThisPc is null ? null : onThisPc.IsWarmupPending,
+            onThisPc is null ? null : onThisPc.MeasuredSpeedMs);
 
         _isEnabled = enhancement.IsEnabled;
         _selectedProvider = enhancement.SelectedProvider;
@@ -138,6 +167,11 @@ public partial class EnhancementViewModel : ObservableObject
         _selectedImageModel = enhancement.SelectedImageModel;
 
         ReloadPrompts();
+        enhancement.PromptsReplaced += (_, _) =>
+        {
+            ReloadPrompts(); // ENH-39: an import replaced the list; a stale copy would save over it
+            MirrorEnabledFromService(); // SET-3: an import may also have switched AI enhancement on or off.
+        };
         LoadApiKey();
         LoadImageApiKey();
         LoadLocalServerSettings();
@@ -173,7 +207,18 @@ public partial class EnhancementViewModel : ObservableObject
         finally { _reloadingEnabled = false; }
     }
 
-    /// <summary>True only inside a <see cref="ReloadFromSettings"/> to OFF — see its remarks.</summary>
+    /// <summary>SET-3: copies the stored switch with no side effects, so an imported prompt list keeps the active state it came with.</summary>
+    private void MirrorEnabledFromService()
+    {
+        var current = _enhancement.IsEnabled;
+        if (IsEnabled == current)
+            return;
+        _reloadingEnabled = true;
+        try { IsEnabled = current; }
+        finally { _reloadingEnabled = false; }
+    }
+
+    /// <summary>True inside a <see cref="ReloadFromSettings"/> to OFF or a <see cref="MirrorEnabledFromService"/> — see their remarks.</summary>
     private bool _reloadingEnabled;
 
     /// <summary>
@@ -216,8 +261,8 @@ public partial class EnhancementViewModel : ObservableObject
 
     partial void OnIsEnabledChanged(bool value)
     {
-        // A reload to OFF carries a value the service already holds: no write-back, and no
-        // deactivating a prompt the user did not turn off here.
+        // A reload to OFF or an import mirror carries a value the service already holds: no
+        // write-back, and no activating or deactivating a prompt the user did not touch here.
         if (_reloadingEnabled)
             return;
 

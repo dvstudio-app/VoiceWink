@@ -33,6 +33,8 @@ public sealed class AudioTranscribePage : Page
     private readonly FillerWordManager _fillerWordManager;
     private readonly TranscriptionTextFormatter _textFormatter;
     private readonly WordReplacementService _wordReplacement;
+    // TRN-100: the globally active prompt; its language override applies to a file while AI enhancement is on.
+    private readonly Func<CustomPrompt?> _activePrompt;
     private TextBlock? _resultText;
     private ProgressRing? _progress;
     private TextBlock? _statusText;
@@ -63,6 +65,16 @@ public sealed class AudioTranscribePage : Page
     private static volatile bool _isTranscribing;
     private static string? _lastResult;
     private static string? _lastStatus;
+    // TRN-73: the running job's model/language line, so a page recreated mid-job shows what it decodes in.
+    private static string? _activeJobLine;
+
+    // TRN-72: the live status line's inputs, static so a page recreated mid-job renders the same line.
+    private static long _jobStartedTicks;
+    private static string _phase = "";
+    private static double? _decodedFraction;
+    private static int _jobId;
+    private static long _statusHoldUntilTicks;
+    private DispatcherTimer? _elapsedTimer;
 
     // Raised after the static snapshot above is updated at transcription completion, so the
     // CURRENTLY-DISPLAYED page instance (possibly a different one than started the job —
@@ -77,8 +89,9 @@ public sealed class AudioTranscribePage : Page
     // App.xaml.cs can wire its probe lambda without going through reflection.
     internal static bool IsTranscribing => _isTranscribing;
 
-    public AudioTranscribePage()
+    public AudioTranscribePage(Func<CustomPrompt?> activePrompt)
     {
+        _activePrompt = activePrompt;
         RequestedTheme = AppTheme.ElementTheme;
         _processor = App.Services.GetRequiredService<AudioFileProcessor>();
         _registry = App.Services.GetRequiredService<TranscriptionServiceRegistry>();
@@ -94,7 +107,6 @@ public sealed class AudioTranscribePage : Page
         Loaded += (_, _) =>
         {
             _isUnloaded = false;
-            UpdateModelDisplay();
             // Detach-before-attach: Loaded can refire without a paired Unloaded, and a
             // duplicate STATIC subscription would permanently retain the page (Codex R1).
             TranscriptionStateChanged -= OnTranscriptionStateChanged;
@@ -104,6 +116,7 @@ public sealed class AudioTranscribePage : Page
         Unloaded += (_, _) =>
         {
             _isUnloaded = true;
+            _elapsedTimer?.Stop();
             // Balanced unsubscribe — a static event otherwise pins every past page instance.
             TranscriptionStateChanged -= OnTranscriptionStateChanged;
         };
@@ -146,6 +159,7 @@ public sealed class AudioTranscribePage : Page
 
     private void RefreshFromStaticState()
     {
+        UpdateModelDisplay();
         if (AudioTranscribeRestoreState.Decide(_isTranscribing, _lastResult, _lastStatus) is not { } plan)
             return; // fresh — leave the page in its default state
 
@@ -159,6 +173,44 @@ public sealed class AudioTranscribePage : Page
             _resultCard!.Visibility = cardVisible ? Visibility.Visible : Visibility.Collapsed;
         if (plan.CopyVisible is { } copyVisible)
             _copyButton!.Visibility = copyVisible ? Visibility.Visible : Visibility.Collapsed;
+
+        if (_isTranscribing)
+            StartElapsedTimer();
+        else
+            _elapsedTimer?.Stop();
+    }
+
+    /// <summary>TRN-72: re-renders the phase, the decoded share and the elapsed time once a second while a job runs.</summary>
+    private void StartElapsedTimer()
+    {
+        if (_elapsedTimer is null)
+        {
+            _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _elapsedTimer.Tick += (_, _) => RenderLiveStatus();
+        }
+        RenderLiveStatus();
+        _elapsedTimer.Start();
+    }
+
+    private void RenderLiveStatus()
+    {
+        // The job's own terminal text is written synchronously before the flag clears, so a tick never overwrites it.
+        if (!_isTranscribing)
+        {
+            _elapsedTimer?.Stop();
+            return;
+        }
+        if (_isUnloaded || _statusText is null || global::System.Diagnostics.Stopwatch.GetTimestamp() < _statusHoldUntilTicks)
+            return;
+        _statusText.Text = Helpers.FileTranscriptionStatus.Format(_phase,
+            global::System.Diagnostics.Stopwatch.GetElapsedTime(_jobStartedTicks), _decodedFraction);
+    }
+
+    private void SetPhase(string phase)
+    {
+        _phase = phase;
+        _decodedFraction = null;
+        RenderLiveStatus();
     }
 
     private void BuildUI()
@@ -399,14 +451,13 @@ public sealed class AudioTranscribePage : Page
         _ => 0  // no known limit or not applicable — skip warning
     };
 
-    /// <summary>
-    /// Refresh the model display text from current settings.
-    /// Called from BuildUI (initial value) and from Loaded event (refresh on navigation).
-    /// </summary>
+    /// <summary>Refresh the model line: the running job's line, else current settings (via RefreshFromStaticState).</summary>
     private void UpdateModelDisplay()
     {
         var selectedModel = _settings.GetString(AppDefaults.SelectedModelName, AppDefaults.DefaultWhisperModel);
-        _modelText!.Text = $"Model: {ModelDisplayName.Resolve(selectedModel)}";
+        var enhancementOn = _settings.GetBool(AppDefaults.AiEnhancementEnabled, false);
+        _modelText!.Text = AudioTranscribeLanguage.ShownLine(
+            _activeJobLine, selectedModel, enhancementOn, _activePrompt(), _settings.GetString(AppDefaults.SelectedLanguage, "auto"));
     }
 
     /// <summary>
@@ -496,7 +547,12 @@ public sealed class AudioTranscribePage : Page
             // during a transcription, opened the picker, took the user's choice — and dropped it
             // silently. An active control that discards input is worse than a disabled one; say so.
             if (_statusText is not null)
+            {
+                // TRN-72: held for a few seconds so the next timer tick does not replace it at once.
+                _statusHoldUntilTicks = global::System.Diagnostics.Stopwatch.GetTimestamp()
+                    + 4 * global::System.Diagnostics.Stopwatch.Frequency;
                 _statusText.Text = "Already transcribing — cancel the current file first.";
+            }
             return;
         }
 
@@ -534,10 +590,16 @@ public sealed class AudioTranscribePage : Page
         _lastResult = null;
         _lastStatus = null;
         var ct = _cts.Token;
+        var jobId = ++_jobId;
+        _jobStartedTicks = global::System.Diagnostics.Stopwatch.GetTimestamp();
+        _statusHoldUntilTicks = 0;
 
         _progress!.IsActive = true;
         SetTranscribing(true);
-        _statusText!.Text = "Converting audio...";
+        _phase = "Converting audio...";
+        _decodedFraction = null;
+        _statusText!.Text = Helpers.FileTranscriptionStatus.Format(_phase, TimeSpan.Zero, null);
+        StartElapsedTimer();
         _resultText!.Text = "";
         _resultCard!.Visibility = Visibility.Collapsed;
         _copyButton!.Visibility = Visibility.Collapsed;
@@ -578,6 +640,8 @@ public sealed class AudioTranscribePage : Page
                 {
                     _progress!.IsActive = false;
                     SetTranscribing(false);
+                    // TRN-72: the line stays still while the dialog waits for the user.
+                    _statusHoldUntilTicks = long.MaxValue;
                     var sizeMB = wavSize / (1024.0 * 1024.0);
                     var dialog = new ContentDialog
                     {
@@ -588,7 +652,16 @@ public sealed class AudioTranscribePage : Page
                         XamlRoot = this.XamlRoot,
                         RequestedTheme = AppTheme.ElementTheme
                     };
-                    if (await DialogLease.MainWindow.ShowAsync(dialog, "File may be too large") != ContentDialogResult.Primary)
+                    ContentDialogResult choice;
+                    try
+                    {
+                        choice = await DialogLease.MainWindow.ShowAsync(dialog, "File may be too large");
+                    }
+                    finally
+                    {
+                        _statusHoldUntilTicks = 0;
+                    }
+                    if (choice != ContentDialogResult.Primary)
                     {
                         _statusText!.Text = "";
                         return;
@@ -610,13 +683,15 @@ public sealed class AudioTranscribePage : Page
             // on what the user asked for (Parakeet's effective language is always `auto`, which
             // would re-apply the English list to a German file — the live-dictation site has the
             // same split, and this page mirrors it).
-            var requestedLanguage = _settings.GetString(AppDefaults.SelectedLanguage, "auto");
-            var effectiveLanguage = Helpers.EffectiveTranscriptionLanguage
-                .ForModelName(selectedModel, requestedLanguage).Language;
+            // TRN-73: the same resolution the page's "Language:" line shows.
+            var enhancementOn = _settings.GetBool(AppDefaults.AiEnhancementEnabled, false);
+            var (requestedLanguage, effectiveLanguage) = AudioTranscribeLanguage.Resolve(
+                selectedModel, enhancementOn, _activePrompt(), _settings.GetString(AppDefaults.SelectedLanguage, "auto"));
+            _activeJobLine = AudioTranscribeLanguage.DisplayLine(selectedModel, requestedLanguage);
 
             if (!isCloudModel)
             {
-                _statusText.Text = "Loading model...";
+                SetPhase("Loading model...");
                 // Same model constraint the recording path applies: an English-only model cannot
                 // honour another language, and preparing it with one costs a rebuild for nothing.
                 var prepared = await _localModels.PrepareWithReportAsync(
@@ -651,7 +726,7 @@ public sealed class AudioTranscribePage : Page
 
             ct.ThrowIfCancellationRequested();
 
-            _statusText.Text = "Transcribing...";
+            SetPhase("Transcribing...");
 
             // Transcribe — pass vocabulary hints, language, and diarization to all providers.
             // The EXACT model prepared above is passed in: GetService() with no argument re-reads
@@ -667,15 +742,22 @@ public sealed class AudioTranscribePage : Page
             // NET-1: one automatic retry on a connect-phase failure (nothing uploaded, so a
             // replay is provably safe). The notice is THIS page's status line, not the recorder
             // pill — a shared notice route would surface a recording pill for file work.
+            // TRN-72: a local engine reports the share of the audio it has decoded; a cloud request has no such figure.
+            var decodedProgress = new Progress<double>(fraction =>
+            {
+                if (jobId == _jobId && _isTranscribing) _decodedFraction = fraction;
+            });
             transcribedText = await Helpers.OperationTiming.TimeTranscriptionAsync(selectedModel, wavPath,
                 () => Services.Transcription.TranscriptionConnectRetry.ExecuteAsync(
-                    token => transcriber.TranscribeAsync(wavPath, language, hints, diarize, token),
+                    token => transcriber is Services.Transcription.IProgressReportingTranscriber reporting
+                        ? reporting.TranscribeAsync(wavPath, language, hints, diarize, decodedProgress, token)
+                        : transcriber.TranscribeAsync(wavPath, language, hints, diarize, token),
                     onRetrying: () =>
                     {
                         DispatcherQueue.TryEnqueue(() =>
                         {
-                            if (_isUnloaded) return;
-                            _statusText!.Text = "Poor connection — retrying...";
+                            if (jobId != _jobId || !_isTranscribing) return;
+                            SetPhase("Poor connection — retrying...");
                         });
                         return Task.CompletedTask;
                     },
@@ -762,6 +844,16 @@ public sealed class AudioTranscribePage : Page
                 _statusText.Text = $"Done — {text.Length} characters";
                 Logger.Warning("Failed to copy audio transcription result to clipboard");
             }
+
+            // TRN-72: the whole job's wait, conversion and model load included; never the text.
+            var audioSeconds = Helpers.OperationTiming.TryReadWavSeconds(wavPath);
+            Logger.Information(
+                "File transcription finished: {AudioSeconds:l} of audio, {Provider:l} {Model}, {ElapsedMs} ms in all",
+                audioSeconds is { } seconds
+                    ? seconds.ToString("F1", global::System.Globalization.CultureInfo.InvariantCulture) + "s"
+                    : "unknown length",
+                cloudModel?.Provider.ToString() ?? "local", selectedModel,
+                (long)global::System.Diagnostics.Stopwatch.GetElapsedTime(_jobStartedTicks).TotalMilliseconds);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -817,6 +909,7 @@ public sealed class AudioTranscribePage : Page
         finally
         {
             _isTranscribing = false;
+            _activeJobLine = null;
             _lastResult = _resultText?.Text;
             _lastStatus = _statusText?.Text;
             _progress.IsActive = false;

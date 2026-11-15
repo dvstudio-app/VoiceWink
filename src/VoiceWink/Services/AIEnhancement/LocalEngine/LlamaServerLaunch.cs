@@ -30,8 +30,10 @@ internal enum LlamaLaunchMode
 /// arrived some other way.</item>
 /// <item><c>-np 1 -c 8192</c>: one slot, an 8k context (the design plan's cleanup budget).</item>
 /// <item><c>--jinja --reasoning off --chat-template-kwargs {"enable_thinking":false}</c>: thinking
-/// OFF on the command line — a thinking model blows the dictation deadline and pastes its
-/// reasoning (LAI-8). The server confirms it (<c>thinking = 0</c>); a 1 is refused.</item>
+/// OFF on the command line unless the call asks for it (LAI-24's switch: <c>on</c> and <c>true</c>,
+/// nothing else changes). The server confirms the state it runs (<c>thinking = 0|1</c>); any other
+/// state than the one asked for is refused. The reasoning comes back apart from the reply
+/// (<c>reasoning_content</c>), so it never reaches the paste.</item>
 /// <item><c>-lv 4</c>: the verbosity at which the device and offload lines print. Nothing raw is
 /// ever logged — <see cref="LlamaServerLogLine"/> is the only reader.</item>
 /// <item><c>-t</c>: <see cref="Helpers.ParakeetServerPolicy.ServerDecodeThreads"/>, the one
@@ -50,7 +52,8 @@ internal static class LlamaServerLaunch
         => Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    internal static IReadOnlyList<string> BuildArguments(string modelPath, string apiKey, LlamaLaunchMode mode, int threads)
+    internal static IReadOnlyList<string> BuildArguments(string modelPath, string apiKey, LlamaLaunchMode mode, int threads,
+        bool thinking = false)
     {
         var args = new List<string>
         {
@@ -64,8 +67,8 @@ internal static class LlamaServerLaunch
             "-np", "1",
             "-c", ContextSize.ToString(CultureInfo.InvariantCulture),
             "--jinja",
-            "--reasoning", "off",
-            "--chat-template-kwargs", "{\"enable_thinking\":false}",
+            "--reasoning", thinking ? "on" : "off",
+            "--chat-template-kwargs", thinking ? "{\"enable_thinking\":true}" : "{\"enable_thinking\":false}",
             "-lv", "4",
             "-t", threads.ToString(CultureInfo.InvariantCulture),
         };

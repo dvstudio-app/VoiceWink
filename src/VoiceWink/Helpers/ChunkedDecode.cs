@@ -25,13 +25,16 @@ internal static class ChunkedDecode
     /// Decode every chunk and join the non-empty results with a single space.
     /// </summary>
     /// <param name="decodeOne">Decodes one chunk's samples. Called once per chunk, sequentially.</param>
+    /// <param name="onDecoded">TRN-72: the samples covered so far, after each decoded chunk.</param>
     internal static string Run(
         IReadOnlyList<DecodeChunk> plan,
         float[] samples,
         Func<float[], string> decodeOne,
-        CancellationToken ct)
+        CancellationToken ct,
+        Action<long>? onDecoded = null)
     {
         var parts = new List<string>(plan.Count);
+        long covered = 0;
 
         foreach (var chunk in plan)
         {
@@ -63,6 +66,8 @@ internal static class ChunkedDecode
 
             var part = decodeOne(SliceFor(chunk, samples));
             if (!string.IsNullOrEmpty(part)) parts.Add(part);
+            covered += chunk.Count;
+            onDecoded?.Invoke(covered);
         }
 
         return string.Join(" ", parts);

@@ -147,7 +147,7 @@ internal sealed record ModelRating(
 /// Read this as a QUALITATIVE cross-check that the leaderboard is not measuring something
 /// unrelated, never as a validated ordering.</item>
 /// <item><b>The commercial index is a STARTING HYPOTHESIS for the proprietary cloud rows, never an
-/// answer.</b> On the <c>gpt-4o-transcribe</c> / <c>gpt-4o-mini-transcribe</c> pair it ordered
+/// answer.</b> On the <c>gpt-4o-transcribe</c> / <c>gpt-4o-mini-transcribe</c> pair (retired by TRN-84) it ordered
 /// the two the OPPOSITE way round from our measurement, and rated the one we measured worst of
 /// any cloud row near its own best. It is
 /// still the only public source that covers those rows, which is why it is a hypothesis and not
@@ -225,15 +225,6 @@ internal sealed record ModelRating(
 /// <para><b>What is NOT claimed.</b> That any star is evidence. The rendered row shows identical
 /// stars whatever the basis — an owner decision ("this is quick help, it does not need to be
 /// perfect") — so the honesty lives in source only, in each row's <c>Source</c> text.</para>
-///
-/// <para><b>A known conflict, and it has now been measured rather than reasoned about.</b> The
-/// owner reports poor real-world results from <c>gpt-4o-mini-transcribe</c>. The 2026-08-30 corpus
-/// did NOT reproduce that report: it measured 16.0% WER over 56 owner-transcribed recordings —
-/// mid-field, not poor — while <c>gpt-4o-transcribe</c> measured near-worst at 27.6%. So ★4 rests
-/// on that measurement, not on the published indices it used to cite, and the standing owner report
-/// is recorded here as unreproduced rather than pending. The remaining caveat is CORPUS SCOPE, one
-/// speaker, and no longer a run that might happen: the sitting that would have added a second voice
-/// was retired on 2026-08-31.</para>
 /// </summary>
 internal static class ModelRatings
 {
@@ -474,36 +465,6 @@ internal static class ModelRatings
             "p50 915 ms at home, 789 ms on a corporate network " +
             "(results/2026-08-31-gpt-transcribe~label-worknet.json) — FASTER on the second " +
             "network, which is why no cloud row is ranked above another."),
-        // ★2, DOWN from ★4. The single largest correction this table has ever made, and the one
-        // no public index would have produced: the published third-party index covering this model
-        // rates it near its own best, and it measured 27.6% here — 13th of 14, behind local Whisper
-        // Base. That index is not named and its figure is not reproduced: LNC-6 stripped both from
-        // src/** on 2026-08-23 (internal-use-only licence, and src/ publishes), and this comment
-        // carried both back until NoSourceFileReferencesTheRemovedBenchmarkIndex was widened to
-        // read source files rather than only row strings.
-        //
-        // Not an artefact: it is SYSTEMATIC, and that much IS recomputable from the committed
-        // rows — median 29.3%, 12 of 56 clips above 60% WER, zero API errors. Its errors are real
-        // substitutions and deletions rather than a scoring artefact.
-        new("gpt-4o-transcribe", 2, 5, "Multilingual",
-            "ACCURACY measured on this project's own corpus 2026-08-30: 27.6% WER over 56 owner-" +
-            "transcribed recordings; median 29.3%, and 12 of the 56 clips score above 60% " +
-            "(results/2026-08-30-gpt-4o-transcribe.json — every WER figure here is recomputable " +
-            "from that file's rows). SPEED measured: p50 791 ms at home, 765 ms on a corporate " +
-            "network (results/2026-08-31-gpt-4o-transcribe~label-worknet.json). This project " +
-            "separately observed prompt echo from this model on near-silent audio " +
-            "(OpenAITranscriptionParameters)."),
-
-        // Was ★3 while nova-3 was ★4 on a worse measured value — the inversion TRN-3 was
-        // opened for. Corrected while the measurements were in the table; the corrected
-        // ordering stands as judgement now the values are removed.
-        new("gpt-4o-mini-transcribe", 4, 5, "Multilingual",
-            "ACCURACY measured on this project's own corpus 2026-08-30: 16.0% WER over 56 owner-" +
-            "transcribed recordings (results/2026-08-30-gpt-4o-mini-transcribe.json). SPEED is " +
-            "measured: p50 769 ms at home, 859 ms on a corporate network " +
-            "(results/2026-08-31-gpt-4o-mini-transcribe~label-worknet.json). " +
-            "Note the standing owner report of poor real-world results from THIS model is not " +
-            "reproduced: it measured mid-field, while gpt-4o-transcribe measured near-worst."),
         new("nova-3", 4, 5, "50+ languages",
             "ACCURACY measured on this project's own corpus 2026-08-30: 17.9% WER over 56 owner-" +
             "transcribed recordings (results/2026-08-30-nova-3.json). SPEED measured: p50 " +

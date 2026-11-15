@@ -132,11 +132,14 @@ public sealed class HistoryPage : Page
                 var removed = (TranscriptionRecord)args.OldItems[0]!;
                 DispatcherQueue.TryEnqueue(() =>
                 {
+                    var removedFocus = FocusState.Unfocused;
                     if (_rowBorders.Remove(removed.Id, out var border))
                     {
+                        removedFocus = border.FocusState;
                         _listPanel?.Children.Remove(border);
                         _renderedCount = Math.Max(0, _renderedCount - 1);
                     }
+                    ShowSelectionAfterRemove(removedFocus);
                     RefreshDetail();
                 });
             }
@@ -389,7 +392,9 @@ public sealed class HistoryPage : Page
                     RequestedTheme = AppTheme.ElementTheme
                 };
 
-                if (await DialogLease.MainWindow.ShowAsync(dialog, "Delete All History") == ContentDialogResult.Primary)
+                // UI-5d: the slot is held through the delete, so a redo picker waiting behind this confirm is cancelled before it can open.
+                using var slot = DialogLease.MainWindow.TryAcquire("Delete All History");
+                if (slot != null && await dialog.ShowAsync() == ContentDialogResult.Primary)
                 {
                     await WithCollectionRefreshSuppressedAsync(() => _filterMode == FilterMode.All
                         ? _viewModel.DeleteAllCommand.ExecuteAsync(null)
@@ -892,6 +897,12 @@ public sealed class HistoryPage : Page
         var previousOffset = preserveViewport ? _listScroll?.VerticalOffset ?? 0 : 0;
         var previousFirstId = preserveViewport ? _firstRenderedId : null;
 
+        // HIS-6: an external refresh keeps keyboard focus on the same row (else the selected one), so Delete never falls to row 1 (HIS-5).
+        var focusedRow = preserveViewport
+            ? _rowBorders.FirstOrDefault(r => r.Value.FocusState != FocusState.Unfocused)
+            : default;
+        var focusState = focusedRow.Value?.FocusState ?? FocusState.Unfocused;
+
         _renderGeneration++; // invalidate any in-flight RenderMoreAsync loop
         _listPanel.Children.Clear();
         _rowBorders.Clear();
@@ -916,6 +927,11 @@ public sealed class HistoryPage : Page
             // HIS-13: a new result set starts at the top. Clearing the panel did not reset the
             // offset, so a search after Load more and a scroll left the first match off screen.
             _listScroll?.ChangeView(null, 0, null, disableAnimation: true);
+
+        if (focusState != FocusState.Unfocused
+            && (_rowBorders.TryGetValue(focusedRow.Key, out var refocus)
+                || (_selectedId.HasValue && _rowBorders.TryGetValue(_selectedId.Value, out refocus))))
+            refocus.Focus(focusState);
     }
 
     /// <summary>HIS-7: put the user back where they were after an external refresh. Rows added
@@ -1340,9 +1356,12 @@ public sealed class HistoryPage : Page
             deleteIcon.Foreground = AppTheme.Brush(AppTheme.SubtleText);
         };
         deleteBtn.PointerPressed += (_, pe) => pe.Handled = true;
+        Border? rowBorder = null;
         deleteBtn.Tapped += async (_, e) =>
         {
             e.Handled = true;
+            // HIS-6: focus follows the click, so the row taking this one's place gets it and Delete acts on it (HIS-5).
+            rowBorder?.Focus(FocusState.Pointer);
             await _viewModel.DeleteCommand.ExecuteAsync(capturedItem);
         };
 
@@ -1382,6 +1401,7 @@ public sealed class HistoryPage : Page
             UseSystemFocusVisuals = true,
             Child = rowGrid
         };
+        rowBorder = border;
 
         border.PointerEntered += (_, _) =>
         {
@@ -1417,8 +1437,8 @@ public sealed class HistoryPage : Page
             }
             else if (e.Key == Windows.System.VirtualKey.Delete)
             {
-                await _viewModel.DeleteCommand.ExecuteAsync(capturedItem);
                 e.Handled = true;
+                await _viewModel.DeleteCommand.ExecuteAsync(capturedItem);
             }
         };
 
@@ -1462,7 +1482,29 @@ public sealed class HistoryPage : Page
             _listPanel.Children.Add(border);
     }
 
-    private void UpdateSelection(int newSelectedId)
+    /// <summary>HIS-6: highlight the row the view model selected after a delete, render it if it was the next unrendered row, and hand it the removed row's focus so Delete never lands on another row (HIS-5).</summary>
+    private void ShowSelectionAfterRemove(FocusState removedFocus)
+    {
+        var selected = _viewModel.SelectedTranscription;
+        if (selected != null && !_rowBorders.ContainsKey(selected.Id))
+        {
+            var items = _viewModel.Transcriptions;
+            if (_renderedCount < items.Count && items[_renderedCount].Id == selected.Id)
+            {
+                AddRow(items[_renderedCount]);
+                _renderedCount++;
+                UpdateLoadMoreButton(_viewModel.TotalCount);
+            }
+        }
+
+        UpdateSelection(selected?.Id);
+
+        if (removedFocus != FocusState.Unfocused && selected != null
+            && _rowBorders.TryGetValue(selected.Id, out var next))
+            next.Focus(removedFocus);
+    }
+
+    private void UpdateSelection(int? newSelectedId)
     {
         var normalBg = AppTheme.Brush(AppTheme.CardBg);
         var selectedBg = AppTheme.Brush(ColorHelper.FromArgb(25, 0, 122, 255));
@@ -1476,7 +1518,7 @@ public sealed class HistoryPage : Page
         }
 
         // Select new
-        if (_rowBorders.TryGetValue(newSelectedId, out var newBorder))
+        if (newSelectedId.HasValue && _rowBorders.TryGetValue(newSelectedId.Value, out var newBorder))
         {
             newBorder.Background = selectedBg;
             newBorder.BorderThickness = new Thickness(3, 0, 0, 0);
@@ -1537,7 +1579,9 @@ public sealed class HistoryPage : Page
                 : $"  \u2022  Thinking: {ImageOptions.ThinkingLabelFor(t.ImageThinking)}";
             imageDetails = $"  \u2022  Aspect: {aspect}  \u2022  Size: {size}  \u2022  Quality: {quality}{thinking}{DescribeImageFileSize(t.ImageFilePath)}";
         }
-        _detailMeta!.Text = $"{t.Timestamp.ToLocalTime():MMM dd yyyy, HH:mm:ss}  \u2022  {modelInfo}{imageDetails}";
+        var microphone = HistoryMicrophoneLabel.Describe(t.CaptureDeviceName, t.CaptureDeviceTag);
+        var microphoneDetails = microphone is null ? "" : $"  \u2022  {microphone}";
+        _detailMeta!.Text = $"{t.Timestamp.ToLocalTime():MMM dd yyyy, HH:mm:ss}  \u2022  {modelInfo}{microphoneDetails}{imageDetails}";
 
         var isImage = IsImageHistoryItem(t);
         var isFailedEnhancement = !isImage && t.WasEnhanced && t.EnhancedText == "[Enhancement failed]";

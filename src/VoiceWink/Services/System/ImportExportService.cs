@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Serilog;
 using VoiceWink.Helpers;
+using VoiceWink.Services.AIEnhancement;
 using VoiceWink.Services.AppMode;
 using VoiceWink.Services.Data;
 
@@ -45,14 +46,21 @@ public sealed class ImportExportService
 
     private readonly SettingsService _settings;
     private readonly DictionaryTransfer? _dictionary;
+    private readonly AIEnhancementService? _enhancement;
+    private readonly AppModeManager? _appModes;
 
     /// <param name="dictionary">The Dictionary's database side. Optional only so settings-only
     /// callers (and their tests) need not build a database; DI always supplies it, and asking for
     /// the Dictionary part without it is refused before anything is written.</param>
-    public ImportExportService(SettingsService settings, DictionaryTransfer? dictionary = null)
+    /// <param name="enhancement">ENH-39: its prompt cache is dropped after a settings import; DI supplies it.</param>
+    /// <param name="appModes">ENH-39: its App Mode cache is dropped after a settings import; DI supplies it.</param>
+    public ImportExportService(SettingsService settings, DictionaryTransfer? dictionary = null,
+        AIEnhancementService? enhancement = null, AppModeManager? appModes = null)
     {
         _settings = settings;
         _dictionary = dictionary;
+        _enhancement = enhancement;
+        _appModes = appModes;
     }
 
     /// <summary>The ONE size limit, for both directions: an export larger than an import accepts
@@ -308,45 +316,51 @@ public sealed class ImportExportService
     /// </summary>
     public sealed class BackupFile
     {
-        internal BackupFile(IReadOnlyDictionary<string, JsonElement> settingsToApply, DictionarySnapshot? dictionary, int dictionarySkipped, string sourceName)
+        internal BackupFile(IReadOnlyDictionary<string, JsonElement> settingsToApply, DictionarySnapshot? dictionary, int dictionarySkipped, string sourceName, int settingsRefused = 0)
         {
             SettingsToApply = settingsToApply;
             Dictionary = dictionary;
             DictionarySkipped = dictionarySkipped;
             SourceName = sourceName;
+            SettingsRefused = settingsRefused;
         }
 
         internal IReadOnlyDictionary<string, JsonElement> SettingsToApply { get; }
+        /// <summary>SET-3: settings in the file the gate skipped (protected, unknown, wrong type, out of range).</summary>
+        internal int SettingsRefused { get; }
         internal DictionarySnapshot? Dictionary { get; }
         /// <summary>Dictionary entries that were not words or rules (wrong type, a blank side).</summary>
         internal int DictionarySkipped { get; }
         /// <summary>The file NAME only (SEC-4) for log lines.</summary>
         internal string SourceName { get; }
 
-        public bool HasSettings => SettingsToApply.Count > 0;
+        public bool HasSettings => SettingsToApply.Count > 0 || SettingsRefused > 0; // SET-3: a file of refused settings still reports its count.
         public bool HasDictionary => Dictionary != null;
     }
 
     /// <summary>Outcome of an import. <paramref name="DictionaryFailed"/>: the settings were applied
-    /// and durable, then the Dictionary could not be written (nothing of it was added).</summary>
+    /// and durable, then the Dictionary could not be written (nothing of it was added).
+    /// <paramref name="SettingsRefused"/>: settings in the file that were not applied (SET-3).</summary>
     public sealed record ImportResult(
         int AppliedCount,
         DictionaryMergeResult? Dictionary = null,
         int DictionarySkipped = 0,
-        bool DictionaryFailed = false);
+        bool DictionaryFailed = false,
+        int SettingsRefused = 0);
 
     /// <summary>Settings-only import (the pre-Dictionary behaviour): a file's Dictionary is
     /// ignored, and a file with no applicable setting applies nothing rather than failing.</summary>
     public async Task<ImportResult> ImportAsync(string filePath)
     {
-        var backup = await ReadBackupAsync(filePath).ConfigureAwait(false);
-        return new ImportResult(ApplySettings(backup));
+        var backup = await ReadBackupAsync(filePath); // ENH-39: stay on the caller's thread, ApplySettings tells UI-bound holders
+        var (applied, refused) = ApplySettings(backup);
+        return new ImportResult(applied, SettingsRefused: refused);
     }
 
     /// <summary>Reads, validates and applies <paramref name="parts"/> of a file in one go — the
     /// Dictionary page's path; the gate is the same one the Settings page previews with.</summary>
     public async Task<ImportResult> ImportAsync(string filePath, BackupParts parts)
-        => await ImportAsync(await ReadBackupAsync(filePath).ConfigureAwait(false), parts).ConfigureAwait(false);
+        => await ImportAsync(await ReadBackupAsync(filePath), parts); // ENH-39: caller's thread, as above
 
     /// <summary>
     /// Applies the requested parts of a validated backup: settings first (durable or reverted,
@@ -368,19 +382,19 @@ public sealed class ImportExportService
             throw new InvalidOperationException("This file has no Dictionary.");
         var dictionary = wantDictionary ? RequireDictionary() : null;
 
-        var applied = wantSettings ? ApplySettings(backup) : 0;
+        var (applied, refused) = wantSettings ? ApplySettings(backup) : (0, 0);
         if (dictionary == null)
-            return new ImportResult(applied);
+            return new ImportResult(applied, SettingsRefused: refused);
 
         try
         {
             var merged = await dictionary.MergeAsync(backup.Dictionary!).ConfigureAwait(false);
-            return new ImportResult(applied, merged, backup.DictionarySkipped);
+            return new ImportResult(applied, merged, backup.DictionarySkipped, SettingsRefused: refused);
         }
         catch (Exception ex) when (wantSettings)
         {
             Logger.Error(ex, "Dictionary import failed after the settings were applied");
-            return new ImportResult(applied, null, backup.DictionarySkipped, DictionaryFailed: true);
+            return new ImportResult(applied, null, backup.DictionarySkipped, DictionaryFailed: true, SettingsRefused: refused);
         }
     }
 
@@ -444,6 +458,7 @@ public sealed class ImportExportService
         // the legacy alias; skip protected/unknown/type-mismatch; duplicate valid properties are
         // last-valid-wins.
         var toApply = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var refused = 0;
         foreach (var prop in doc.RootElement.EnumerateObject())
         {
             var name = prop.Name;
@@ -467,6 +482,7 @@ public sealed class ImportExportService
             if (IsImportProtectedKey(name))
             {
                 Logger.Information("Import: device-local state key '{Key}' skipped — not importable", prop.Name);
+                refused++;
                 continue;
             }
             if (!TryGetExpectedKind(name, out var expectedKind))
@@ -474,6 +490,7 @@ public sealed class ImportExportService
                 // SEC-4: the key comes from a file the user supplied, so it is arbitrary attacker- or
                 // user-controlled text — including line breaks. Sanitized and scrub-covered.
                 Logger.Warning("Import: unknown setting skipped: userTerm={ImportedSettingKey}", Helpers.LogValueSanitizer.SingleLine(prop.Name));
+                refused++;
                 continue;
             }
             if (!IsKindCompatible(expectedKind, prop.Value.ValueKind))
@@ -481,23 +498,40 @@ public sealed class ImportExportService
                 Logger.Warning(
                     "Import: setting has a type mismatch (expected {Expected}, got {Got}) — skipped: userTerm={ImportedSettingKey}",
                     expectedKind, prop.Value.ValueKind, Helpers.LogValueSanitizer.SingleLine(prop.Name));
+                refused++;
                 continue;
             }
             if (!IsSemanticallyValidForImport(name, prop.Value))
             {
                 Logger.Warning("Import: setting '{Key}' has an out-of-range value — skipped", prop.Name);
+                refused++;
                 continue;
             }
 
             toApply[name] = prop.Value.Clone(); // last-valid-wins on duplicate canonical keys
         }
 
-        return new BackupFile(toApply, dictionary, dictionarySkipped, Helpers.LogPathProjection.FileNameOnly(filePath));
+        return new BackupFile(toApply, dictionary, dictionarySkipped, Helpers.LogPathProjection.FileNameOnly(filePath), refused);
     }
 
     /// <summary>Applies a validated file's settings — durable, or reverted and thrown. Returns how
-    /// many were applied (0 is a success: nothing in the file was applicable).</summary>
-    private int ApplySettings(BackupFile backup)
+    /// many were applied (0 is a success: nothing in the file was applicable) and how many refused.</summary>
+    private (int Applied, int Refused) ApplySettings(BackupFile backup)
+    {
+        try
+        {
+            return ApplySettingsCore(backup);
+        }
+        finally
+        {
+            // ENH-39: every outcome (applied, migrated or reverted by Reload) changed the store under the caches.
+            _appModes?.DiscardCachedConfigs(); // first: the prompt discard raises an event, which must not skip this
+            _enhancement?.DiscardCachedPrompts();
+            _enhancement?.SyncOnThisPcResidency(); // SET-3: the imported provider, model or prompts decide which built-in model stays loaded.
+        }
+    }
+
+    private (int Applied, int Refused) ApplySettingsCore(BackupFile backup)
     {
         var toApply = backup.SettingsToApply;
 
@@ -518,19 +552,20 @@ public sealed class ImportExportService
 
         // KNOWN LIMITATION (backlog SET-1, owner-accepted 2026-07-22): import is mutate-then-flush
         // with Reload rollback on failure, NOT a true disk-first candidate commit. On a late flush
-        // failure a brief (not strictly bounded — this method resumes off-context after
-        // ConfigureAwait) window exists where a concurrent provider request could observe an
+        // failure a brief (not strictly bounded) window exists where a concurrent provider request could observe an
         // imported value before Reload reverts it; a debounce tick firing mid-import could persist a
         // partial import; and Reload discards any unrelated concurrent Set. Accepted for a
         // deliberate, infrequent manual import; the rigorous fix (a typed disk-first
         // SetManyAndFlushOrThrow) is backlogged.
         var importedCount = 0;
+        var refused = backup.SettingsRefused;
         foreach (var (name, value) in toApply)
         {
             // REL-19: a recorded opt-out stays authoritative; only a durable toggle or reset clears it.
             if (ConsentTombstone.IsVetoed(_settings.FilePath, name))
             {
                 Logger.Information("Import: '{Key}' skipped — a recorded opt-out keeps it off", name);
+                if (value.ValueKind == JsonValueKind.True) refused++; // SET-3: an imported "off" agrees with the opt-out, so only an "on" was refused.
                 continue;
             }
             _settings.Set(name, value);
@@ -578,9 +613,9 @@ public sealed class ImportExportService
         }
 
         // SEC-4: user-chosen source (already projected to its file name).
-        Logger.Information("Settings imported ({Count} keys applied): filePath={UserFilePath}",
-            importedCount, backup.SourceName);
-        return importedCount;
+        Logger.Information("Settings imported ({Count} keys applied, {Refused} refused): filePath={UserFilePath}",
+            importedCount, refused, backup.SourceName);
+        return (importedCount, refused);
     }
 
     /// <summary>

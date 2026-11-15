@@ -826,6 +826,12 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
     public async Task<string?> TryDecodeOnCpuFallbackAsync(
         int generation, IReadOnlyList<DecodeChunk> plan, float[] samples, int sampleRate, double gainDb,
         CancellationToken ct)
+        => (await TryDecodeOnCpuFallbackReportingLossAsync(generation, plan, samples, sampleRate, gainDb, ct)
+            .ConfigureAwait(false))?.Text;
+
+    public async Task<TranscriptionDecode?> TryDecodeOnCpuFallbackReportingLossAsync(
+        int generation, IReadOnlyList<DecodeChunk> plan, float[] samples, int sampleRate, double gainDb,
+        CancellationToken ct)
     {
         // Positive GPU evidence only (Codex plan round, Blocker 2): the lease's child must have
         // printed a Vulkan selection. An Auto child serving CPU on a loader-present/no-device
@@ -856,6 +862,7 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
 
         var chunkBudget = CpuFallbackChunkBudgetOverride ?? CpuFallbackChunkBudget;
         string? joined = null;
+        var cpuLostChunks = 0;
         var result = await ParakeetEphemeralChild.RunAsync(
             "parakeet CPU re-decode",
             _server.Launcher, _client, _serverExePath, _serverExeSha256, ggufPath, ParakeetLaunchMode.Cpu,
@@ -877,7 +884,14 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
                     {
                         throw new PcppDecodeException(r.FailureClass ?? "unknown");
                     }
-                    return r.Text.Trim();
+                    var chunkText = r.Text.Trim();
+                    // TRN-96b: an empty CPU chunk on non-silent audio is a loss the joined text hides.
+                    if (chunkText.Length == 0
+                        && WavLevelAnalyzer.Measure(slice, sampleRate)?.ActiveRmsDbfs > DecodeInputGain.SilenceFloorDbfs)
+                    {
+                        cpuLostChunks++;
+                    }
+                    return chunkText;
                 }, token), token).ConfigureAwait(false);
                 return true;
             },
@@ -915,7 +929,7 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
         if (text.Length == 0)
         {
             Logger.Information("parakeet CPU re-decode: also empty - the audio, not the GPU; nothing latched");
-            return text;
+            return new TranscriptionDecode(text, cpuLostChunks);
         }
 
         // Text on the CPU where the GPU produced none: this session's remaining spawns go CPU
@@ -931,7 +945,7 @@ public sealed class ParakeetBackendCoordinator : IParakeetPcppBackend
             gpuName ?? Helpers.GpuToggleAvailability.UnnamedGpu,
             text.Length,
             Helpers.GpuSelfTestReport.DriverOrUnknown(Helpers.GpuWarmupMarker.CurrentDriverSignature()));
-        return text;
+        return new TranscriptionDecode(text, cpuLostChunks);
     }
 
     public Task OnWholeCallFailedAsync(int generation)

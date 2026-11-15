@@ -33,24 +33,24 @@
     # SHA-256 against GitHub's asset digest, extract exactly the files listed here, re-hash,
     # update SourceArchive* and every Sha256 below plus LlamaServerPayload.cs, then run
     # tools/llama-server-probe on an ARM64 PC in both modes - no hosted CI runner executes ARM64.
-    Build = 'b11960'
-    Commit = '8642541b2'
-    SourceArchive = 'https://github.com/ggml-org/llama.cpp/releases/download/b11960/llama-b11960-bin-win-opencl-adreno-arm64.zip'
-    SourceArchiveSha256 = 'd1a7306fc095a1fc218ba3bff0b0dfc373650dfb66e6e6aa613a0d438b7fc65d'
+    Build = 'b12110'
+    Commit = 'cd959bae9'
+    SourceArchive = 'https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-opencl-adreno-arm64.zip'
+    SourceArchiveSha256 = 'fac3826972eeb5f0efa30dbda0bad62c559f91e3c69916d2c1bf599621bd5659'
     Machine = '0xAA64'
     ExeName = 'llama-server.exe'
     HasVulkanLoader = $false
     Files = @(
-        @{ Name = 'ggml-base.dll'; Sha256 = '283b58d4c596ea42b5c98c8d1a0297ec6e8e66e84dbc750d0a0871e9544b2306' }
-        @{ Name = 'ggml-cpu.dll'; Sha256 = 'f4b6787aa170dd1c40731280f35a48c6e05d8ef51f4d3d6e05e698c55af7be72' }
-        @{ Name = 'ggml-opencl.dll'; Sha256 = '11bce5320dec129cac2bcc1e326f8381811f0ca375da94a701340cd91a7044cb' }
-        @{ Name = 'ggml.dll'; Sha256 = '735ab34555dd9684ed3dece1d8b5df2a7a42daa670467c20bf2028e833c40475' }
+        @{ Name = 'ggml-base.dll'; Sha256 = 'da51a68ad763cb16c9f4f9cd76ee90918b3d1e6a898b21e44947b2a6a18fb5be' }
+        @{ Name = 'ggml-cpu.dll'; Sha256 = '7dda802d308c4c05b4b0654e74dbeb0942947da386924c5d5f298a6bd0f6b67b' }
+        @{ Name = 'ggml-opencl.dll'; Sha256 = '340a96c9d7ce6e2f78a09c40110ec70d2bc70bb21733c952ac08273810443918' }
+        @{ Name = 'ggml.dll'; Sha256 = '84f5f975819a60cd15a0033f4361fdac8fea111301addbe0081b356dad3b22e3' }
         @{ Name = 'libomp.dll'; Sha256 = '26caae17f29aaf2238f664375b663cd306d596bc9e36e780fa88356c51fe876a' }
-        @{ Name = 'llama-common.dll'; Sha256 = 'b525708cc22578f0a34786de3cc7a72f0c9176d56308d3467e291d5dc78ef8fe' }
-        @{ Name = 'llama-server-impl.dll'; Sha256 = '9a900b285330cd4cc1dc00d951c70e5a7c4ae26947284469fdda634c7e4f3cd0' }
-        @{ Name = 'llama-server.exe'; Sha256 = 'cf47d64d289d8a7696bdadd0177110f02c86e75e33a663254c456f642b523664' }
-        @{ Name = 'llama.dll'; Sha256 = '6d1462b457e30f7abfccaf4aa32c83fbf314b0ddbef8e395d0d0bfbe1fd1179f' }
-        @{ Name = 'mtmd.dll'; Sha256 = '5ea20332ac359887cad1a1e4bf7f0c9dc5a321aab055958a50f822750485d2d7' }
+        @{ Name = 'llama-common.dll'; Sha256 = 'eaa4888f9b9685ce8b652fbaa0b3c1b63e6e051648086b9a2fad613074cde406' }
+        @{ Name = 'llama-server-impl.dll'; Sha256 = '64d4b18e467d49279b885b0ec3f16d8963d709200e8078cf666c68521fa72071' }
+        @{ Name = 'llama-server.exe'; Sha256 = 'd6908c01d6b7767a1122a157e9bdf24a1412f270ef23cd9af2d7c3a07a74e753' }
+        @{ Name = 'llama.dll'; Sha256 = '9def90ce6d5de42fc97d89cd8dc47a7694b02dbbe617196d2d8e5681dc25e47a' }
+        @{ Name = 'mtmd.dll'; Sha256 = '4c1239fdc92de05ef2332365f1211a1ca77f08a922e2c901e2f09dec314c5a1e' }
     )
     # The two ARM64 VC++ runtime DLLs copied into the same directory, by name - their bytes and
     # hashes are governed by installer/runtime/vcredist-arm64/MANIFEST.psd1, not restated here.

@@ -1143,33 +1143,40 @@ public sealed class AIEnhancementService
         }
 
         prompt ??= PredefinedPrompts.Default;
+        var provider = ParseProviderOverride(prompt.ProviderOverride) ?? SelectedProvider;
+        return await EnhanceCoreAsync(transcribedText, prompt, model, provider, vocabularyTerms, redo: false, ct).ConfigureAwait(false);
+    }
 
-        var providerOverride = ParseProviderOverride(prompt.ProviderOverride);
-
+    /// <summary>ENH-36 the one enhancement call behind the dictation and redo paths; failures are logged by the caller, which also sees the failures around this call (ENH-42).</summary>
+    private async Task<string> EnhanceCoreAsync(string transcribedText, CustomPrompt prompt, string model,
+        AIProvider provider, IReadOnlyList<string>? vocabularyTerms, bool redo, CancellationToken ct)
+    {
         // Both wire messages come from the single composition site (PromptComposition over
-        // AIPrompts) so the normal and redo paths can never drift apart. Pinned by captured-request
-        // parity rows in AIEnhancementServiceTests.
+        // AIPrompts). Pinned by captured-request parity rows in AIEnhancementServiceTests.
         var (systemPrompt, userPrompt) = Helpers.PromptComposition.Compose(
             prompt, transcribedText, vocabularyTerms);
-        Logger.Information("AI Enhancement: provider={Provider}, model={Model} userTerm={Prompt}",
-            providerOverride ?? SelectedProvider, model,
-            global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title));
+        var title = global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title);
+        if (redo)
+            Logger.Information("AI Enhancement (redo): provider={Provider}, model={Model} userTerm={Prompt}", provider, model, title);
+        else
+            Logger.Information("AI Enhancement: provider={Provider}, model={Model} userTerm={Prompt}", provider, model, title);
 
         // BEFORE BuildConfig, on the EFFECTIVE provider: the cap is baked into the config inside
         // BuildConfig, so hydrating afterwards (image generation's order, where the clamp is a later
         // call) would send this call's cap off an empty cache and leave the slice it just fetched
         // unused. No-op for the five providers that publish no ceiling, and for a slice already held.
-        await EnsureTokenCeilingsAsync(providerOverride ?? SelectedProvider, ct).ConfigureAwait(false);
+        await EnsureTokenCeilingsAsync(provider, ct).ConfigureAwait(false);
 
+        var traceLabel = redo ? "enhancement (redo)" : "enhancement";
         try
         {
-            var config = BuildConfig(model, providerOverride, prompt.ReasoningOverride);
+            var config = BuildConfig(model, provider, prompt.ReasoningOverride);
             config.LocalRequest = new Helpers.LocalRequestHints(Helpers.LocalPromptClassifier.Classify(prompt), transcribedText);
             // Trace moved after BuildConfig (ENH-8) so the entry can carry the RESOLVED
             // reasoning directive; a BuildConfig throw (rare) now skips the entry.
             Helpers.PromptTraceLog.WriteSections(Helpers.PromptTraceOp.TextEnhancement,
-                new Helpers.TraceMeta(Provider: (providerOverride ?? SelectedProvider).ToString(), Model: model),
-                $"enhancement · {providerOverride ?? SelectedProvider} · {model} · {prompt.Title}",
+                new Helpers.TraceMeta(Provider: provider.ToString(), Model: model),
+                $"{traceLabel} · {provider} · {model} · {prompt.Title}",
                 ("SYSTEM", systemPrompt),
                 ("USER", userPrompt),
                 ("REASONING", config.Reasoning.Describe()));
@@ -1178,8 +1185,8 @@ public sealed class AIEnhancementService
             // RAW provider output, before AIEnhancementOutputFilter — the trace records
             // provider-boundary truth on both directions of the wire.
             Helpers.PromptTraceLog.WriteOutput(Helpers.PromptTraceOp.EnhancementOutput,
-                new Helpers.TraceMeta(Provider: (providerOverride ?? SelectedProvider).ToString(), Model: model),
-                $"enhancement output · {providerOverride ?? SelectedProvider} · {model} · {prompt.Title}",
+                new Helpers.TraceMeta(Provider: provider.ToString(), Model: model),
+                $"{traceLabel} output · {provider} · {model} · {prompt.Title}",
                 enhanced);
             var filtered = AIEnhancementOutputFilter.Filter(enhanced);
             // Plain whitespace check, deliberately. A round of this change applied the content
@@ -1192,33 +1199,17 @@ public sealed class AIEnhancementService
             // the machine/user boundary inside TextPipelineRunner, so nothing here needs it.
             if (string.IsNullOrWhiteSpace(filtered))
                 return transcribedText;
-            ThrowIfOutputRefused(providerOverride ?? SelectedProvider, prompt, transcribedText, filtered);
+            ThrowIfOutputRefused(provider, prompt, transcribedText, filtered);
             return filtered;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // Caller-requested cancel (stop-button skip / pipeline supersede) — a
-            // deliberate user action, not a defect: never the Error branch below,
-            // which would ship it to Sentry (ENH-3).
-            Logger.Information("AI Enhancement cancelled");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Provider-shaped failures → Warning (message-only; the client sites logged
-            // status+body, and the caller surfaces the failure to the user) so the Sentry
-            // sub-logger (Error+) doesn't ship provider outages/DNS failures as events
-            // (VOICEWINK-8). Unexpected exceptions: Error + stack once per type per run (ENH-16).
-            // ENH-15 adds InvalidApiKeyFormatException to the provider-shaped list. Without it a
-            // legacy malformed key logs Error on EVERY dictation, and Error+ ships to Sentry — an
-            // event per utterance until the user re-enters the key, which is the quota burn this
-            // classification exists to prevent. Its message is app-authored and carries no key
-            // material, so it is safe in a log template.
-            if (ex is HttpRequestException or InvalidOperationException or TimeoutException
-                or Helpers.InvalidApiKeyFormatException)
-                Logger.Warning("AI Enhancement failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
+            // deliberate user action, not a defect, so never an Error (ENH-3).
+            if (redo)
+                Logger.Information("AI Enhancement (redo) cancelled");
             else
-                Logger.Write(UnexpectedFailureLevel(ex), ex, "AI Enhancement failed");
+                Logger.Information("AI Enhancement cancelled");
             throw;
         }
     }
@@ -2078,6 +2069,26 @@ public sealed class AIEnhancementService
         return _cachedPrompts = ReadStoredPrompts() ?? new List<CustomPrompt>(PredefinedPrompts.All);
     }
 
+    /// <summary>ENH-39/HKY-17: raised on the writing thread after the stored prompt list changed outside the AI Enhancement view model.</summary>
+    public event EventHandler? PromptsReplaced;
+
+    /// <summary>ENH-39: drops the cached list so the next read sees what an import wrote, then tells holders of a copy.</summary>
+    public void DiscardCachedPrompts()
+    {
+        _cachedPrompts = null;
+        PromptsReplaced?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>HKY-17: clears these prompts' hotkeys and tells holders of a copy, so a stale copy cannot save the hotkey back.</summary>
+    public void ClearPromptHotkeys(IReadOnlySet<string> promptIds)
+    {
+        var prompts = GetPrompts();
+        foreach (var prompt in prompts.Where(p => promptIds.Contains(p.Id)))
+            prompt.Hotkey = null;
+        SavePrompts(prompts);
+        DiscardCachedPrompts();
+    }
+
     public void SavePrompts(List<CustomPrompt> prompts)
     {
         ReadStoredPrompts(); // ENH-35: keep an unreadable stored list aside before this write replaces it, cache or not
@@ -2099,14 +2110,28 @@ public sealed class AIEnhancementService
             return null;
         }
 
-        var json = _settings.GetString(AppDefaults.CustomPrompts, "");
-        if (string.IsNullOrEmpty(json))
+        lock (_promptReadLock) // ENH-40c: a second read waits and finds the Ids the first one stored
+        {
+            var json = _settings.GetString(AppDefaults.CustomPrompts, "");
+            if (string.IsNullOrEmpty(json))
+                return null;
+            if (CustomPrompt.TryReadList(json, out var prompts, out var failure))
+            {
+                if (prompts is not null && prompts.Exists(p => p.IdMinted))
+                {
+                    // ENH-40c: store the new Ids at once, so the next read and any App Mode link to them see the same ones.
+                    _settings.SetString(AppDefaults.CustomPrompts, global::System.Text.Json.JsonSerializer.Serialize(prompts));
+                    Logger.Information("Custom prompts: {Count} stored entries had no Id or a repeated one; new Ids were written to settings",
+                        prompts.Count(p => p.IdMinted));
+                }
+                return prompts;
+            }
+            KeepUnreadablePrompts(json, failure);
             return null;
-        if (CustomPrompt.TryReadList(json, out var prompts, out var failure))
-            return prompts;
-        KeepUnreadablePrompts(json, failure);
-        return null;
+        }
     }
+
+    private readonly object _promptReadLock = new();
 
     private string? _reportedUnreadablePrompts;
 
@@ -2417,8 +2442,8 @@ public sealed class AIEnhancementService
     /// <summary>
     /// LAI-9 + LAI-4 + LAI-17: refuse a reply whose length or wording says the model did something
     /// other than the prompt asked (<see cref="Helpers.LocalOutputGuard"/>) — every provider since
-    /// LAI-17. Thrown inside both enhance methods' <c>try</c>, so it rides their Warning branch and
-    /// MainViewModel's existing fallback: the raw transcript pastes, History stores the
+    /// LAI-17. Thrown inside <c>EnhanceCoreAsync</c>, so it reaches MainViewModel's existing Warning
+    /// branch and fallback: the raw transcript pastes, History stores the
     /// <c>[Enhancement failed]</c> marker, and the amber pill names the reason. Logs the class and
     /// word counts only — never the reply, which can echo the dictation.
     /// </summary>
@@ -2484,72 +2509,11 @@ public sealed class AIEnhancementService
         }
 
         prompt ??= PredefinedPrompts.Default;
-
-        var provider = providerOverride ?? SelectedProvider;
-
-        // Same single composition site as EnhanceAsync — parity is test-pinned.
-        var (systemPrompt, userPrompt) = Helpers.PromptComposition.Compose(
-            prompt, transcribedText, vocabularyTerms);
-        Logger.Information("AI Enhancement (redo): provider={Provider}, model={Model} userTerm={Prompt}",
-            provider, modelId,
-            global::VoiceWink.Helpers.LogValueSanitizer.SingleLine(prompt.Title));
-
-        // Same before-BuildConfig hydration as EnhanceAsync, and for the same reason.
-        await EnsureTokenCeilingsAsync(provider, ct).ConfigureAwait(false);
-
-        try
-        {
-            var config = BuildConfig(modelId, provider, prompt.ReasoningOverride);
-            config.LocalRequest = new Helpers.LocalRequestHints(Helpers.LocalPromptClassifier.Classify(prompt), transcribedText);
-            // Same trace-after-config ordering as EnhanceAsync (ENH-8).
-            Helpers.PromptTraceLog.WriteSections(Helpers.PromptTraceOp.TextEnhancement,
-                new Helpers.TraceMeta(Provider: provider.ToString(), Model: modelId),
-                $"enhancement (redo) · {provider} · {modelId} · {prompt.Title}",
-                ("SYSTEM", systemPrompt),
-                ("USER", userPrompt),
-                ("REASONING", config.Reasoning.Describe()));
-            ThrowIfOffline(config);
-            var enhanced = await CallProviderWithDeadlineAsync(config, systemPrompt, userPrompt, ct).ConfigureAwait(false);
-            // Same raw-output trace as EnhanceAsync — provider-boundary truth.
-            Helpers.PromptTraceLog.WriteOutput(Helpers.PromptTraceOp.EnhancementOutput,
-                new Helpers.TraceMeta(Provider: provider.ToString(), Model: modelId),
-                $"enhancement (redo) output · {provider} · {modelId} · {prompt.Title}",
-                enhanced);
-            var filtered = AIEnhancementOutputFilter.Filter(enhanced);
-            // Plain whitespace check, deliberately. A round of this change applied the content
-            // rule here on the reasoning that model output is machine-authored — which is only
-            // half true. The PROMPT is user-authored, and a custom prompt may legitimately ask
-            // for a punctuation-only result (extract the punctuation, emit Morse, return an
-            // emoticon). Rejecting those silently restores the original transcript and destroys
-            // a correct answer — the same data-loss class this card set out to fix, one surface
-            // over (Codex diff review r2). The comma incident is already stopped upstream, at
-            // the machine/user boundary inside TextPipelineRunner, so nothing here needs it.
-            if (string.IsNullOrWhiteSpace(filtered))
-                return transcribedText;
-            ThrowIfOutputRefused(provider, prompt, transcribedText, filtered);
-            return filtered;
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            // Same reasoning as EnhanceAsync: deliberate user action, never Error.
-            Logger.Information("AI Enhancement (redo) cancelled");
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Same split as EnhanceAsync above, InvalidApiKeyFormatException included — a redo
-            // over a legacy malformed key would otherwise log Error (here or in MainViewModel's redo
-            // catch, which share one ENH-16 budget key), i.e. a Sentry event for a user's own key.
-            if (ex is HttpRequestException or InvalidOperationException or TimeoutException
-                or Helpers.InvalidApiKeyFormatException)
-                Logger.Warning("AI Enhancement (redo) failed: {ErrorType}: {ErrorMessage}", ex.GetType().Name, ex.Message);
-            else
-                Logger.Write(UnexpectedFailureLevel(ex), ex, "AI Enhancement (redo) failed");
-            throw;
-        }
+        return await EnhanceCoreAsync(transcribedText, prompt, modelId, providerOverride ?? SelectedProvider,
+            vocabularyTerms, redo: true, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Error once per exception type per run, Warning after: one Sentry event per unexpected cause, not one per dictation, shared with MainViewModel's catches (ENH-16).</summary>
+    /// <summary>Error once per exception type per run, Warning after: one Sentry event per unexpected cause, not one per dictation, for MainViewModel's two enhancement catches (ENH-16).</summary>
     internal static LogEventLevel UnexpectedFailureLevel(Exception ex) =>
         SessionErrorBudget.LevelFor("enhancement:" + ex.GetType().Name);
 

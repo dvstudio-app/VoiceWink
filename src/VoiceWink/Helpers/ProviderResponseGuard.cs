@@ -1,4 +1,5 @@
 using Serilog;
+using Serilog.Events;
 
 namespace VoiceWink.Helpers;
 
@@ -19,7 +20,9 @@ namespace VoiceWink.Helpers;
 /// </summary>
 internal static class ProviderResponseGuard
 {
-    public static T Run<T>(ILogger logger, string providerName, string responseJson, Func<T> extract)
+    /// <param name="level">LAI-25: Warning only for the user's own Local server, whose shape is their configuration.</param>
+    public static T Run<T>(ILogger logger, string providerName, string responseJson, Func<T> extract,
+        LogEventLevel level = LogEventLevel.Error)
     {
         try
         {
@@ -27,7 +30,7 @@ internal static class ProviderResponseGuard
         }
         catch (InvalidOperationException ex)
         {
-            logger.Error("{Provider} response shape unexpected: {Reason}; Body={Body}",
+            logger.Write(level, "{Provider} response shape unexpected: {Reason}; Body={Body}",
                 providerName, ex.Message, responseJson.TruncateForLog());
             throw;
         }

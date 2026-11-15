@@ -249,6 +249,21 @@ public sealed class AudioDeviceManager : IDisposable
         }
     }
 
+    /// <summary>HIS-11: the name the last enumeration gave this endpoint id, or null; no device call.</summary>
+    public string? FindCachedName(string endpointId) => FindName(Volatile.Read(ref _availableDevices), endpointId);
+
+    /// <summary>HIS-11: ordinal id match over one snapshot; a blank name is unknown.</summary>
+    internal static string? FindName(IReadOnlyList<AudioDeviceInfo>? snapshot, string? endpointId)
+    {
+        if (snapshot is null || string.IsNullOrWhiteSpace(endpointId)) return null;
+        foreach (var d in snapshot)
+        {
+            if (string.Equals(d.Id, endpointId, StringComparison.Ordinal))
+                return string.IsNullOrWhiteSpace(d.Name) ? null : d.Name;
+        }
+        return null;
+    }
+
     /// <summary>AUD-20: a snapshot from a pass started after this call, so a device change is never answered by an older pass.</summary>
     public Task<IReadOnlyList<AudioDeviceInfo>> RefreshDevicesFreshAsync()
     {

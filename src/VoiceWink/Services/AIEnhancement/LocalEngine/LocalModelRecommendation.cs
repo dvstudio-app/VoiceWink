@@ -72,19 +72,46 @@ internal static class LocalModelRecommendation
     /// why): each model's expected time for the check's paragraph on a PC like this one, from the
     /// owner's three-PC sweep the same day (2B / 4B / 9B / 12B). A model that fits a dedicated
     /// graphics card (<see cref="DesktopMinVram"/>) takes the desktop's time (RTX 3080); otherwise an
-    /// ARM64 PC takes the ARM64 laptop's (Snapdragon, on the processor) and any other PC the
+    /// ARM64 PC takes the ARM64 laptop's (Snapdragon, on the processor), an x64 PC whose model runs
+    /// on the processor (<paramref name="processorOnly"/>) the x64 processor times, and any other PC the
     /// integrated-graphics laptop's (Arc 140V). PROVISIONAL like the floors: three PCs, one paragraph.
     /// A measured model replaces its own estimate and calibrates the rest (<see cref="Speeds"/>).</summary>
-    internal static int EstimateMs(LocalModelTier tier, LocalHardwareProfile profile, bool arm64)
+    internal static int EstimateMs(LocalModelTier tier, LocalHardwareProfile profile, bool arm64, bool processorOnly = false)
     {
-        if ((profile.LargestDedicatedVramBytes ?? 0) >= DesktopMinVram(tier))
+        // LAI-22: Fast (Gemma 4 E4B) and Balanced (Bolt) from LAI-21's laptops, LAI-18b's kit and the desktop probe.
+        if (!processorOnly && (profile.LargestDedicatedVramBytes ?? 0) >= DesktopMinVram(tier))
         {
-            return tier switch { LocalModelTier.Light => 500, LocalModelTier.Standard => 900, LocalModelTier.Large => 1300, _ => 3400 };
+            return tier switch
+            {
+                LocalModelTier.Light => 500, LocalModelTier.Standard => 900, LocalModelTier.Fast => 900,
+                LocalModelTier.Large => 1300, LocalModelTier.Balanced => 1200, _ => 3400,
+            };
         }
-        return arm64
-            ? tier switch { LocalModelTier.Light => 2500, LocalModelTier.Standard => 7200, LocalModelTier.Large => 12100, _ => 14800 }
-            : tier switch { LocalModelTier.Light => 2200, LocalModelTier.Standard => 5000, LocalModelTier.Large => 10500, _ => 15400 };
+        if (arm64)
+        {
+            // LAI-20: scaled by each model's processor-time median shift from b11960 to b12110 (12B within noise).
+            return tier switch
+            {
+                LocalModelTier.Light => 2900, LocalModelTier.Standard => 8300, LocalModelTier.Fast => 3000,
+                LocalModelTier.Large => 13400, LocalModelTier.Balanced => 4500, _ => 14800,
+            };
+        }
+        return processorOnly
+            ? tier switch
+            {
+                LocalModelTier.Light => 7900, LocalModelTier.Standard => 17300, LocalModelTier.Fast => 11800,
+                LocalModelTier.Large => 26500, LocalModelTier.Balanced => 11500, _ => 25300,
+            }
+            : tier switch
+            {
+                LocalModelTier.Light => 2200, LocalModelTier.Standard => 5000, LocalModelTier.Fast => 3700,
+                LocalModelTier.Large => 10500, LocalModelTier.Balanced => 4500, _ => 15400,
+            };
     }
+
+    /// <summary>LAI-18b: the engine is on the processor, or x64 has no Vulkan loader (ARM64's backend is OpenCL).</summary>
+    internal static bool RunsOnProcessor(bool engineOnCpu, VulkanSupport? vulkan, bool arm64)
+        => engineOnCpu || (!arm64 && vulkan == VulkanSupport.LoaderMissing);
 
     /// <summary>The dedicated graphics memory above which a model's speed is estimated at the
     /// desktop's: the 12B's and 9B's floors, 6 GiB for the 4B and the 2B, whose floors are RAM only.</summary>
@@ -103,15 +130,15 @@ internal static class LocalModelRecommendation
     /// same factor (<see cref="SpeedCalibration"/>), so a slow PC's first check lowers all the rows
     /// together rather than leaving the bigger models looking faster than they are.</summary>
     internal static IReadOnlyDictionary<LocalModelTier, TierSpeed> Speeds(LocalHardwareProfile profile, bool arm64,
-        Func<LocalModelTier, int?> measuredMs)
+        Func<LocalModelTier, int?> measuredMs, bool processorOnly = false)
     {
         var tiers = Enum.GetValues<LocalModelTier>();
         var factor = SpeedCalibration.Factor(tiers
             .Where(t => measuredMs(t) is not null)
-            .Select(t => (measuredMs(t)!.Value, EstimateMs(t, profile, arm64))));
+            .Select(t => (measuredMs(t)!.Value, EstimateMs(t, profile, arm64, processorOnly))));
         return tiers.ToDictionary(t => t, t => measuredMs(t) is { } ms
             ? new TierSpeed(ms, Measured: true)
-            : new TierSpeed(SpeedCalibration.Apply(EstimateMs(t, profile, arm64), factor), Measured: false));
+            : new TierSpeed(SpeedCalibration.Apply(EstimateMs(t, profile, arm64, processorOnly), factor), Measured: false));
     }
 
     /// <summary>The recommended tier, or null when no tier that can be the pick fits this PC (or its
@@ -121,12 +148,13 @@ internal static class LocalModelRecommendation
     /// <summary>The largest tier that is fast enough on this PC — measured where it was, estimated and
     /// calibrated where not, in which case it must also meet its floor; null when none is.
     /// <paramref name="measuredMs"/> gives a tier's measured check time, or null.
-    /// Light is never the pick: its replies are not accurate enough to recommend (LAI-19).</summary>
+    /// Light is never the pick: its replies are not accurate enough to recommend (LAI-19). Neither is
+    /// a retired tier (LAI-22): the order is the 12B, then Bolt, then Gemma 4 E4B.</summary>
     internal static LocalModelTier? Recommend(LocalHardwareProfile profile, Func<LocalModelTier, int?> measuredMs,
-        bool arm64 = false)
+        bool arm64 = false, bool processorOnly = false)
     {
-        var speeds = Speeds(profile, arm64, measuredMs);
-        foreach (var tier in new[] { LocalModelTier.Best, LocalModelTier.Large, LocalModelTier.Standard })
+        var speeds = Speeds(profile, arm64, measuredMs, processorOnly);
+        foreach (var tier in new[] { LocalModelTier.Best, LocalModelTier.Balanced, LocalModelTier.Fast })
         {
             var speed = speeds[tier];
             if (!IsTooSlow(speed.Ms) && (speed.Measured || Fits(tier, profile)))
@@ -149,7 +177,8 @@ internal static class LocalModelRecommendation
         {
             LocalModelTier.Best => vram >= BestMinVram && ram >= GpuTierMinRam,
             LocalModelTier.Large => vram >= LargeMinVram && ram >= GpuTierMinRam,
-            LocalModelTier.Standard => ram >= StandardMinRam,
+            // LAI-22: Bolt and Gemma 4 E4B measured under the 4B's line beside Parakeet, on the card and off it.
+            LocalModelTier.Standard or LocalModelTier.Fast or LocalModelTier.Balanced => ram >= StandardMinRam,
             LocalModelTier.Light => ram >= LightMinRam,
             _ => false,
         };
@@ -176,7 +205,7 @@ internal static class LocalModelRecommendation
     internal static string NoPickNote(LocalHardwareProfile profile, Func<LocalModelTier, int?> measuredMs)
         => profile.TotalRamBytes is null ? "This PC's memory could not be read."
             // A model that ran fast enough here contradicts "not enough memory", whatever its floor says.
-            : Enum.GetValues<LocalModelTier>().Any(t => Fits(t, profile) || measuredMs(t) <= TooSlowMs)
+            : LocalModelCatalog.All.Where(e => !e.Retired).Any(e => Fits(e.Tier, profile) || measuredMs(e.Tier) <= TooSlowMs)
                 ? "On this PC, a cloud provider is recommended."
             : "Not enough memory for built-in AI. A cloud provider is recommended.";
 
@@ -189,6 +218,12 @@ internal static class LocalModelRecommendation
             .OrderByDescending(e => e.Accuracy)
             .ThenByDescending(e => e.Tier)
             .ToList();
+
+    /// <summary>LAI-22: a retired model is listed only while it is installed.</summary>
+    internal static bool IsListed(LocalModelEntry entry, bool installed) => !entry.Retired || installed;
+
+    /// <summary>LAI-22: a retired model is never offered for download.</summary>
+    internal static bool OffersDownload(LocalModelEntry entry, bool installed) => !installed && !entry.Retired;
 
     /// <summary>What setup's AI step offers (owner, 2026-10-05: one model, as the transcription step
     /// offers one): the pick for this PC plus the model already in use when that is another one.

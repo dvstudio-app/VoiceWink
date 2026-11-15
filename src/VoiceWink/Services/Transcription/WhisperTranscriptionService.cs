@@ -9,8 +9,11 @@ namespace VoiceWink.Services.Transcription;
 /// Local Whisper transcription via Whisper.NET.
 /// Reads WAV, converts Int16→Float, calls Whisper.net.
 /// </summary>
-public sealed class WhisperTranscriptionService : ITranscriptionService, IDisposable, IAsyncDisposable
+public sealed class WhisperTranscriptionService : IProgressReportingTranscriber, IDisposable, IAsyncDisposable
 {
+    // whisper.cpp decodes 16 kHz mono, the rate every caller converts to.
+    private const int WhisperSampleRate = 16_000;
+
     private static ILogger Logger => Log.ForContext<WhisperTranscriptionService>();
     private const string AutoLanguage = "auto";
 
@@ -547,7 +550,15 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
     /// prompt is always empty. The parameter stays because the interface defines it for
     /// every transport.
     /// </summary>
-    public async Task<string> TranscribeAsync(string wavFilePath, string? language, Models.TranscriptionHints? hints, bool diarize = false, CancellationToken ct = default)
+    public Task<string> TranscribeAsync(string wavFilePath, string? language, Models.TranscriptionHints? hints, bool diarize = false, CancellationToken ct = default)
+        => TranscribeCoreAsync(wavFilePath, language, progress: null, ct);
+
+    /// <summary>TRN-72: the same decode, reporting the audio position each segment ends at as a share of the file.</summary>
+    public Task<string> TranscribeAsync(string wavFilePath, string? language, Models.TranscriptionHints? hints,
+        bool diarize, IProgress<double> progress, CancellationToken ct)
+        => TranscribeCoreAsync(wavFilePath, language, progress, ct);
+
+    private async Task<string> TranscribeCoreAsync(string wavFilePath, string? language, IProgress<double>? progress, CancellationToken ct)
     {
         // TRN-64: the GPU self-test gate, BEFORE the lock (the test itself holds the lock while it
         // decodes; awaiting it under the lock would deadlock — Codex r1 C4). Generation-safe: the
@@ -616,8 +627,10 @@ public sealed class WhisperTranscriptionService : ITranscriptionService, IDispos
             var segments = new List<string>();
             var noSpeechProbabilities = new List<float>();
             string? detectedLanguage = null;
+            var audioSeconds = samples.Length / (double)WhisperSampleRate;
             await foreach (var segment in _processor.ProcessAsync(samples, ct))
             {
+                progress?.Report(Math.Clamp(segment.End.TotalSeconds / audioSeconds, 0, 1));
                 segments.Add(segment.Text);
                 noSpeechProbabilities.Add(segment.NoSpeechProbability);
                 detectedLanguage ??= segment.Language;

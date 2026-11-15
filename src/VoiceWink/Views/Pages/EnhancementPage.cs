@@ -32,6 +32,10 @@ public sealed class EnhancementPage : Page
 {
     private static ILogger Logger => Log.ForContext<EnhancementPage>();
 
+    /// <summary>LAI-24: the built-in models' Thinking switch.</summary>
+    internal const string ThinkingTitle = "Think before replying";
+    internal const string ThinkingDescription = "Replies take much longer.";
+
     private readonly EnhancementViewModel _viewModel;
     private readonly List<Action> _attachSubscriptions = [];
     private readonly List<Action> _detachSubscriptions = [];
@@ -757,7 +761,7 @@ public sealed class EnhancementPage : Page
                 _viewModel.UseBuiltInModel,
                 _viewModel.OnThisPc, _ => _viewModel.RefreshOnThisPcModels(),
                 () => DispatcherQueue.TryEnqueue(ApplyOnThisPcRows),
-                speedNotice));
+                speedNotice, retiredSwitch: _viewModel.RetiredSwitch));
         }
         void ApplyOnThisPcRows()
         {
@@ -847,6 +851,11 @@ public sealed class EnhancementPage : Page
                 () => XamlRoot,
                 ApplyGpuStatusLine)));
             gpuCardContent.Children.Add(gpuStatusLine);
+            // LAI-24: beside the GPU switch (owner 2026-11-15); a flip restarts the loaded model.
+            var thinkingRow = AppTheme.CreateToggleSetting(ThinkingTitle, ThinkingDescription,
+                _viewModel.BuiltInThinkingEnabled, isOn => _viewModel.BuiltInThinkingEnabled = isOn);
+            AppTheme.StripCardBorder(thinkingRow);
+            gpuCardContent.Children.Add(thinkingRow);
             sections.Children.Add(AppTheme.CreateCard(gpuCardContent));
             sections.Children.Add(localModelsHost);
             sections.Children.Add(AppTheme.CreateSectionHeader("Cloud or Your Own Server", providerActive));

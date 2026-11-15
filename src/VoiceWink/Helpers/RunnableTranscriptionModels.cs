@@ -146,7 +146,8 @@ internal static class RunnableTranscriptionModels
         // Either Parakeet bundle spelling matches the active row (TRN-29 flip) — the failed
         // attempt's captured model name may be a pre-flip spelling, and the retry picker's
         // same-model pre-select must still find it.
-        requested = ParakeetCatalog.CanonicalName(requested);
+        // A retired cloud id pre-selects the successor it runs on (TRN-84).
+        requested = ParakeetCatalog.CanonicalName(CloudModels.Canonicalize(requested));
 
         return runnable.FirstOrDefault(
             m => ModelDiskReconciliation.IsSameModel(m.Name, requested))?.Name;

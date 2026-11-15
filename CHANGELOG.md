@@ -17,6 +17,39 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.128.431] - 2026-11-15
+
+- Built-in AI: added Nemotron 3.5 Bolt and Gemma 4 E4B, which replace Qwen3.5 4B and 9B as recommended models.
+- Built-in AI: Qwen3.5 2B, 4B and 9B are no longer offered for download; a downloaded one keeps working.
+- Built-in AI: a Qwen3.5 model in use now offers a switch to the model recommended for your PC.
+- Built-in AI: the models can think before they reply (off by default; replies take much longer).
+- Transcribe Audio File now shows the language beside the model.
+- Transcribe Audio File now uses the speech recognition language set on the enhancement in use.
+- Redo and Retry no longer open an out-of-date picker after a new dictation or a History delete.
+- Editing or deleting an App Mode or enhancement from a damaged settings backup now changes only the one you picked.
+- Deleting a History item now selects the one below it, or the one above if it was last.
+- Dictating into a VoiceWink dialog now pastes, even if you pressed redo or Retry while it was open.
+- Importing a settings backup applies it at once and says how many settings were refused.
+
+## [1.127.430] - 2026-11-14
+
+- The Gemini model list on the AI Enhancement page no longer shows gemini-decision-1, which can't generate text.
+- If Parakeet misses part of a long dictation, the pill now says so and offers Retry.
+- With GPU acceleration off, VoiceWink no longer recommends a built-in AI model too slow for your PC.
+- Times in the data export's JSON files are now marked as UTC.
+- History and the exports show the microphone a dictation was recorded with.
+- OpenAI is retiring GPT-4o Transcribe and GPT-4o Mini Transcribe; if you use either, VoiceWink now uses GPT Transcribe instead.
+- Hotkeys work again while VoiceWink's own window is in front.
+- "Reset all settings" now clears an enhancement hotkey that conflicts with the default recording hotkey.
+- A damaged App Mode list, such as one from a settings backup, is now kept in your settings file instead of being overwritten.
+- The Dictionary now tells you when a word you add is already in the list.
+- A Dictionary warning now clears as soon as your next change is saved.
+- Audio Transcribe shows how long a file has been transcribing, and how much a local model has done.
+- A model download that loses the network for up to a minute now carries on where it stopped.
+- Enhancements and App Modes imported from a settings backup no longer revert before you restart.
+- A damaged App Mode entry, such as one from a settings backup, no longer breaks your other App Modes.
+- An enhancement's hotkey, removed to settle a hotkey conflict, no longer comes back.
+
 ## [1.126.429] - 2026-11-14
 
 - A paste now tries once more when Windows briefly refuses the clipboard, instead of failing.

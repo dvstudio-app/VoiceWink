@@ -54,7 +54,8 @@ namespace VoiceWink.Services.Transcription;
 /// conditions live on the TRN-26 card. <see cref="HintTransport"/> stays
 /// <see cref="HintTransportKind.None"/> — literal, as before.</para>
 /// </summary>
-public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, IDisposable
+public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, IDecodeLossReportingTranscriber,
+    IProgressReportingTranscriber, IDisposable
 {
     private static ILogger Logger => Log.ForContext<ParakeetTranscriptionService>();
 
@@ -236,8 +237,17 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
         }
     }
 
-    public Task<string> TranscribeAsync(string audioFilePath, string? language = null,
+    public async Task<string> TranscribeAsync(string audioFilePath, string? language = null,
         Models.TranscriptionHints? hints = null, bool diarize = false, CancellationToken ct = default)
+        => (await TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: false, ct).ConfigureAwait(false)).Text;
+
+    /// <summary>TRN-72: the ordinary entry, reporting the share of the audio decoded after each chunk.</summary>
+    public async Task<string> TranscribeAsync(string audioFilePath, string? language, Models.TranscriptionHints? hints,
+        bool diarize, IProgress<double> progress, CancellationToken ct)
+        => (await TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: false, ct, progress).ConfigureAwait(false)).Text;
+
+    /// <summary>TRN-96b: the ordinary entry, with the count of chunks it lost (<see cref="IDecodeLossReportingTranscriber"/>).</summary>
+    public Task<TranscriptionDecode> TranscribeReportingLossAsync(string audioFilePath, CancellationToken ct)
         => TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: false, ct);
 
     /// <summary>AUD-36: the gate-blocked entry (<see cref="INoSpeechAwareTranscriber"/>) — the same
@@ -246,9 +256,9 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
     /// tripwire logs at Information rather than Warning. Text, when there is any, is returned
     /// exactly as the ordinary entry returns it — this is how a whispered dictation the gate
     /// mis-judged reaches the paste.</summary>
-    public Task<string> TranscribeSuspectedNoSpeechAsync(
+    public async Task<string> TranscribeSuspectedNoSpeechAsync(
         string audioFilePath, string? language, Models.TranscriptionHints? hints, CancellationToken ct)
-        => TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: true, ct);
+        => (await TranscribeRestartingEngineOnceAsync(audioFilePath, noSpeechSuspected: true, ct).ConfigureAwait(false)).Text;
 
     /// <summary>
     /// One automatic engine restart. A pcpp whole-call failure has already retired the leased
@@ -261,12 +271,12 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
     /// Each attempt is charged to the consecutive-failure tripwire, so an engine that fails both
     /// times is two strikes, not one — which is why only <see cref="IsEngineFault"/> classes retry.
     /// </summary>
-    private async Task<string> TranscribeRestartingEngineOnceAsync(
-        string audioFilePath, bool noSpeechSuspected, CancellationToken ct)
+    private async Task<TranscriptionDecode> TranscribeRestartingEngineOnceAsync(
+        string audioFilePath, bool noSpeechSuspected, CancellationToken ct, IProgress<double>? progress = null)
     {
         try
         {
-            return await TranscribeCoreAsync(audioFilePath, noSpeechSuspected, ct).ConfigureAwait(false);
+            return await TranscribeCoreAsync(audioFilePath, noSpeechSuspected, ct, progress).ConfigureAwait(false);
         }
         // Caught UNCONDITIONALLY, cancellation checked inside — never a `when (!ct.IsCancellationRequested)`
         // filter, which would let the engine failure escape a user who had just cancelled and show them
@@ -280,7 +290,9 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                 decode.FailureClass);
         }
         ct.ThrowIfCancellationRequested();
-        return await TranscribeCoreAsync(audioFilePath, noSpeechSuspected, ct).ConfigureAwait(false);
+        // TRN-72: the restart decodes from the start, so the share shown starts again too.
+        progress?.Report(0);
+        return await TranscribeCoreAsync(audioFilePath, noSpeechSuspected, ct, progress).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -295,7 +307,8 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                && int.TryParse(failureClass.AsSpan("status-".Length), out var status)
                && status is >= 500 and <= 599);
 
-    private async Task<string> TranscribeCoreAsync(string audioFilePath, bool noSpeechSuspected, CancellationToken ct)
+    private async Task<TranscriptionDecode> TranscribeCoreAsync(string audioFilePath, bool noSpeechSuspected, CancellationToken ct,
+        IProgress<double>? progress = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -374,7 +387,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
             if (noSpeechSuspected && !usePcpp)
             {
                 Logger.Information("Gate-blocked recording reached the sherpa-era Parakeet path — not decoded, the no-speech verdict stands (AUD-36 measured the pcpp path only)");
-                return string.Empty;
+                return new TranscriptionDecode(string.Empty, 0);
             }
 
             var recognizer = usePcpp
@@ -444,6 +457,8 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
             var chunkChars = new List<int>(plan.Count);
             var clippedTotal = 0;
             var recoveredChunks = 0;
+            // TRN-96b: chunks of a gate-passed recording that decoded empty on non-silent audio and stayed empty.
+            var lostChunks = 0;
 
             // TRN-15 tail-rescue capture: which raw slice ended the recording, which attempt's
             // decode produced its text, and that attempt's token timing. Reset per chunk inside
@@ -483,7 +498,8 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                 text = await Task.Run(() =>
             {
                 gain = Helpers.DecodeInputGain.Decide(samples, sampleRate);
-                var joined = Helpers.ChunkedDecode.Run(plan, samples, DecodeOne, ct);
+                var joined = Helpers.ChunkedDecode.Run(plan, samples, DecodeOne, ct,
+                    progress is null ? null : decoded => progress.Report((double)decoded / Math.Max(1, samples.Length)));
 
                 // AUD-36: the per-chunk tripwire is Information on a gate-blocked recording (see
                 // LogEmptyDecode), which would silence the TRN-10b/35 collapse class on exactly the
@@ -636,11 +652,13 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                 }
                 else
                 {
-                    var cpuText = await _pcppBackend!.TryDecodeOnCpuFallbackAsync(
+                    var cpu = await _pcppBackend!.TryDecodeOnCpuFallbackReportingLossAsync(
                         pcppLease.Generation, plan, samples, sampleRate, gain.GainDb, ct).ConfigureAwait(false);
-                    if (!string.IsNullOrEmpty(cpuText))
+                    if (cpu is { } cpuDecode && cpuDecode.Text.Length > 0)
                     {
-                        text = cpuText;
+                        text = cpuDecode.Text;
+                        // TRN-96b: the CPU text replaces the GPU decode, so its own loss count does too.
+                        lostChunks = cpuDecode.LostChunks;
                     }
                 }
             }
@@ -785,6 +803,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
 
                 if (outcome.Retried)
                 {
+                    lostChunks++;
                     Logger.Warning(
                         "Parakeet chunk {ChunkIndex} ({ChunkSeconds:F1}s, activeRms={ActiveRms:F1}dBFS) decoded empty at +{GainDb:F1}dB AND on a zero-gain re-decode — quiet-audio collapse (TRN-10b/c), " + EmptyDecodeCauseTail,
                         chunkChars.Count, seconds, outcome.ActiveRmsDbfs, outcome.FirstGainDb);
@@ -797,6 +816,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                 // is preserved verbatim.
                 if (outcome.ActiveRmsDbfs > Helpers.DecodeInputGain.SilenceFloorDbfs)
                 {
+                    lostChunks++;
                     Logger.Warning(
                         "Parakeet chunk {ChunkIndex} ({ChunkSeconds:F1}s, activeRms={ActiveRms:F1}dBFS, gain=+{GainDb:F1}dB) decoded empty on non-silent audio with no alternative conditioning to try — quiet-audio collapse (TRN-10b), " + EmptyDecodeCauseTail,
                         chunkChars.Count, seconds, outcome.ActiveRmsDbfs, outcome.FirstGainDb);
@@ -906,7 +926,7 @@ public sealed class ParakeetTranscriptionService : INoSpeechAwareTranscriber, ID
                         beforeMb, Environment.WorkingSet / (1024 * 1024));
                 }
             }
-            return text;
+            return new TranscriptionDecode(text, lostChunks);
         }
         finally
         {

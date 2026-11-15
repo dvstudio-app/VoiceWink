@@ -146,7 +146,11 @@ internal static class SetupAiFinish
             Facts: Facts,
             Installed: installed,
             Running: LocalModelCatalog.All.Select(m => m.Id).Where(isDownloading).ToList(),
-            Job: !string.IsNullOrEmpty(pending) && LocalModelCatalog.Find(pending) is not null ? pending : null);
+            // LAI-22: a retired model that is not installed is not downloaded again, so it is no job.
+            Job: !string.IsNullOrEmpty(pending)
+                 && LocalModelCatalog.Find(pending) is { } entry
+                 && LocalModelRecommendation.IsListed(entry, installed.Contains(pending))
+                ? pending : null);
     }
 
     private static string WaitsFor(string id)

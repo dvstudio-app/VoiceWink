@@ -89,6 +89,8 @@ public sealed class OnThisPcEngine : IDisposable
     private readonly IGpuMemoryProbe? _gpuMemory;
     private readonly Func<bool, (IDisposable Handle, CancellationToken Yield)?>? _beginGpuProbe;
     private readonly TimeSpan _gpuQuietWait;
+    /// <summary>LAI-24: the Thinking switch, read at each dictation and prepare (no copy to go stale).</summary>
+    private readonly Func<bool> _thinkingEnabled;
     /// <summary>Models running on the processor for THIS session only, because the graphics card
     /// was busy when they were checked (2026-10-05). Never stored: the next session checks again.</summary>
     private readonly HashSet<string> _sessionCpu = new(StringComparer.Ordinal);
@@ -133,7 +135,7 @@ public sealed class OnThisPcEngine : IDisposable
 
     /// <summary>Production: the payload next to the app, the native launcher, the verdict store in
     /// the app folder keyed by this build and display driver.</summary>
-    internal OnThisPcEngine(LocalModelStore store, IHttpClientFactory httpFactory, LlamaLaunchMode initialMode)
+    internal OnThisPcEngine(LocalModelStore store, IHttpClientFactory httpFactory, LlamaLaunchMode initialMode, Func<bool> thinkingEnabled)
         : this(
             new LlamaServerProcess(
                 LlamaServerPayload.Current.DirectoryFor(AppContext.BaseDirectory),
@@ -147,7 +149,8 @@ public sealed class OnThisPcEngine : IDisposable
             gpuMemory: GpuMemoryCounters.Instance,
             beginGpuProbe: yieldToUserWork => GpuWarmup.Instance.TryBeginGpuProbe(yieldToUserWork) is { } window
                 ? (window, window.Yield)
-                : null)
+                : null,
+            thinkingEnabled: thinkingEnabled)
     {
     }
 
@@ -165,8 +168,10 @@ public sealed class OnThisPcEngine : IDisposable
         IGpuMemoryProbe? gpuMemory = null,
         Func<bool, (IDisposable Handle, CancellationToken Yield)?>? beginGpuProbe = null,
         TimeSpan? gpuQuietWait = null,
-        IReadOnlyList<LocalModelEntry>? models = null)
+        IReadOnlyList<LocalModelEntry>? models = null,
+        Func<bool>? thinkingEnabled = null)
     {
+        _thinkingEnabled = thinkingEnabled ?? (() => false);
         _models = models ?? LocalModelCatalog.All;
         _gpuMemory = gpuMemory;
         _beginGpuProbe = beginGpuProbe;
@@ -235,7 +240,7 @@ public sealed class OnThisPcEngine : IDisposable
             // The GPU check's own time when the model runs the route it chose; otherwise (no GPU, a
             // failed GPU, GPU acceleration off) the processor timing (Codex plan round, 2026-10-03).
             if (verdict is { Verdict: LlamaSelfTestVerdict.Pass, RouteMs: { } ms }
-                && !(_process.LaunchMode == LlamaLaunchMode.Cpu && verdict.Value.Route == LlamaRoute.Gpu))
+                && !(RunsOnProcessor && verdict.Value.Route == LlamaRoute.Gpu))
                 return ms;
             return CpuSpeedLocked(identity);
         }
@@ -260,8 +265,9 @@ public sealed class OnThisPcEngine : IDisposable
         }
     }
 
-    /// <summary>GPU acceleration is off (or the session latched the CPU): every model runs on the processor.</summary>
-    internal bool RunsOnProcessor => _process.LaunchMode == LlamaLaunchMode.Cpu;
+    /// <summary>GPU acceleration off, a session CPU latch, or no Vulkan loader on x64 (LAI-18b): every model runs on the processor.</summary>
+    internal bool RunsOnProcessor => LocalModelRecommendation.RunsOnProcessor(
+        _process.LaunchMode == LlamaLaunchMode.Cpu, Helpers.GpuToggleAvailability.Current, Helpers.ModelRatings.IsArm64Os);
 
     private int? CpuSpeedLocked(string identity)
     {
@@ -287,7 +293,8 @@ public sealed class OnThisPcEngine : IDisposable
     {
         lock (_state)
         {
-            if (lease.OnGpu || !CpuTimingOwedLocked(identity))
+            // A thinking child is not timed (LAI-24): the stars stay measured with thinking off.
+            if (lease.OnGpu || lease.Thinking || !CpuTimingOwedLocked(identity))
                 return;
         }
         using var timing = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -405,8 +412,9 @@ public sealed class OnThisPcEngine : IDisposable
             {
                 route = RouteModeLocked(identity);
             }
-            var lease = ReadyLeaseUnlessUnloading(identity, route)
-                        ?? await _process.TryAcquireAsync(path, identity, linked.Token, route).ConfigureAwait(false);
+            var thinking = _thinkingEnabled();
+            var lease = ReadyLeaseUnlessUnloading(identity, route, thinking)
+                        ?? await _process.TryAcquireAsync(path, identity, linked.Token, route, thinking).ConfigureAwait(false);
             if (lease is not { } l)
                 throw new InvalidOperationException(UnavailableMessage);
 
@@ -422,6 +430,8 @@ public sealed class OnThisPcEngine : IDisposable
                     promptTokens, cap, LlamaServerLaunch.ContextSize);
                 throw new InvalidOperationException(TooLongMessage);
             }
+            if (l.Thinking)
+                cap = CapWithThinking(cap, promptTokens);
 
             var derived = new AIProviderConfig
             {
@@ -487,14 +497,14 @@ public sealed class OnThisPcEngine : IDisposable
 
     /// <summary>The lock-free ready lease - skipped while an unload is retiring the resident,
     /// which stays readable until its kill is confirmed; the gated acquire then waits the retire out.</summary>
-    private LlamaServerProcess.LlamaLease? ReadyLeaseUnlessUnloading(string identity, LlamaLaunchMode? route)
+    private LlamaServerProcess.LlamaLease? ReadyLeaseUnlessUnloading(string identity, LlamaLaunchMode? route, bool thinking)
     {
         lock (_state)
         {
             if (_unloading > 0)
                 return null;
         }
-        return _process.TryGetReadyLease(identity, route);
+        return _process.TryGetReadyLease(identity, route, thinking);
     }
 
     /// <summary>Asked after taking <see cref="_useGate"/>, before any acquire: the engine is open,
@@ -523,6 +533,13 @@ public sealed class OnThisPcEngine : IDisposable
     /// <summary>The admission rule: the rendered prompt plus the reply's cap must fit the context.</summary>
     internal static bool Fits(int promptTokens, int cap)
         => (long)promptTokens + cap + TemplateMarginTokens <= LlamaServerLaunch.ContextSize;
+
+    /// <summary>LAI-24: the reply cap with thinking on, which spends its thinking from the same budget.</summary>
+    internal const int ThinkingMaxTokens = 4096;
+
+    /// <summary>LAI-24: up to <see cref="ThinkingMaxTokens"/> as the context allows, never below the admitted class cap.</summary>
+    internal static int CapWithThinking(int classCap, int promptTokens)
+        => Math.Max(classCap, Math.Min(ThinkingMaxTokens, LlamaServerLaunch.ContextSize - promptTokens - TemplateMarginTokens));
 
     /// <summary><c>POST /tokenize</c>: the child's own token count for <paramref name="text"/>.</summary>
     private async Task<int> TokenizeAsync(LlamaServerProcess.LlamaLease lease, string text, CancellationToken ct)
@@ -650,7 +667,7 @@ public sealed class OnThisPcEngine : IDisposable
             ApplyStoredVerdictLocked(identity);
             route = RouteModeLocked(identity);
         }
-        await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt).ConfigureAwait(false);
+        await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt, followThinkingSetting: true).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -849,7 +866,9 @@ public sealed class OnThisPcEngine : IDisposable
         }
     }
 
-    private async Task PrepareCoreAsync(string modelId, string path, string identity, LlamaLaunchMode? route, string? warmSystemPrompt)
+    /// <param name="followThinkingSetting">LAI-24: false for a processor timing, which stays measured with thinking off.</param>
+    private async Task PrepareCoreAsync(string modelId, string path, string identity, LlamaLaunchMode? route, string? warmSystemPrompt,
+        bool followThinkingSetting)
     {
         var ownsUseGate = false;
         try
@@ -858,8 +877,9 @@ public sealed class OnThisPcEngine : IDisposable
             ownsUseGate = true;
             if (!StillAdmitted(modelId))
                 return;
-            var lease = ReadyLeaseUnlessUnloading(identity, route)
-                        ?? await _process.TryAcquireAsync(path, identity, _lifetime.Token, route).ConfigureAwait(false);
+            var thinking = followThinkingSetting && _thinkingEnabled();
+            var lease = ReadyLeaseUnlessUnloading(identity, route, thinking)
+                        ?? await _process.TryAcquireAsync(path, identity, _lifetime.Token, route, thinking).ConfigureAwait(false);
             if (lease is not { } l)
                 return;
             await MeasureCpuIfOwedAsync(l, modelId, identity, _lifetime.Token).ConfigureAwait(false);
@@ -945,7 +965,7 @@ public sealed class OnThisPcEngine : IDisposable
                     return;
                 route = RouteModeLocked(identity);
             }
-            await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt: null).ConfigureAwait(false);
+            await PrepareCoreAsync(entry.Id, path, identity, route, warmSystemPrompt: null, followThinkingSetting: false).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1169,8 +1189,8 @@ public sealed class OnThisPcEngine : IDisposable
             else if (StillAdmitted(entry.Id))
             {
                 // Leave the winner loaded, so the first dictation does not pay the reload. Best
-                // effort: the verdict is stored either way.
-                _ = await _process.TryAcquireAsync(path, identity, ct).ConfigureAwait(false);
+                // effort: the verdict is stored either way. LAI-24: loaded as dictations will run it.
+                _ = await _process.TryAcquireAsync(path, identity, ct, thinking: _thinkingEnabled()).ConfigureAwait(false);
             }
             return WarmupOutcome.Settled;
         }
