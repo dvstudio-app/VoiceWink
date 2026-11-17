@@ -144,7 +144,7 @@ weights inside it are the same © NVIDIA Parakeet TDT 0.6B v3 release under **CC
 
 ## llama-server (bundled)
 
-VoiceWink ships llama.cpp's **`llama-server`**, build **b12110** (win-vulkan-x64 release), in
+VoiceWink ships llama.cpp's **`llama-server`**, build **b12359** (llama.cpp v1.0.0, win-vulkan-x64 release), in
 `runtimes\win-x64\llama\` — the local engine behind AI enhancement on this PC. The directory
 holds `llama-server.exe` and the libraries it loads: `llama-server-impl.dll`, `llama-common.dll`,
 `llama.dll`, `mtmd.dll`, `ggml.dll`, `ggml-base.dll`, `ggml-vulkan.dll`, fourteen
@@ -161,11 +161,11 @@ Visual C++ runtime DLLs. The licences below cover both directories.
 |---|---|---|
 | llama.cpp (incl. ggml) | **MIT** | https://github.com/ggml-org/llama.cpp |
 | LLVM OpenMP runtime (`libomp.dll`) | **Apache-2.0 WITH LLVM-exception** | https://github.com/llvm/llvm-project |
-| BoringSSL 0.20261020.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **Apache-2.0** | https://boringssl.googlesource.com/boringssl |
-| cpp-httplib 0.64.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
+| BoringSSL 0.20261105.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **Apache-2.0** | https://boringssl.googlesource.com/boringssl |
+| cpp-httplib 0.66.0 (in `llama-common.dll`, `llama-server-impl.dll`) | **MIT** | https://github.com/yhirose/cpp-httplib |
 | nlohmann/json 3.12.0 (in `llama-common.dll`) | **MIT** | https://github.com/nlohmann/json |
 | rotate-bits (in `llama-common.dll`, `mtmd.dll`) | **MIT** | https://github.com/jb55/rotate-bits.h |
-| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b12110/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
+| llamafile SGEMM (in the `ggml-cpu*.dll` backends) | **MIT** | https://github.com/ggml-org/llama.cpp/blob/b12359/ggml/src/ggml-cpu/llamafile/sgemm.cpp |
 | nerdamer-prime (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/together-science/nerdamer-prime |
 | decimal.js (in the web UI built into `llama-server-impl.dll`) | **MIT** | https://github.com/MikeMcl/decimal.js |
 
@@ -552,7 +552,7 @@ PARTICULAR PURPOSE.
 ## llama-server web UI (bundled npm packages)
 
 `llama-server-impl.dll` (both directories) carries llama.cpp's web UI, compiled from its
-`tools/ui` at build b12110 into one JavaScript bundle and one stylesheet. VoiceWink starts
+`tools/ui` at build b12359 into one JavaScript bundle and one stylesheet. VoiceWink starts
 llama-server with the UI switched off (`--no-webui`), but the UI still ships inside the binary.
 The first table lists the npm packages the UI's own code reaches at run time according to that
 build's `package-lock.json`: the packages it imports and their dependencies, without build tools
@@ -565,11 +565,30 @@ with it. `robust-predicates` is public domain (Unlicense). Of the Apache-2.0 pac
 ships a `NOTICE` file; its content is the copyright line in its row. The vendored nerdamer-prime,
 decimal.js and big-integer are listed under llama-server above.
 
+`llama-brand` is ggml-org's llama.cpp logo and favicons, licensed under CC BY-NC 4.0
+(https://creativecommons.org/licenses/by-nc/4.0/). Its `BRAND-USAGE.md` grants everyone permission,
+notwithstanding the NonCommercial term, to redistribute these marks commercially as part of software
+distributions to identify or refer to Llama.cpp, and its attribution duty is met by naming the
+repository as the source: https://github.com/ggml-org/llama-brand. The marks ship only inside
+llama.cpp's own web UI, as llama.cpp builds them, and imply no sponsorship, endorsement or
+affiliation.
+
 | Package | Version | Licence | Copyright |
 |---|---|---|---|
 | `@antfu/install-pkg` | 1.1.0 | MIT | © 2021 Anthony Fu |
 | `@braintree/sanitize-url` | 7.1.2 | MIT | © 2017 Braintree |
 | `@chevrotain/types` | 11.1.2 | Apache-2.0 | © Shahar Soel |
+| `@codemirror/autocomplete` | 6.20.4 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/commands` | 6.11.1 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/lang-css` | 6.3.1 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/lang-html` | 6.4.12 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/lang-javascript` | 6.2.5 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/lang-markdown` | 6.5.2 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/language` | 6.13.1 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/lint` | 6.9.7 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/state` | 6.7.6 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/streamparser` | 6.0.0 | MIT | © 2018-2021 by Marijn Haverbeke and others |
+| `@codemirror/view` | 6.43.15 | MIT | © 2018-2021 by Marijn Haverbeke and others |
 | `@floating-ui/core` | 1.7.5 | MIT | © 2021-present Floating UI contributors |
 | `@floating-ui/dom` | 1.7.6 | MIT | © 2021-present Floating UI contributors |
 | `@floating-ui/utils` | 0.2.11 | MIT | © 2021-present Floating UI contributors |
@@ -580,7 +599,15 @@ decimal.js and big-integer are listed under llama-server above.
 | `@jridgewell/resolve-uri` | 3.1.2 | MIT | © 2019 Justin Ridgewell |
 | `@jridgewell/sourcemap-codec` | 1.6.0 | MIT | © 2024 Justin Ridgewell |
 | `@jridgewell/trace-mapping` | 0.3.31 | MIT | © 2024 Justin Ridgewell |
+| `@lezer/common` | 1.5.3 | MIT | © 2018 by Marijn Haverbeke and others |
+| `@lezer/css` | 1.3.9 | MIT | © 2018 by Marijn Haverbeke and others |
+| `@lezer/highlight` | 1.2.5 | MIT | © 2018 by Marijn Haverbeke and others |
+| `@lezer/html` | 1.3.13 | MIT | © 2018 by Marijn Haverbeke and others |
+| `@lezer/javascript` | 1.5.6 | MIT | © 2018 by Marijn Haverbeke and others |
+| `@lezer/lr` | 1.4.11 | MIT | © 2018 by Marijn Haverbeke and others |
+| `@lezer/markdown` | 1.8.1 | MIT | © 2020 by Marijn Haverbeke and others |
 | `@lucide/svelte` | 1.46.0 | ISC AND MIT | © 2026 Lucide Icons and Contributors (ISC); © 2013-present Cole Bemis, Feather icons (MIT) |
+| `@marijn/find-cluster-break` | 1.0.4 | MIT | © 2024 by Marijn Haverbeke |
 | `@mermaid-js/parser` | 1.2.1 | MIT | © 2023 Yokozuna59 |
 | `@modelcontextprotocol/sdk` | 1.32.1 | MIT | © 2024 Anthropic, PBC |
 | `@polka/url` | 1.0.0-next.29 | MIT | © Luke Edwards |
@@ -608,6 +635,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `content-type` | 1.0.5 | MIT | © 2015 Douglas Christopher Wilson |
 | `cookie` | 1.1.1 | MIT | © 2012-2014 Roman Shtylman; © 2015 Douglas Christopher Wilson |
 | `cose-base` | 1.0.3, 2.2.0 | MIT | © 2019 - present, iVis@Bilkent |
+| `crelt` | 1.0.7 | MIT | © 2020 by Marijn Haverbeke |
 | `cytoscape` | 3.34.0 | MIT | © 2016-2026, The Cytoscape Consortium |
 | `cytoscape-cose-bilkent` | 4.1.0 | MIT | © 2016-2018, The Cytoscape Consortium |
 | `cytoscape-fcose` | 2.2.0 | MIT | © 2018 - present, iVis-at-Bilkent |
@@ -689,6 +717,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `khroma` | 2.1.0 | MIT | © 2019-present Fabio Spampinato, Andrew Maney |
 | `kleur` | 4.1.5 | MIT | © Luke Edwards (lukeed.com) |
 | `layout-base` | 1.0.2, 2.0.1 | MIT | © 2019 iVis@Bilkent |
+| `llama-brand` | 0.1.0 | CC-BY-NC-4.0 with ggml-org's brand-usage permission | ggml-org; source: https://github.com/ggml-org/llama-brand |
 | `locate-character` | 3.0.0 | MIT | © Rich Harris |
 | `lodash-es` | 4.18.1 | MIT | © OpenJS Foundation and other contributors; based on Underscore.js, © Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors |
 | `longest-streak` | 3.1.0 | MIT | © 2015 Titus Wormer |
@@ -773,6 +802,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `space-separated-tokens` | 2.0.2 | MIT | © 2016 Titus Wormer |
 | `strictdom` | 1.0.1 | MIT | © 2013 Wilson Page |
 | `stringify-entities` | 4.0.4 | MIT | © 2015 Titus Wormer |
+| `style-mod` | 4.1.4 | MIT | © 2018 by Marijn Haverbeke and others |
 | `style-to-object` | 1.0.14 | MIT | © 2017 Menglin "Mark" Xu |
 | `stylis` | 4.4.0 | MIT | © 2016-present Sultan Tarimo |
 | `svelte` | 5.56.1 | MIT | © 2016-2025 Svelte Contributors |
@@ -802,6 +832,7 @@ decimal.js and big-integer are listed under llama-server above.
 | `vfile-location` | 5.0.3 | MIT | © 2016 Titus Wormer |
 | `vfile-message` | 4.0.3 | MIT | © Titus Wormer |
 | `vite` | 7.3.7 | MIT | © 2019-present, VoidZero Inc. and Vite contributors; © 2024 Justin Ridgewell; © 2019 Justin Ridgewell; © 2024-present VoidZero Inc. & Contributors; © 2019 RollupJS Plugin Contributors; © 2019 Elan Shanker, Paul Miller |
+| `w3c-keyname` | 2.2.8 | MIT | © 2016 by Marijn Haverbeke and others |
 | `web-namespaces` | 2.0.1 | MIT | © 2016 Titus Wormer |
 | `zimmerframe` | 1.1.4 | MIT | © 2023 [these people](https://github.com/Rich-Harris/zimmerframe/graphs/contributors) |
 | `zod` | 4.4.3 | MIT | © 2025 Colin McDonnell |
@@ -909,8 +940,9 @@ against the SHA-256 pins in `PredefinedModels` at install time.
 
 The optional built-in AI enhancement models are GGUF files that the bundled `llama-server` runs.
 The app downloads a model the user chooses from DV Studio's model mirror
-(models.voicewink.app), which serves byte-identical copies of the upstream files; there is no
-fallback to another host. Each file is verified against the size and SHA-256 pins in
+(models.voicewink.app), which serves byte-identical copies of the upstream files. If the mirror
+cannot deliver a file correctly and that file is published on Hugging Face, the app downloads it
+from Hugging Face instead. Each file is verified against the size and SHA-256 pins in
 `LocalModelCatalog` at install time, and a model's licence files are downloaded into its
 folder with it. Which of these models a VoiceWink version offers depends on the version.
 

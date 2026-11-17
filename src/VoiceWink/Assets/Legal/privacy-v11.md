@@ -1,10 +1,10 @@
 ---
-version: 10
-last-updated: 2026-11-09
+version: 11
+last-updated: 2026-11-15
 title: VoiceWink Privacy Policy
-changes: VoiceWink can now temporarily keep your most recent recording on the local hard drive so you can transcribe it again, until you start a new recording, dismiss it or close the app. The description of the optional prompt-trace log is now more exact.
-changes-for: cca2a7a0436a
-changes-since: e44efa94f706
+changes: If models.voicewink.app cannot deliver a file of a built-in AI model correctly and that file is published on Hugging Face, VoiceWink now downloads it from Hugging Face instead, as it already did for speech models.
+changes-for: 0f5f7bf9c8c9
+changes-since: cca2a7a0436a
 ---
 
 # VoiceWink Privacy Policy
@@ -57,7 +57,7 @@ This is the complete list of connections VoiceWink and its installer make on the
 
 - **License check, to Lemon Squeezy.** When you enter a license key, VoiceWink sends the key and a random label for this PC (for example VoiceWink-3f9a2c71, with no hostname or account name). Lemon Squeezy answers with an identifier for this activation. While a license key is stored on this device and matches it, VoiceWink re-validates that key on each application start after setup is complete, and about once a day while VoiceWink keeps running. Each check sends the key and, once there is one, that identifier. VoiceWink also checks when you press "Check now", and may check when you open the License page. When you remove the license, or when an activation fails, VoiceWink sends the key and the identifier to release the activation. Without a connection, a recent successful check keeps VoiceWink working for up to 30 days. This check is needed to provide the license you bought and cannot be turned off while a paid license is active.
 - **Update check and updates, to updates.voicewink.app.** Shortly after start and then about once a day, VoiceWink asks whether a newer version exists. The request carries your IP address and technical details of the installed copy: its update channel, its version, and the Windows and processor type. When automatic installation is on (the default), updates are downloaded and installed automatically. You can turn off automatic update checking and automatic update installation at any time in the app. You can still check by hand.
-- **Model downloads, to models.voicewink.app.** When VoiceWink needs a speech or AI model that is not yet on your PC, it downloads the model's files. Each request carries your IP address and the name of the file. For speech models only, if that server cannot deliver a file correctly, VoiceWink downloads it from Hugging Face (huggingface.co) instead. Hugging Face handles that request under its own privacy policy and its own responsibility. DV Studio counts these requests as Section 4 describes.
+- **Model downloads, to models.voicewink.app.** When VoiceWink needs a speech or AI model that is not yet on your PC, it downloads the model's files. Each request carries your IP address and the name of the file. If that server cannot deliver a file correctly and that file is published on Hugging Face (huggingface.co), VoiceWink downloads it from Hugging Face instead. Hugging Face handles that request under its own privacy policy and its own responsibility. DV Studio counts these requests as Section 4 describes.
 - **One-time counts, to updates.voicewink.app.** A few short reports that let DV Studio count installations and free-trial starts. Section 4 explains what they can contain, when they are sent and how you can stop them.
 
 ## 4. How we count downloads, installs, free trials and how you found VoiceWink
@@ -127,7 +127,7 @@ This covers voicewink.app and the publisher site dvstudio.app.
 - **GitHub** processes data for DV Studio. It runs the scheduled jobs that read those records and turn them into daily and hourly totals, and it stores the totals.
 - **Google** processes data for DV Studio. It hosts the support@dvstudio.app mailbox (Google Workspace).
 - **Sentry** processes data for DV Studio, only if you turn crash reports on.
-- **Hugging Face**, on its own responsibility, only for the speech-model fallback in Section 3.
+- **Hugging Face**, on its own responsibility, only for the model-download fallback in Section 3.
 - **The cloud providers and servers you choose** (Section 5), on their own responsibility or yours.
 
 DV Studio has data-processing agreements with the companies that process data for it. Some of them process data outside the European Economic Area, mainly in the United States. Those transfers rely on the EU-US Data Privacy Framework where the company is certified, and in any case on the European Commission's Standard Contractual Clauses. You can ask for a copy of these safeguards at the contact in Section 1.

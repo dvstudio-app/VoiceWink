@@ -16,7 +16,8 @@ internal enum LocalModelTier
 }
 
 /// <summary>One file of a catalog model, pinned: its mirror URL, exact size and SHA-256, and the
-/// upstream it was mirrored from (provenance — the mirror script builds the object from it).</summary>
+/// upstream it was mirrored from (the mirror script builds the object from it; a Hugging Face upstream
+/// is also the download fallback, LAI-31).</summary>
 internal sealed record LocalModelFile(
     string FileName,
     string MirrorUrl,
@@ -61,9 +62,10 @@ internal sealed record LocalModelEntry(
     bool Retired = false)
 {
     /// <summary>What the download manager installs: one bundle (GGUF + its licence files) — staged,
-    /// verified per file by SHA-256 and exact length, committed atomically. <b>No file carries a
-    /// fallback URL</b>: enhancement models come only from the mirror, which is what the privacy policy (v5, and v6 §3)
-    /// promises (A37). <c>Runtime</c> is null — these are not speech models.</summary>
+    /// verified per file by SHA-256 and exact length, committed atomically. LAI-31: each member whose
+    /// upstream is on Hugging Face carries it as its <c>FallbackUrl</c> (per member, because the bundle
+    /// path ignores a bundle-level one); the other licence texts are mirror-only, as privacy v11 §3 says.
+    /// <c>Runtime</c> is null — these are not speech models.</summary>
     public TranscriptionModelInfo ToDownloadDescriptor() => new()
     {
         Name = Id,
@@ -73,18 +75,26 @@ internal sealed record LocalModelEntry(
         FileSizeIsExact = true,
         Files =
         [
-            .. new[] { Model }.Concat(LicenceFiles).Select(f => new ModelFile
+            // LAI-31: mirror-only members first, so a mirror outage fails before a multi-GB fallback download.
+            .. new[] { Model }.Concat(LicenceFiles).OrderBy(f => IsOnHuggingFace(f.UpstreamUrl)).Select(f => new ModelFile
             {
                 RelativePath = f.FileName, Url = f.MirrorUrl, FileSizeBytes = f.SizeBytes, Sha256Hash = f.Sha256,
+                FallbackUrl = IsOnHuggingFace(f.UpstreamUrl) ? f.UpstreamUrl : null,
             }),
         ],
     };
+
+    // LAI-31: a host check, not a URL literal, so the mirror script's upstream extractor sees no extra URL.
+    internal static bool IsOnHuggingFace(string url)
+        => Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && uri.Scheme == Uri.UriSchemeHttps
+            && string.Equals(uri.Host, "huggingface.co", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
 /// LAI-3: the bundled engine's model catalog — data, pinned. Every file is served from DV Studio's
 /// write-once mirror (<c>models.voicewink.app/llm/…</c>, keys carrying the upstream revision) and
-/// verified by SHA-256 and exact size; there is no fallback host. The rows are the exact files the
+/// verified by SHA-256 and exact size; a file whose upstream is on Hugging Face falls back to it (LAI-31). The rows are the exact files the
 /// design plan's bench measured (<c>docs/plans/2026-09-23-local-ai-enhancement/bench/</c>): each
 /// repo's last GGUF-changing revision predates that run. Picks and evidence: the LAI-3 card and
 /// that plan's <c>50-decision.md</c>. Every row was validated on llama.cpp

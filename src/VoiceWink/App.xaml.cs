@@ -1137,11 +1137,13 @@ public partial class App : Application, Services.IAppLifetime
         });
 
         // ViewModels
+        services.AddSingleton<global::VoiceWink.Services.AIEnhancement.LocalEngine.FirstUseEnhancementFollowUp>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton<ModelManagementViewModel>();
         services.AddSingleton<SettingsViewModel>();
         services.AddSingleton<HistoryViewModel>();
         services.AddSingleton<EnhancementViewModel>();
+        services.AddSingleton<Views.Dialogs.RetiredModelSwitchDialog>();
         services.AddSingleton<DictionaryViewModel>();
         // Composes an App-Mode add with its default-enhancement resolve/add (AppModeManager +
         // EnhancementViewModel, both singletons above); used by the App-Mode page.
@@ -1805,6 +1807,7 @@ public partial class App : Application, Services.IAppLifetime
         viewModel.DownloadProgressUpdated += OnMiniRecorderDownloadProgressUpdated;
         viewModel.AffordanceArmed += OnAffordanceArmed;
         viewModel.OpenLicensePageRequested += OnOpenLicensePageRequested;
+        viewModel.FirstUseCopyOfferRetired += () => _pillController?.ClearMessageWithAction(PillMessageAction.CopyEnhancedText);
 
         StartMiniRecorderDisplayChangeHandling();
     }
@@ -2221,6 +2224,11 @@ public partial class App : Application, Services.IAppLifetime
             {
                 case PillMessageAction.OpenLicensePage:
                     OpenLicensePageInMainWindow("pill clicked", afterNavigation: () => controller.Dismiss(handle));
+                    break;
+                case PillMessageAction.CopyEnhancedText:
+                    // LAI-32: Dismiss is a no-op on a timed pill, so the offer is cleared before the copy publishes its own line.
+                    controller.ClearMessage();
+                    _ = _miniRecorderViewModel?.CopyFirstUseEnhancementAsync();
                     break;
                 default:
                     break; // a click on a plain message body: the drag handle's inert click
@@ -2645,6 +2653,18 @@ public partial class App : Application, Services.IAppLifetime
         }
     }
 
+    /// <summary>LAI-30: What's new first, so it has released the dialog slot; then the retired-model switch offer, which decides for itself.</summary>
+    private async Task ShowStartDialogsAsync()
+    {
+        await MaybeShowWhatsNewAsync();
+        await Services.GetRequiredService<Views.Dialogs.RetiredModelSwitchDialog>().MaybeShowAsync(
+            Helpers.AboutInfo.CurrentVersion, _startMinimizedIntentThisLaunch, () => _isQuitting, async () =>
+            {
+                await WaitForXamlRootAsync();
+                return (_mainWindow?.Content as FrameworkElement)?.XamlRoot;
+            });
+    }
+
     /// <summary>
     /// LGL-1 gated runtime services — the call sites that capture user input
     /// or persist user data. Idempotent: a second invocation (e.g. from
@@ -2892,7 +2912,7 @@ public partial class App : Application, Services.IAppLifetime
         }
 
         // REL-4: show the "What's new" dialog after an update (fire-and-forget; self-guarded).
-        _ = MaybeShowWhatsNewAsync();
+        _ = ShowStartDialogsAsync();
 
         // Defer COM-heavy initialization to avoid blocking the UI thread at startup.
         // Both MMDeviceEnumerator pre-warm and SystemEvents subscription involve COM

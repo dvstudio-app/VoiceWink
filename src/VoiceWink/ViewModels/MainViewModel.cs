@@ -96,6 +96,14 @@ public partial class MainViewModel : ObservableObject
         // epoch on its own turn.
         if (value == RecordingState.Idle && _pendingImageCompletion != null)
             EnqueueUiTurn(ApplyPendingImageCompletionIfCurrent);
+
+        // LAI-32: a follow-up waiting for the pipeline runs now; a result held back presents on its own turn.
+        if (value == RecordingState.Idle)
+        {
+            _firstUseFollowUp?.OnPipelineIdle();
+            if (_pendingFirstUseResult is { } deferred)
+                EnqueueUiTurn(() => ApplyFirstUseResult(deferred));
+        }
     }
 
     // The generator invokes BOTH partials on every change; this overload carries the old
@@ -596,9 +604,16 @@ public partial class MainViewModel : ObservableObject
         // carries the proof signal (criterion = engine health, owner decision 2026-08-24; see the
         // notify site). Optional with a null default (the ModelManagementViewModel pattern):
         // null in a kill-switch rebuild, the real coordinator in ordinary builds.
-        Services.Transcription.IParakeetPcppBackend? pcppBackend = null)
+        Services.Transcription.IParakeetPcppBackend? pcppBackend = null,
+        Services.AIEnhancement.LocalEngine.FirstUseEnhancementFollowUp? firstUseFollowUp = null)
     {
         _recorder = recorder;
+        _firstUseFollowUp = firstUseFollowUp;
+        if (firstUseFollowUp != null)
+        {
+            firstUseFollowUp.AttachPipeline(() => !_recordingPipelineBusy);
+            firstUseFollowUp.Completed += OnFirstUseFollowUpCompleted;
+        }
         _deviceSelection = deviceSelection;
         _standingCapture = standingCapture;
         _pcppBackend = pcppBackend;
@@ -1181,6 +1196,10 @@ public partial class MainViewModel : ObservableObject
             }
         }
 
+        // LAI-32: the late AI version belongs to a text row this delete covers.
+        if (BulkDeleteScopeMatchesArmedRedo(scope, armedWasImageGeneration: false))
+            RetireFirstUseFollowUp();
+
         var armed = _redoCoordinator.LastContext;
         if (armed != null && BulkDeleteScopeMatchesArmedRedo(scope, armed.WasImageGeneration))
         {
@@ -1639,6 +1658,108 @@ public partial class MainViewModel : ObservableObject
         var queue = App.MainWindow?.DispatcherQueue;
         if (queue == null || !queue.TryEnqueue(() => action()))
             action();
+    }
+
+    // LAI-32: the built-in model's late AI version. The follow-up owns the run; this holds only what the pill needs.
+    private readonly Services.AIEnhancement.LocalEngine.FirstUseEnhancementFollowUp? _firstUseFollowUp;
+    private FirstUseTrack? _firstUseTrack;
+    private Services.AIEnhancement.LocalEngine.FirstUseFollowUpResult? _pendingFirstUseResult;
+
+    private sealed record FirstUseTrack(long Generation, long EpochAtTrack, RedoContext? SourceRedo);
+
+    /// <summary>LAI-32: raised when a History delete retires the copy offer; App clears that pill only.</summary>
+    public event Action? FirstUseCopyOfferRetired;
+
+    private void TrackFirstUse(Services.AIEnhancement.LocalEngine.FirstUseFollowUpRequest request, RedoContext? sourceRedo)
+    {
+        _pendingFirstUseResult = null;
+        var generation = _firstUseFollowUp!.Track(request);
+        _firstUseTrack = new FirstUseTrack(generation, _presentationEpoch, sourceRedo);
+    }
+
+    private void OnFirstUseFollowUpCompleted(Services.AIEnhancement.LocalEngine.FirstUseFollowUpResult result)
+    {
+        var queue = App.MainWindow?.DispatcherQueue;
+        if (queue == null)
+            ApplyFirstUseResult(result);
+        else if (!queue.TryEnqueue(() => ApplyFirstUseResult(result)))
+            Logger.Information("First-use follow-up result dropped - the app is closing");
+    }
+
+    /// <summary>LAI-32: presents a follow-up result through the image-completion recency gate. UI thread only.</summary>
+    private void ApplyFirstUseResult(Services.AIEnhancement.LocalEngine.FirstUseFollowUpResult result)
+    {
+        if (_firstUseTrack is not { } track || track.Generation != result.Generation
+            || _firstUseFollowUp?.IsCurrent(result.Generation) != true)
+            return;
+        switch (Helpers.ImageJobPresentationGate.Decide(
+                    RecordingState == RecordingState.Idle, track.EpochAtTrack, _presentationEpoch))
+        {
+            case Helpers.ImageJobPresentationGate.Decision.Defer:
+                _pendingFirstUseResult = result;
+                return;
+            case Helpers.ImageJobPresentationGate.Decision.Discard:
+                _pendingFirstUseResult = null;
+                _firstUseTrack = null;
+                Logger.Information("First-use follow-up result not shown - a newer message replaced the pill");
+                return;
+        }
+        _pendingFirstUseResult = null;
+        _firstUseTrack = null;
+        var sourceStillArmed = track.SourceRedo != null && IsRedoAvailable
+            && ReferenceEquals(_redoCoordinator.LastContext, track.SourceRedo);
+        var presentation = Services.AIEnhancement.LocalEngine.FirstUseFollowUpPolicy.Present(result.Kind, sourceStillArmed);
+        if (presentation.ClearSourceRedo)
+            ClearRedoState();
+        if (presentation.RearmSourceRedo)
+        {
+            StatusText = presentation.Message;
+            ArmRedo(track.SourceRedo!, MiniRecorderTone.Warning);
+            IsMiniRecorderVisible = true;
+            return;
+        }
+        MarkTerminalPresentation();
+        StatusText = presentation.Message;
+        ShowMiniRecorderError?.Invoke(presentation.Message,
+            presentation.OffersCopy ? MiniRecorderTone.Success : MiniRecorderTone.Warning,
+            presentation.OffersCopy ? PillMessageAction.CopyEnhancedText : PillMessageAction.None);
+    }
+
+    /// <summary>LAI-32: the ready pill's click — copies the AI version; never pastes it (PST-6).</summary>
+    public async Task CopyFirstUseEnhancementAsync()
+    {
+        if (_firstUseFollowUp == null)
+            return;
+        var epochAtClick = _presentationEpoch;
+        try
+        {
+            var result = await _firstUseFollowUp.CopyReadyTextAsync();
+            // LAI-32: a clipboard write that waited for its lease must not cover a newer pill.
+            if (!Services.AIEnhancement.LocalEngine.FirstUseFollowUpPolicy.ShowsCopyResult(
+                    RecordingState == RecordingState.Idle, epochAtClick, _presentationEpoch))
+                return;
+            switch (result)
+            {
+                case Services.AIEnhancement.LocalEngine.FirstUseCopyResult.Copied:
+                    EmitMiniRecorderError("Text copied", MiniRecorderTone.Success);
+                    break;
+                case Services.AIEnhancement.LocalEngine.FirstUseCopyResult.ClipboardFailed:
+                    EmitMiniRecorderError(Helpers.PasteResultPresentation.ClipboardFailedMessage, MiniRecorderTone.Error);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Copying the AI version failed: {ErrorType}", ex.GetType().Name);
+        }
+    }
+
+    private void RetireFirstUseFollowUp()
+    {
+        _firstUseFollowUp?.Cancel();
+        _firstUseTrack = null;
+        _pendingFirstUseResult = null;
+        FirstUseCopyOfferRetired?.Invoke();
     }
 
     /// <summary>Job body → stash the completion (last-wins) and, when already idle, schedule
@@ -6194,6 +6315,9 @@ public partial class MainViewModel : ObservableObject
             // no-failure state is null, never `default`.
             ProviderPillText? enhancementFailure = null;
             var enhancementFailureTone = MiniRecorderTone.Error;
+            // LAI-32: set when a built-in model's first-use check refused this dictation; the follow-up finishes it later.
+            Services.AIEnhancement.LocalEngine.BuiltInModelWarmingUpException? firstUseWarming = null;
+            IReadOnlyList<string>? enhancementTerms = null;
 
             // An image-generation intent must never be run as a text enhancement — the pure gate
             // reproduces MainViewModel's shouldEnhance and suppresses it for image intents (covers
@@ -6230,6 +6354,7 @@ public partial class MainViewModel : ObservableObject
                     // a mid-run Dictionary-off flip. Rides the skip CTS: a stop-button
                     // skip aborts the fetch along with the enhancement it feeds.
                     var enhancementVocab = await _customVocabulary.GetVocabularyContextAsync(enhancementSkipCts.Token);
+                    enhancementTerms = enhancementVocab.Terms;
                     enhancedText = await _enhancement.EnhanceAsync(text, prompt, enhancementVocab.Terms, ct: enhancementSkipCts.Token);
                     // Whitespace check, matching the service-side fallback — a custom prompt may
                     // legitimately return punctuation only. See AIEnhancementService for why.
@@ -6284,6 +6409,7 @@ public partial class MainViewModel : ObservableObject
                     // and the budget rides the same value (110 only for structured provider prose).
                     enhancementFailure = ProviderPillReasonForEnhancementFallback(ex);
                     enhancementFailureTone = EnhancementFallbackTone(ex);
+                    firstUseWarming = ex as Services.AIEnhancement.LocalEngine.BuiltInModelWarmingUpException;
                 }
                 finally
                 {
@@ -6432,6 +6558,8 @@ public partial class MainViewModel : ObservableObject
             var offerPartialDecodeRetry = echoRetryCandidate != null
                 && Helpers.PartialDecodeNotice.ShouldOfferRetry(
                     lostChunks, pasteLanded, File.Exists(echoRetryCandidate.WavPath));
+            var trackFirstUse = Services.AIEnhancement.LocalEngine.FirstUseFollowUpPolicy.ShouldTrack(
+                firstUseWarming != null && _firstUseFollowUp != null, pasteLanded, offerPartialDecodeRetry);
             if (offerPartialDecodeRetry)
             {
                 Logger.Warning("Transcription pasted with {LostChunks} chunk(s) decoded empty — recording kept for Retry (TRN-96b)", lostChunks);
@@ -6457,6 +6585,8 @@ public partial class MainViewModel : ObservableObject
                 var (fallbackStatus, fallbackTone) = EnhancementFallbackPresentation(
                     pasteResult.Outcome == Helpers.PasteAttemptOutcome.ClipboardSetFailed,
                     pasteLanded, enhancementFailure, enhancementFailureTone);
+                if (trackFirstUse)
+                    (fallbackStatus, fallbackTone) = (Services.AIEnhancement.LocalEngine.FirstUseFollowUpPolicy.WaitingMessage, MiniRecorderTone.Warning);
                 StatusText = fallbackStatus;
                 ArmRedo(new RedoContext(
                     RawText: preEnhancementText,
@@ -6522,6 +6652,11 @@ public partial class MainViewModel : ObservableObject
             // REL-20: the redo this run armed, so the chooser offers it for THIS recording only.
             if (!offerPartialDecodeRetry && (enhancementFailed || enhancedText != null))
                 deliveredRedo = _redoCoordinator.LastContext;
+
+            if (trackFirstUse)
+                TrackFirstUse(new Services.AIEnhancement.LocalEngine.FirstUseFollowUpRequest(
+                    preEnhancementText, prompt, enhancementTerms, firstUseWarming!.ModelId,
+                    _lastTranscriptionHistoryId, firstUseWarming.Settled), deliveredRedo);
 
             if (pasteLanded)
                 Logger.Information("Transcription pasted ({Length} chars)", text.Length);
@@ -7773,7 +7908,8 @@ public partial class MainViewModel : ObservableObject
     /// both are thrown as a bare <see cref="InvalidOperationException"/> by our own code.
     /// </summary>
     internal static MiniRecorderTone EnhancementFallbackTone(Exception ex)
-        => ex is InvalidOperationException
+        => ex is Services.AIEnhancement.LocalEngine.BuiltInModelWarmingUpException
+            or InvalidOperationException
             { Message: Helpers.LocalOutputGuard.RefusedReason or Services.AIEnhancement.Clients.OpenAICompatibleClient.TruncatedReason }
             ? MiniRecorderTone.Warning
             : MiniRecorderTone.Error;

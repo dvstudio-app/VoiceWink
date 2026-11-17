@@ -546,6 +546,9 @@ public static class AppDefaults
     /// </summary>
     public const string LocalServerGraphicsOfferedModels = "localServerGraphicsOfferedModels";
 
+    /// <summary>LAI-30: "version|retired model id" of the last start-up switch offer shown; app-managed, NOT in <see cref="Defaults"/>: a record of what was shown.</summary>
+    public const string RetiredModelOfferShown = "retiredModelOfferShown";
+
     /// <summary>
     /// LNC-15: the built-in AI model Express setup started downloading, until it is in and taken
     /// into use (<c>BuiltInModelAdoption</c>), so a restart mid-download starts it again. App-managed,

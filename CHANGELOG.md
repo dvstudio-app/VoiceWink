@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.129.432] - 2026-11-16
+
+- Built-in AI: a model file the VoiceWink server cannot deliver now downloads from Hugging Face, if it is published there.
+- Built-in AI: after an update, VoiceWink offers to replace a retired model with the one recommended for this PC.
+- Built-in AI: a dictation made while a model is still being checked now pastes the transcript and offers the AI version to copy when it is ready.
+
 ## [1.128.431] - 2026-11-15
 
 - Built-in AI: added Nemotron 3.5 Bolt and Gemma 4 E4B, which replace Qwen3.5 4B and 9B as recommended models.

@@ -56,7 +56,8 @@ internal sealed class LocalModelDownloadAttempt
 /// <c>%LOCALAPPDATA%\VoiceWink\Models\llm\</c>. A thin owner over a SECOND
 /// <see cref="ModelDownloadManager"/> (its own root and catalog), so the download, SHA-256 and
 /// exact-length verification, staging and atomic commit are the speech models' own protocol,
-/// not a copy. Every file comes from the mirror only — the descriptors carry no fallback URL.
+/// not a copy. Files come from the mirror, with a Hugging Face fallback where the catalog file's
+/// upstream is there (LAI-31, <see cref="LocalModelEntry.ToDownloadDescriptor"/>).
 /// <para>A download is refused while an update-apply or a GDPR erasure holds the exclusive
 /// maintenance lease (the check <c>ModelManagementViewModel.DownloadModelAsync</c> makes for
 /// speech models), and <see cref="IsDownloading"/> feeds the maintenance gate so neither can

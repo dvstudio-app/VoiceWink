@@ -62,8 +62,8 @@ internal sealed record LlamaPayloadSet(
 /// </summary>
 internal static class LlamaServerPayload
 {
-    /// <summary>The upstream build tag; also what <c>--version</c> prints as <c>build 12110</c>.</summary>
-    internal const string Build = "b12110";
+    /// <summary>The upstream build tag; also what <c>--version</c> prints as <c>build 12359</c>.</summary>
+    internal const string Build = "b12359";
 
     internal const string ExeName = "llama-server.exe";
 
@@ -93,29 +93,29 @@ internal static class LlamaServerPayload
         0x8664,
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["ggml-base.dll"] = "3a0399fa51102a86824255beda9d021ea7e8cd2bd8ca448a43a9a80aa4829290",
-            ["ggml-cpu-alderlake.dll"] = "1de7a0d14d70bd741f2e4cdfa959176fee26680d6fbc78c717c0bd19e20b6233",
-            ["ggml-cpu-cannonlake.dll"] = "1451909b84c223739247088a0e03db0f89bcd83461f2af43f53d794727afddcd",
-            ["ggml-cpu-cascadelake.dll"] = "74d79278bd20143d3e7deeb2b5c033555f9d621016a7152b5190a2fcbf30265c",
-            ["ggml-cpu-cooperlake.dll"] = "737f0e96f23ca7d66c8dc55eace36ebbfd47770a9a228c804ffff5bf66f933a8",
-            ["ggml-cpu-haswell.dll"] = "85d9ffd6f84fd0ec01586420b935ac4d5a5c9a1ab76b533eb3ddc060c1fe2869",
-            ["ggml-cpu-icelake.dll"] = "41ca727e74b171983ea9afe0250553706c09225c10a8c6ad72a619f9189279a8",
-            ["ggml-cpu-ivybridge.dll"] = "39752b7667cb34b3bbd06178fac83803f6089771d43873a9c81015d2a98c280b",
-            ["ggml-cpu-piledriver.dll"] = "65bef2ae4f69256d9aff053a6fff1abdbd33acdbc51ede863d8bc5bd43c53ee8",
-            ["ggml-cpu-sandybridge.dll"] = "5359624dee5670cb299c08f4a49347f7a6f4d0df35ed4c0a91164e4d771b3e23",
-            ["ggml-cpu-sapphirerapids.dll"] = "a7a395d0e49f182240c9a2ed1d623398911506bdae418baf161354541aa06a89",
-            ["ggml-cpu-skylakex.dll"] = "6bd53dc5731c5b9e4d3fbf98a9dc5b3ce76d357be9a579bc6c8cedac035462e8",
-            ["ggml-cpu-sse42.dll"] = "1e1700e6b6eef26b6abb0bc68669b6ee9fdad2b8d00058e491cb5160eb54afc2",
-            ["ggml-cpu-x64.dll"] = "81877c8787f9d5680b990f4cf5f8b89ba5b02ee5064b36abfd53d9d2ffb50916",
-            ["ggml-cpu-zen4.dll"] = "b5c1eec79e83878303acfa774f1275d9e025493b2c23f2a01af09fe985cdc21a",
-            ["ggml-vulkan.dll"] = "e863e7556e10eeea6888894755552a917ab919004882bdf89d2d684d2b54fc8c",
-            ["ggml.dll"] = "06dfdff8b7b834c757ec5b5411abfc0f732604fb595eaaffbdc6da563523e8a1",
+            ["ggml-base.dll"] = "20e4986ec6fd88eb61630433ff172e08885f8fecfbd0c1960a5d55c8854019e3",
+            ["ggml-cpu-alderlake.dll"] = "f4bd2a5bd4c99669a5efcbc0edf5326c6f51cf556c3301ae5c8fc2994b913440",
+            ["ggml-cpu-cannonlake.dll"] = "b6a69981682c6e9dfb5fefcfc3677b9e17c112c3c33fc9d59405daa618e63304",
+            ["ggml-cpu-cascadelake.dll"] = "488337fb896ac54ec8a74a5e8163b48d8ec4c8e082da4bbb62ebe52139d3b3d8",
+            ["ggml-cpu-cooperlake.dll"] = "7d30660f15d288d6da7c1d99ae8418c46f61d1d5036e0082aad6fbf4e461d2bb",
+            ["ggml-cpu-haswell.dll"] = "26dbcf80225fe3c56aa750501247cebdc99b791f323c33d0d8fcd2ed7c4bafcb",
+            ["ggml-cpu-icelake.dll"] = "0a35f7a655bb74ce2d64cbb64e6817b17f62964b060c6a503d3267b2133199bc",
+            ["ggml-cpu-ivybridge.dll"] = "2e83b2aa5ad108445a599fcdd46fafcb227a3d2d66743994434b0bcaacb5a714",
+            ["ggml-cpu-piledriver.dll"] = "851474816a574847b264e018de02410f5905359934c2fa2411f7ff3d7706620c",
+            ["ggml-cpu-sandybridge.dll"] = "86b1c9114249492b8d39a1a3d9f9717c8969334a4bd12c279b91248a553cb254",
+            ["ggml-cpu-sapphirerapids.dll"] = "b049b5672c3c246bb320ec011c735981628a9369687cfd64a4628c5bad238b3b",
+            ["ggml-cpu-skylakex.dll"] = "183413744426f596c67fb206daf2cab17d666e22076e4a6b9a25d301de871d85",
+            ["ggml-cpu-sse42.dll"] = "5b2f04b3ab1e76b09d887c496eb61b09a0ee4fc77b28c0602e45411906946ccd",
+            ["ggml-cpu-x64.dll"] = "375434294cb7d22de0bf5da68fe67569fb5f8ca2c11e925850c8be3f52d052fe",
+            ["ggml-cpu-zen4.dll"] = "dae5d12772f0213b6d70a3c4db032146b504dea32b1b35bbcc9dff769edf57f7",
+            ["ggml-vulkan.dll"] = "9cc0d9416bf032caa58af66fc7fe700e35a476b74cab94fcb45e08f4eca8213c",
+            ["ggml.dll"] = "92b081cfb031e2efe5cd2a8c71c872e8a92cb1d4a43619ad6614dc30ad357b80",
             ["libomp.dll"] = "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
-            ["llama-common.dll"] = "0898e517843e4478b5178621dc878552b4d40a4d47d7b6f1775e7897f4e2344e",
-            ["llama-server-impl.dll"] = "c5d306bdcad1c4011f18a1c01ae2fcdca48a197af0d421c2931ace2cfb487fc6",
-            ["llama-server.exe"] = "00d50686815af38249d0218c91558fbd0e9093ac8c074bac86196907f4305e31",
-            ["llama.dll"] = "211b91d86e67c49f12eb97992b45ae4c2fc797d6edab48637835a877c808890e",
-            ["mtmd.dll"] = "74a3cace50f6c545cc66e4dc05e2aecf465f146ea1b4000376cd9834598a3e14",
+            ["llama-common.dll"] = "a0e0b993dede7c95eb1ca79cdcc2a003f2f79ff59fc129cb46ec5daac80fd057",
+            ["llama-server-impl.dll"] = "c81c23738405831cacda737e64ce8f08870d4f44beb63e3aa9515b3ad2e4286e",
+            ["llama-server.exe"] = "38c5affb81c9a8f88f5538c7d11bc445e13bc46a2c6eda05694b8b31a8d45995",
+            ["llama.dll"] = "17b0063b06c4561f46929a809a60bf60c857783bb22f593528145cc1e1108d7d",
+            ["mtmd.dll"] = "558d7c41475cc6f54d6da41eea23876cd35cfd2e9d8f2b3e637b8c49c9928ed5",
         },
         // Vendor-signed copies vpk leaves byte-identical (measured, release run 33588250383): the
         // Vulkan loader (installer/runtime/vulkan-loader/MANIFEST.psd1) and the three VC++ DLLs
@@ -139,16 +139,16 @@ internal static class LlamaServerPayload
         0xAA64,
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["ggml-base.dll"] = "da51a68ad763cb16c9f4f9cd76ee90918b3d1e6a898b21e44947b2a6a18fb5be",
-            ["ggml-cpu.dll"] = "7dda802d308c4c05b4b0654e74dbeb0942947da386924c5d5f298a6bd0f6b67b",
-            ["ggml-opencl.dll"] = "340a96c9d7ce6e2f78a09c40110ec70d2bc70bb21733c952ac08273810443918",
-            ["ggml.dll"] = "84f5f975819a60cd15a0033f4361fdac8fea111301addbe0081b356dad3b22e3",
+            ["ggml-base.dll"] = "7e793b53b14449ac19b0461a63c0ea22d02114c6c7f20811d7e7bad2bcf1efae",
+            ["ggml-cpu.dll"] = "1a63d6dba3f9ffd3a636d41e2ab51aab413225e12dcaec2eb80b0608337bfbde",
+            ["ggml-opencl.dll"] = "fb831667b31de70b578b2a186272590546a70755769dda205c8c9e5f33675986",
+            ["ggml.dll"] = "53f924c2934455532cb24afbfd5686ece90f767fa1aacb6eae202c97377c9eb1",
             ["libomp.dll"] = "26caae17f29aaf2238f664375b663cd306d596bc9e36e780fa88356c51fe876a",
-            ["llama-common.dll"] = "eaa4888f9b9685ce8b652fbaa0b3c1b63e6e051648086b9a2fad613074cde406",
-            ["llama-server-impl.dll"] = "64d4b18e467d49279b885b0ec3f16d8963d709200e8078cf666c68521fa72071",
-            ["llama-server.exe"] = "d6908c01d6b7767a1122a157e9bdf24a1412f270ef23cd9af2d7c3a07a74e753",
-            ["llama.dll"] = "9def90ce6d5de42fc97d89cd8dc47a7694b02dbbe617196d2d8e5681dc25e47a",
-            ["mtmd.dll"] = "4c1239fdc92de05ef2332365f1211a1ca77f08a922e2c901e2f09dec314c5a1e",
+            ["llama-common.dll"] = "2803620da257ab50c8d76ebf59be055ed21bb91ef8a1bad0df8aff2a7061747d",
+            ["llama-server-impl.dll"] = "8388dc1a838223e6fefd7b3d6e70d86e03b2274b2573cdf5ac8f33b602b0877d",
+            ["llama-server.exe"] = "c8ea3fa202d22cffff0f1c01320d38d9efba63d67ff078ca04613e07265a9f60",
+            ["llama.dll"] = "cfc3a793e43a8e946dbfdb0d6c290604ad4eedf06f42d6462f1a8083a35d975f",
+            ["mtmd.dll"] = "04e3fb881eebbc6ef301596ff5160a28e0ee41b9d4f5ccda01450fbb09177328",
         },
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {

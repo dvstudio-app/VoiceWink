@@ -150,6 +150,13 @@ internal sealed class MiniRecorderPresentationController : IDisposable
         Reconcile();
     }
 
+    /// <summary>LAI-32: clears the message only while it carries <paramref name="action"/>, so an unrelated message survives.</summary>
+    public void ClearMessageWithAction(PillMessageAction action)
+    {
+        if (_message?.Content is PillContent.Message message && message.Action == action)
+            ClearMessage();
+    }
+
     public void PublishDownload(double fraction, string modelName)
     {
         // In-instance progress update preserves the handle; a fresh download begins a new instance.

@@ -61,6 +61,9 @@ public sealed class OnThisPcEngine : IDisposable
     /// <summary>How long erasure waits for background work before retiring the child anyway.</summary>
     internal static readonly TimeSpan ErasureJoinBudget = TimeSpan.FromSeconds(10);
 
+    /// <summary>LAI-32: how long a dictation waits for a running first-use check before the raw text is pasted.</summary>
+    internal static readonly TimeSpan FirstUseWaitBudget = TimeSpan.FromSeconds(3);
+
     /// <summary>How long a delete waits for the engine's one user slot. On expiry nothing is
     /// retired and nothing is deleted.</summary>
     internal static readonly TimeSpan DeleteGateWait = TimeSpan.FromSeconds(10);
@@ -86,6 +89,7 @@ public sealed class OnThisPcEngine : IDisposable
     private readonly Func<HttpClient, LlamaServerProcess.LlamaLease, TimeSpan, CancellationToken, Task<LlamaTimedRun>> _timedRun;
     private readonly TimeSpan _erasureJoinBudget;
     private readonly TimeSpan _deleteGateWait;
+    private readonly TimeSpan _firstUseWaitBudget;
     private readonly IGpuMemoryProbe? _gpuMemory;
     private readonly Func<bool, (IDisposable Handle, CancellationToken Yield)?>? _beginGpuProbe;
     private readonly TimeSpan _gpuQuietWait;
@@ -105,7 +109,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// for a model that just finished downloading would retire the child another model's
     /// dictation is still using (Codex diff r1 B2). The server runs one slot anyway.</summary>
     private readonly SemaphoreSlim _useGate = new(1, 1);
-    private readonly Dictionary<string, Task> _warmups = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Task<FirstUseCheckOutcome>> _warmups = new(StringComparer.Ordinal);
     private readonly HashSet<string> _warmupsDone = new(StringComparer.Ordinal);
     private readonly HashSet<string> _deleting = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _inconclusiveWarmups = new(StringComparer.Ordinal);
@@ -169,8 +173,10 @@ public sealed class OnThisPcEngine : IDisposable
         Func<bool, (IDisposable Handle, CancellationToken Yield)?>? beginGpuProbe = null,
         TimeSpan? gpuQuietWait = null,
         IReadOnlyList<LocalModelEntry>? models = null,
-        Func<bool>? thinkingEnabled = null)
+        Func<bool>? thinkingEnabled = null,
+        TimeSpan? firstUseWaitBudget = null)
     {
+        _firstUseWaitBudget = firstUseWaitBudget ?? FirstUseWaitBudget;
         _thinkingEnabled = thinkingEnabled ?? (() => false);
         _models = models ?? LocalModelCatalog.All;
         _gpuMemory = gpuMemory;
@@ -359,6 +365,48 @@ public sealed class OnThisPcEngine : IDisposable
 
     // ── Enhancement ─────────────────────────────────────────────────────────
 
+    private static BuiltInModelWarmingUpException StillChecking(string modelId, Task<FirstUseCheckOutcome> running)
+    {
+        Logger.Information("On this PC: {LocalModelId} is still on its first-use check - the transcription is used unchanged", modelId);
+        return new BuiltInModelWarmingUpException(modelId, running);
+    }
+
+    /// <summary>LAI-32: waits up to the budget for the running check, then admits only a check that settled Ready - never starting another.</summary>
+    private async Task<LlamaLaunchMode?> AdmitAfterFirstUseCheckAsync(LocalModelEntry entry, string path, string identity,
+        Task<FirstUseCheckOutcome> running, CancellationToken ct)
+    {
+        using (var wait = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token))
+        {
+            await Task.WhenAny(running, Task.Delay(_firstUseWaitBudget, wait.Token)).ConfigureAwait(false);
+            wait.Cancel();
+        }
+        ct.ThrowIfCancellationRequested();
+        if (_lifetime.IsCancellationRequested)
+            throw new InvalidOperationException(UnavailableMessage);
+        var stillInstalled = string.Equals(_installedModelPath(entry.Id), path, StringComparison.OrdinalIgnoreCase);
+        lock (_state)
+        {
+            if (_closed)
+                throw new InvalidOperationException(UnavailableMessage);
+            if (_deleting.Contains(entry.Id) || !stillInstalled)
+                throw new InvalidOperationException(NotInstalledMessage);
+            if (_warmups.TryGetValue(identity, out var current))
+                throw StillChecking(entry.Id, current);
+            // The check leaves _warmups under this lock and completes just after it: still checking for this dictation.
+            if (!running.IsCompleted)
+                throw StillChecking(entry.Id, running);
+            if (running.Result != FirstUseCheckOutcome.Ready)
+            {
+                Logger.Information("On this PC: {LocalModelId}'s first-use check ended without a usable result - the transcription is used unchanged", entry.Id);
+                throw new InvalidOperationException(UnavailableMessage);
+            }
+            ApplyStoredVerdictLocked(identity);
+            var route = RouteModeLocked(identity);
+            _inFlight++;
+            return route;
+        }
+    }
+
     /// <summary>
     /// One enhancement on the bundled engine: warm-up gate, lease, token budget and admission, then
     /// the shared OpenAI-compatible client against the child's loopback port and per-child key.
@@ -371,7 +419,8 @@ public sealed class OnThisPcEngine : IDisposable
             throw new InvalidOperationException(NotInstalledMessage);
         var identity = IdentityOf(entry);
 
-        LlamaLaunchMode? route;
+        LlamaLaunchMode? route = null;
+        Task<FirstUseCheckOutcome>? running = null;
         lock (_state)
         {
             if (_closed)
@@ -379,14 +428,20 @@ public sealed class OnThisPcEngine : IDisposable
             if (_deleting.Contains(entry.Id))
                 throw new InvalidOperationException(NotInstalledMessage);
             ApplyStoredVerdictLocked(identity);
-            if (StartWarmupIfOwedLocked(entry, path, identity) || _warmups.ContainsKey(identity))
+            StartWarmupIfOwedLocked(entry, path, identity);
+            if (_warmups.TryGetValue(identity, out running))
             {
-                Logger.Information("On this PC: {LocalModelId} is still on its first-use check - the transcription is used unchanged", entry.Id);
-                throw new InvalidOperationException(GettingReadyMessage);
+                if (_firstUseWaitBudget <= TimeSpan.Zero)
+                    throw StillChecking(entry.Id, running);
             }
-            route = RouteModeLocked(identity);
-            _inFlight++;
+            else
+            {
+                route = RouteModeLocked(identity);
+                _inFlight++;
+            }
         }
+        if (running is not null)
+            route = await AdmitAfterFirstUseCheckAsync(entry, path, identity, running, ct).ConfigureAwait(false);
 
         CancellationTokenSource? linked = null;
         var ownsUseGate = false;
@@ -643,7 +698,7 @@ public sealed class OnThisPcEngine : IDisposable
     /// then prepares it - unless the check ended without a verdict, which keeps admission shut.</summary>
     private async Task PrepareAfterCheckAsync(LocalModelEntry entry, string path, string identity, string? warmSystemPrompt)
     {
-        Task? check;
+        Task<FirstUseCheckOutcome>? check;
         lock (_state)
         {
             if (_closed || _deleting.Contains(entry.Id))
@@ -1006,13 +1061,14 @@ public sealed class OnThisPcEngine : IDisposable
     {
         if (_warmups.ContainsKey(identity) || !IsWarmupOwedLocked(identity))
             return false;
-        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource<FirstUseCheckOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancel = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _warmups[identity] = gate.Task;
         _warmupCancels[identity] = cancel;
         _ = Task.Run(async () =>
         {
             var outcome = WarmupOutcome.Inconclusive;
+            var forDictation = FirstUseCheckOutcome.NotMade;
             try
             {
                 outcome = await RunWarmupAsync(entry, path, identity, cancel.Token).ConfigureAwait(false);
@@ -1044,11 +1100,15 @@ public sealed class OnThisPcEngine : IDisposable
                             _warmupsDone.Add(identity);
                         }
                     }
+                    // LAI-32: only a settled check with no failed GPU lets a waiting dictation run (decision 3: Fail, Busy, no verdict say so once).
+                    if (outcome == WarmupOutcome.Settled && !_closed && !_deleting.Contains(entry.Id)
+                        && VerdictLocked(identity)?.Verdict != LlamaSelfTestVerdict.Fail)
+                        forDictation = FirstUseCheckOutcome.Ready;
                     _warmups.Remove(identity);
                     _warmupCancels.Remove(identity);
                 }
                 cancel.Dispose();
-                gate.TrySetResult();
+                gate.TrySetResult(forDictation);
             }
         });
         Logger.Information("On this PC: first-use check started for {LocalModelId}", entry.Id);
@@ -1474,7 +1534,7 @@ public sealed class OnThisPcEngine : IDisposable
         lock (_state)
         {
             _closed = true;
-            pending = _warmups.Values.Concat(_prepare is { } p ? [p] : []).ToArray();
+            pending = _warmups.Values.Concat<Task>(_prepare is { } p ? [p] : []).ToArray();
         }
         _lifetime.Cancel();
         var joined = true;

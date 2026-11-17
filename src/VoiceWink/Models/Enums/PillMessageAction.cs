@@ -17,4 +17,7 @@ public enum PillMessageAction
     /// <summary>Open the License page in the main window (restoring it from the tray if needed)
     /// and dismiss the pill — the reason has been seen.</summary>
     OpenLicensePage,
+
+    /// <summary>LAI-32: copy the built-in model's late AI version to the clipboard; never pasted.</summary>
+    CopyEnhancedText,
 }

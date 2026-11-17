@@ -1868,6 +1868,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
         var tooltip = action switch
         {
             PillMessageAction.OpenLicensePage => "Click to open the License page",
+            PillMessageAction.CopyEnhancedText => Services.AIEnhancement.LocalEngine.FirstUseFollowUpPolicy.CopyCue,
             _ => null,
         };
         ToolTipService.SetToolTip(_pillBorder, tooltip);
