@@ -5588,7 +5588,8 @@ public partial class MainViewModel : ObservableObject
             // pill shows "Transcribing..."/"Downloading X..." during a long model wait, never a
             // frozen "Recording...") and cancellable via the pipeline token (the pill stop
             // button reaches a mid-download wait). No-op for cold recordings and retries.
-            await AwaitRecordingPreflightAsync(ct);
+            await Helpers.StopStageWatch.RunAsync(
+                "recording preflight (speech model load)", () => AwaitRecordingPreflightAsync(ct));
 
             // Capture and clear App Mode config early — all paths (including early returns) must
             // clear it (the byte-check aborts above do so via AbortToIdle)
@@ -5656,7 +5657,9 @@ public partial class MainViewModel : ObservableObject
             // silence + one click". The empty-transcript pill needs the distinction: telling a user
             // to switch engines is safe advice only when something actually heard speech.
             Helpers.NoSpeechVerdict? gateVerdict = null;
-            var prepared = await _audioPreparation.PrepareAsync(
+            var prepared = await Helpers.StopStageWatch.RunAsync(
+                "no-speech gate and audio preparation",
+                () => _audioPreparation.PrepareAsync(
                     recordingPath,
                     isRetry: retry != null,
                     () => Helpers.NoSpeechGateRouting.ShouldBlockAsync(
@@ -5668,7 +5671,7 @@ public partial class MainViewModel : ObservableObject
                             return verdict;
                         },
                         () => TranscriptionOutputFilter.IsSilentWav(recordingPath)),
-                    ct);
+                    ct));
 
             // AUD-36 (2026-09-17): a BLOCK is final only for the engines the gate exists for. When
             // the attempt's engine is Parakeet — measured silent on the whole must-block corpus,

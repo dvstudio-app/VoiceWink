@@ -19,8 +19,8 @@ namespace VoiceWink.Helpers;
 /// <see cref="ReasonPhrase"/> and is logged only as a <c>{ReasonPhrase}</c> property, which IS
 /// allowlisted — so the local file sink keeps a BOUNDED EXCERPT and Sentry gets
 /// <c>&lt;REDACTED&gt;</c>. Bounded, NOT full, and the first wording here said "full fidelity" which
-/// was false: all three log sites pass the phrase through <c>TruncateForLog</c> (200 chars — the same
-/// bound <c>{Body}</c> takes, deliberately, because a hostile endpoint can send an unbounded phrase).
+/// was false: all three log sites pass the phrase through <c>TruncateForLog</c> (200 chars,
+/// deliberately, because a hostile endpoint can send an unbounded phrase).
 /// The untruncated value survives only on <see cref="ReasonPhrase"/>.</para>
 /// <para><b>Residual, stated rather than assumed:</b> the support zip and the GDPR export scrub
 /// RENDERED log lines through <c>RedactString</c>, which has no reason-phrase token, so the phrase

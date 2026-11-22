@@ -98,7 +98,7 @@ internal static class HttpResponseExtensions
     {
         if (response.IsSuccessStatusCode) return;
 
-        // Read the body for diagnostics. The local file sink shows the truncated body
+        // Read the body for diagnostics. The local file sink shows the body (up to ErrorBodyLogChars)
         // verbatim; the Sentry sub-logger's LogRedactionEnricher scrubs <see cref="LogRedactionEnricher.RedactedPropertyNames"/>
         // (Body is in that set) before it becomes a breadcrumb. If the read itself fails,
         // fall back to the status-only log so we still throw the original HTTP error.
@@ -128,7 +128,7 @@ internal static class HttpResponseExtensions
         }
 
         logger.Warning("{Provider} API returned {Status} (ContentLength={ContentLength}); Body={Body}; ReasonPhrase={ReasonPhrase}",
-            providerName, (int)response.StatusCode, response.Content.Headers.ContentLength, body.TruncateForLog(),
+            providerName, (int)response.StatusCode, response.Content.Headers.ContentLength, body.TruncateErrorBodyForLog(),
             response.ReasonPhrase?.TruncateForLog());
         // ENH-1: carry the provider's structured error text for UI surfaces. Message stays free of
         // response-BODY text; the extracted text rides UserMessage. SEC-2: it is also free of the

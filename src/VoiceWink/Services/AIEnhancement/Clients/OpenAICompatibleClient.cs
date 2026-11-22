@@ -242,7 +242,7 @@ public sealed class OpenAICompatibleClient
         // entirely on this path, since it is the SECOND ProviderApiException creation site and
         // does not go through EnsureSuccessOrLogAndThrowAsync.
         Logger.Warning("API returned {Status}; Body={Body}; ReasonPhrase={ReasonPhrase}",
-            (int)response.StatusCode, errorBody.TruncateForLog(), response.ReasonPhrase?.TruncateForLog());
+            (int)response.StatusCode, errorBody.TruncateErrorBodyForLog(), response.ReasonPhrase?.TruncateForLog());
         // ENH-1: this inline branch is the text-enhancement path (Gemini et al.) —
         // throw the same provider-message-carrying exception as
         // EnsureSuccessOrLogAndThrowAsync so pill/status surfaces can show WHY.

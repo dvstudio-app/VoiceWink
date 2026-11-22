@@ -108,7 +108,9 @@ public static class AppModeTemplates
         Name = "Visual Studio Code",
         ProcessPatterns = ["code"],
         Icon = "E943",
-        Description = "Visual Studio Code editor"
+        Description = "Visual Studio Code editor",
+        DefaultEnhancementTitle = "Coding agent",
+        DefaultEnhancementKey = "coding-agent"
     };
 
     public static readonly AppModeTemplate VisualStudio = new()
@@ -117,7 +119,9 @@ public static class AppModeTemplates
         Name = "Visual Studio",
         ProcessPatterns = ["devenv"],
         Icon = "E943",
-        Description = "Visual Studio IDE"
+        Description = "Visual Studio IDE",
+        DefaultEnhancementTitle = "Coding agent",
+        DefaultEnhancementKey = "coding-agent"
     };
 
     public static readonly AppModeTemplate Slack = new()
@@ -179,7 +183,9 @@ public static class AppModeTemplates
         Name = "Windows Terminal",
         ProcessPatterns = ["windowsterminal", "cmd", "powershell", "pwsh"],
         Icon = "E756",
-        Description = "Windows Terminal, Command Prompt, and PowerShell"
+        Description = "Windows Terminal, Command Prompt, and PowerShell",
+        DefaultEnhancementTitle = "Coding agent",
+        DefaultEnhancementKey = "coding-agent"
     };
 }
 

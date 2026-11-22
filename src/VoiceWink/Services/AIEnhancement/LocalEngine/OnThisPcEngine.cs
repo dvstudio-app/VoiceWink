@@ -115,6 +115,8 @@ public sealed class OnThisPcEngine : IDisposable
     private readonly Dictionary<string, int> _inconclusiveWarmups = new(StringComparer.Ordinal);
     private readonly Dictionary<string, LlamaGpuCheckStore.Entry?> _verdicts = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int?> _cpuSpeeds = new(StringComparer.Ordinal);
+    /// <summary>LAI-35b: the post-download processor timings running, per model, so unload and erasure wait for them.</summary>
+    private readonly Dictionary<string, Task> _cpuTimings = new(StringComparer.Ordinal);
     private CancellationTokenSource? _cpuTimingCts;
     private TaskCompletionSource _speedMeasured = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -290,6 +292,15 @@ public sealed class OnThisPcEngine : IDisposable
     private bool CpuTimingOwedLocked(string identity)
         => !_closed && CpuSpeedLocked(identity) is null
            && VerdictLocked(identity) is not { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Cpu };
+
+    /// <summary>LAI-35b: the model would load on the graphics card, so a processor timing would only load it for nothing.</summary>
+    private bool OnGpuRouteLocked(string identity)
+        => !RunsOnProcessor && !_sessionCpu.Contains(identity)
+           && VerdictLocked(identity) is { Verdict: LlamaSelfTestVerdict.Pass, Route: LlamaRoute.Gpu };
+
+    /// <summary>Anything that is using the child or could still load one: a dictation, a check, a prepare, a processor timing.</summary>
+    private bool EngineBusyLocked()
+        => _inFlight > 0 || _warmups.Count > 0 || _prepare is { IsCompleted: false } || _cpuTimings.Count > 0;
 
     /// <summary>Times the paragraph on a child serving this model on the processor, once, and stores
     /// it (2026-10-03, Codex plan round: a model on the CPU was never timed, so its stars and "Best for
@@ -1000,8 +1011,12 @@ public sealed class OnThisPcEngine : IDisposable
             var identity = IdentityOf(entry);
             ApplyStoredVerdictLocked(identity);
             StartWarmupIfOwedLocked(entry, path, identity);
-            _ = TimeOnProcessorAfterCheckAsync(entry, path, identity,
-                _warmups.TryGetValue(identity, out var check) ? check : Task.CompletedTask);
+            var checking = _warmups.TryGetValue(identity, out var check);
+            if (_cpuTimings.ContainsKey(identity)
+                || (!checking && (!CpuTimingOwedLocked(identity) || OnGpuRouteLocked(identity))))
+                return;
+            // LAI-35b: on the pool, never inline under this lock, and registered before this returns so a residency sync sees it.
+            _cpuTimings[identity] = Task.Run(() => TimeOnProcessorAfterCheckAsync(entry, path, identity, check ?? Task.CompletedTask));
         }
     }
 
@@ -1016,7 +1031,8 @@ public sealed class OnThisPcEngine : IDisposable
             LlamaLaunchMode? route;
             lock (_state)
             {
-                if (_closed || _deleting.Contains(entry.Id) || IsWarmupOwedLocked(identity) || !CpuTimingOwedLocked(identity))
+                if (_closed || _deleting.Contains(entry.Id) || IsWarmupOwedLocked(identity) || !CpuTimingOwedLocked(identity)
+                    || OnGpuRouteLocked(identity))
                     return;
                 route = RouteModeLocked(identity);
             }
@@ -1025,6 +1041,11 @@ public sealed class OnThisPcEngine : IDisposable
         catch (Exception ex)
         {
             Logger.Debug("On this PC: processor timing after the check skipped: {ErrorType}", ex.GetType().Name);
+        }
+        finally
+        {
+            lock (_state)
+                _cpuTimings.Remove(identity);
         }
     }
 
@@ -1390,7 +1411,7 @@ public sealed class OnThisPcEngine : IDisposable
     {
         lock (_state)
         {
-            if (_closed || !_process.HasResident || _inFlight > 0 || _warmups.Count > 0 || _prepare is { IsCompleted: false })
+            if (_closed || !_process.HasResident || EngineBusyLocked())
                 return false;
             _unloading++;   // from here a dictation takes the gated acquire, never the dying child
         }
@@ -1400,7 +1421,7 @@ public sealed class OnThisPcEngine : IDisposable
             {
                 lock (_state)
                 {
-                    return _process.HasResident && _inFlight == 0 && _warmups.Count == 0 && _prepare is not { IsCompleted: false };
+                    return _process.HasResident && !EngineBusyLocked();
                 }
             }).ConfigureAwait(false);
             if (retired)
@@ -1438,8 +1459,7 @@ public sealed class OnThisPcEngine : IDisposable
                 lock (_state)
                 {
                     // Nothing loaded AND nothing that could still load one (Codex diff r1 A1).
-                    if (!_process.HasResident && _inFlight == 0 && _warmups.Count == 0
-                        && _prepare is not { IsCompleted: false })
+                    if (!_process.HasResident && !EngineBusyLocked())
                         return false;
                 }
                 if (await UnloadAsync().ConfigureAwait(false))
@@ -1534,7 +1554,7 @@ public sealed class OnThisPcEngine : IDisposable
         lock (_state)
         {
             _closed = true;
-            pending = _warmups.Values.Concat<Task>(_prepare is { } p ? [p] : []).ToArray();
+            pending = _warmups.Values.Concat<Task>(_cpuTimings.Values).Concat<Task>(_prepare is { } p ? [p] : []).ToArray();
         }
         _lifetime.Cancel();
         var joined = true;

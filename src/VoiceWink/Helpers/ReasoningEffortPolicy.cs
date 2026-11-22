@@ -183,11 +183,10 @@ public static class ReasoningEffortPolicy
     /// <summary>
     /// ENH-23: Gemini ids whose thinking can be switched OFF — the OpenAI-compat docs allow
     /// <c>reasoning_effort: "none"</c> on 2.5 models other than Pro ("Reasoning cannot be turned
-    /// off for Gemini 2.5 Pro or 3 models"). Exact canonical ids.
+    /// off for Gemini 2.5 Pro or 3 models"). Exact canonical ids; 2.5 Flash moved to minimal (ENH-41).
     /// </summary>
     private static readonly string[] GeminiNoThinkingModels =
     {
-        "gemini-2-5-flash",
         "gemini-2-5-flash-lite",
     };
 
@@ -206,6 +205,8 @@ public static class ReasoningEffortPolicy
     /// </summary>
     private static readonly string[] GeminiMinimalThinkingModels =
     {
+        // ENH-41: Google routes gemini-2.5-flash to gemini-3.5-flash-lite from 2026-12-01, which answers "none" with HTTP 400.
+        "gemini-2-5-flash",
         "gemini-3-flash-preview",
         "gemini-3-5-flash",
         "gemini-3-5-flash-lite",

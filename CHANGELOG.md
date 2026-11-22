@@ -17,6 +17,12 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.130.433] - 2026-11-22
+
+- AI enhancement with Gemini 2.5 Flash keeps working after Google's model change on 1 December.
+- The Gemini model list for AI enhancement hides Genie 4, which cannot write text.
+- New "Coding agent" enhancement: rewrites dictation as an instruction for a coding agent.
+
 ## [1.129.432] - 2026-11-16
 
 - Built-in AI: a model file the VoiceWink server cannot deliver now downloads from Hugging Face, if it is published there.

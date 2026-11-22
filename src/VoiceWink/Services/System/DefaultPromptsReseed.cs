@@ -182,6 +182,12 @@ public static class DefaultPromptsReseed
 
     // ── Prompts reconcile ───────────────────────────────────────────────────
 
+    // PRM-8: closed list. Only these could be stored without a SeedKey; a later template adopted by title would overwrite a user's own prompt.
+    private static readonly HashSet<string> PreSeedKeyPromptKeys = new(global::System.StringComparer.Ordinal)
+    {
+        "improve-accuracy", "assistant", "chat", "email", "generate-image",
+    };
+
     private static bool ReconcilePrompts(
         JsonArray arr, Dictionary<string, string> storedHashes, bool domainPresent,
         Dictionary<string, string> newMap)
@@ -195,7 +201,7 @@ public static class DefaultPromptsReseed
         // the renamed build (auto-update skips intermediate versions) would leave it orphaned and
         // unrenamed, and null out any App-Mode link derived from its key. Map each renamed
         // default's old title to its immutable key here. Keys never change (see PromptTemplates).
-        var titleToKey = PromptTemplates.All.Select(t => (t.Key, t.Title))
+        var titleToKey = PromptTemplates.All.Where(t => PreSeedKeyPromptKeys.Contains(t.Key)).Select(t => (t.Key, t.Title))
             .Append(("improve-accuracy", "Improve Accuracy")); // renamed -> "Improve Transcription" (2026-07-22)
         var changed = AdoptLegacyBySingleField(arr, "Title", titleToKey);
 

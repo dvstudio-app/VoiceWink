@@ -119,7 +119,7 @@ internal static class ProviderCatalogParser
         // Gemini publishes NO capability metadata on this endpoint (the native
         // supportedGenerationMethods is stripped), so its TEXT list goes through the Curated branch
         // (GeminiModelCatalog, ENH-9) — the injected shared baseline, whose HasLiveSegment hides the
-        // bidi-only Live ids, plus ENH-40's Decisions-API rule. TEXT query only: the
+        // bidi-only Live ids, plus Gemini's own non-text family rule (ENH-40, ENH-44). TEXT query only: the
         // image query must stay uncurated so ApplyDisplayPolicy's IsImageModel branch keeps building
         // the image list — a Curated image result without an image filter would dump the whole
         // catalog into the picker.

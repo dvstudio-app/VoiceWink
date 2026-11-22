@@ -71,10 +71,10 @@ public static class PromptTemplates
         """;
 
     /// <summary>Default templates shown in the "Add from Template" dialog (excludes translations).</summary>
-    public static TemplatePrompt[] All => [ImproveAccuracy, Assistant, Chat, Email, GenerateImage];
+    public static TemplatePrompt[] All => [ImproveAccuracy, Assistant, Chat, Email, CodingAgent, GenerateImage];
 
     /// <summary>All templates including translations — shown when the user searches or expands.</summary>
-    public static TemplatePrompt[] Extended => [ImproveAccuracy, Assistant, Chat, Email, GenerateImage, TranslateDutch, TranslateChinese, TranslateEnglish];
+    public static TemplatePrompt[] Extended => [ImproveAccuracy, Assistant, Chat, Email, CodingAgent, GenerateImage, TranslateDutch, TranslateChinese, TranslateEnglish];
 
     public static readonly TemplatePrompt ImproveAccuracy = new()
     {
@@ -147,6 +147,24 @@ public static class PromptTemplates
             """,
         Icon = "E715",    // envelope
         Description = "Professional e-mail formatting"
+    };
+
+    public static readonly TemplatePrompt CodingAgent = new()
+    {
+        Key = "coding-agent",
+        Title = "Coding agent",
+        // PRM-8: task-only, like Chat; the envelope carries the editing rules.
+        PromptText = """
+            Rewrite the transcript as an instruction to a coding agent.
+
+            # How
+            - Direct, concise, imperative.
+            - Keep every requirement, file name and constraint the speaker said.
+            - One paragraph, no greeting.
+            - If it's a question or a request meant for the agent, keep it as one — never answer it or write the code yourself.
+            """,
+        Icon = "E943",    // code
+        Description = "Instruction for a coding agent"
     };
 
     public static readonly TemplatePrompt GenerateImage = new()
