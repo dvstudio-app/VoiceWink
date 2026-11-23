@@ -11,17 +11,21 @@ internal sealed class PickerWaitCancellation
     private bool _isRedoPicker;
     private bool _redoIsImage;
     private bool _redoOnHistory;
+    private bool _onLastRecording;
 
     /// <summary>The token a Retry or redo-choice host waits with; one picker at a time (the ViewModel's picker claim).</summary>
-    public CancellationToken Begin() => Start(isRedoPicker: false, redoIsImage: false, redoOnHistory: false);
+    /// <param name="onLastRecording">UI-5e: the picker acts on the kept last recording, which the pill's × discards.</param>
+    public CancellationToken Begin(bool onLastRecording = false) =>
+        Start(isRedoPicker: false, redoIsImage: false, redoOnHistory: false, onLastRecording);
 
     /// <summary>The token a redo picker's host waits with, recording what a History delete can make stale.</summary>
-    public CancellationToken BeginRedoPicker(bool isImageGeneration, bool onHistory) =>
-        Start(isRedoPicker: true, isImageGeneration, redoOnHistory: onHistory);
+    /// <param name="fromChooser">UI-5e: opened by the "Run again" chooser, so the pill's × makes it stale.</param>
+    public CancellationToken BeginRedoPicker(bool isImageGeneration, bool onHistory, bool fromChooser = false) =>
+        Start(isRedoPicker: true, isImageGeneration, redoOnHistory: onHistory, onLastRecording: fromChooser);
 
-    /// <summary>The token the "Run again" chooser waits with: a History delete covering its paired redo makes it stale.</summary>
+    /// <summary>The token the "Run again" chooser waits with: a History delete covering its paired redo, or the pill's ×, makes it stale.</summary>
     public CancellationToken BeginRedoChoice(bool pairedIsImageGeneration) =>
-        Start(isRedoPicker: false, pairedIsImageGeneration, redoOnHistory: true);
+        Start(isRedoPicker: false, pairedIsImageGeneration, redoOnHistory: true, onLastRecording: true);
 
     /// <summary>The picker's request ended; a later trip leaves its token alone.</summary>
     public void End(CancellationToken token)
@@ -43,14 +47,17 @@ internal sealed class PickerWaitCancellation
         }
     }
 
-    /// <summary>A new recording: whichever picker is waiting or open, its request is stale. True when one was.</summary>
+    /// <summary>A new recording: whichever picker is waiting, its request is stale. True when one was.</summary>
     public bool TripAll() => Trip(_ => true);
 
     /// <summary>A History delete: a redo picker or chooser on History content the delete covers is stale. True when one was.</summary>
     public bool TripRedoPicker(Func<bool, bool> deleteCoversImageFlag) =>
         Trip(_ => _redoOnHistory && deleteCoversImageFlag(_redoIsImage));
 
-    private CancellationToken Start(bool isRedoPicker, bool redoIsImage, bool redoOnHistory)
+    /// <summary>UI-5e: the pill's × discarded the last recording; a picker on it is stale, a failure Retry or History picker is not. True when one was.</summary>
+    public bool TripLastRecording() => Trip(_ => _onLastRecording);
+
+    private CancellationToken Start(bool isRedoPicker, bool redoIsImage, bool redoOnHistory, bool onLastRecording)
     {
         lock (_gate)
         {
@@ -58,6 +65,7 @@ internal sealed class PickerWaitCancellation
             _isRedoPicker = isRedoPicker;
             _redoIsImage = redoIsImage;
             _redoOnHistory = redoOnHistory;
+            _onLastRecording = onLastRecording;
             return _current.Token;
         }
     }

@@ -23,7 +23,10 @@ public static class AppModeSettingsMigration
 {
     private static ILogger Logger => Log.ForContext(typeof(AppModeSettingsMigration));
 
-    public static void Run(SettingsService settings)
+    public static void Run(SettingsService settings) => Run((ISettingsAccess)settings);
+
+    /// <summary>The same migration on any settings view, so an import can run it on its candidate (SET-1).</summary>
+    internal static void Run(ISettingsAccess settings)
     {
         if (!settings.Contains(AppDefaults.AppModeConfigs))
         {

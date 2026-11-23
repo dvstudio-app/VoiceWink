@@ -61,6 +61,11 @@ internal static class TranscriptionLanguageResolver
                 LanguageSource.Global);
     }
 
+    /// <summary>TRN-101: the prompt whose language override applies; AI off drops only the globally active one, which several paths leave active.</summary>
+    internal static (CustomPrompt? Prompt, PromptSource Source) ForRecognition(
+        CustomPrompt? prompt, PromptSource source, bool enhancementEnabled)
+        => source == PromptSource.Active && !enhancementEnabled ? (null, PromptSource.None) : (prompt, source);
+
     /// <summary>The whisper/cloud "detect it" sentinel, and the global setting's own default.</summary>
     internal const string AutoLanguage = "auto";
 }

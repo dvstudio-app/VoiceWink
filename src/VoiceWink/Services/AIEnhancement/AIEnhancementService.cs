@@ -140,19 +140,6 @@ public sealed class AIEnhancementService
         _apiKeys.KeyChanged += InvalidateModelListCacheForProviderName;
     }
 
-    /// <summary>
-    /// IMG-10b key-change invalidation. NON-THROWING BY CONSTRUCTION — it runs inline
-    /// inside <see cref="ApiKeyManager.SetApiKey"/>, including the key-validation
-    /// ROLLBACK path, where a throw would break rollback UX out of a bool-returning
-    /// API: lock + dictionary removals + an epoch bump, no logging, no user code.
-    /// The parse is CASE-INSENSITIVE and that is load-bearing (plan review): every
-    /// production key-save site passes <c>provider.ToString().ToLowerInvariant()</c>,
-    /// so a default (case-sensitive) TryParse would never match and this whole
-    /// mechanism would be dead code. An unparseable name (a transcription-only
-    /// provider like "deepgram" sharing the key store) has nothing cached under it and
-    /// invalidates nothing; "groq" parses and over-invalidates the AI-side cache on a
-    /// transcription-side key change — harmless by design.
-    /// </summary>
     /// <summary>LAI-1: the fetch-error line when a local server refuses the connection.</summary>
     internal const string LocalServerUnreachableMessage = "No server is answering at this address. Is it running?";
 
@@ -179,6 +166,20 @@ public sealed class AIEnhancementService
     /// </summary>
     public void InvalidateModelLists(AIProvider provider) => InvalidateModelListCacheForProviderName(provider.ToString());
 
+    /// <summary>
+    /// IMG-10b key-change invalidation. NON-THROWING BY CONSTRUCTION — it runs inline
+    /// inside <see cref="ApiKeyManager.SetApiKey"/>, including the key-validation
+    /// ROLLBACK path, where a throw would break rollback UX out of a bool-returning
+    /// API: lock + dictionary removals + an epoch bump, and on an OpenRouter key change
+    /// IMG-11's fail-soft snapshot removal (its only log line), no user code.
+    /// The parse is CASE-INSENSITIVE and that is load-bearing (plan review): every
+    /// production key-save site passes <c>provider.ToString().ToLowerInvariant()</c>,
+    /// so a default (case-sensitive) TryParse would never match and this whole
+    /// mechanism would be dead code. An unparseable name (a transcription-only
+    /// provider like "deepgram" sharing the key store) has nothing cached under it and
+    /// invalidates nothing; "groq" parses and over-invalidates the AI-side cache on a
+    /// transcription-side key change — harmless by design.
+    /// </summary>
     private void InvalidateModelListCacheForProviderName(string providerName)
     {
         if (!Enum.TryParse<AIProvider>(providerName, ignoreCase: true, out var provider))
@@ -191,8 +192,20 @@ public sealed class AIEnhancementService
         // the image lock here freezes the epoch for the duration of any publication's critical
         // section. Direction stays image → model, matching EnsureImageCapabilitiesAsync and the
         // admit predicate; a model → image path anywhere would close the cycle. Safe to hold
-        // here because this body is dictionary work only — no settings write, no user code.
+        // here because this body is dictionary work only — its one settings call (IMG-11's Remove)
+        // is an in-memory cache edit that raises nothing — and runs no user code.
         lock (_imageCapabilityLock)
+        {
+            InvalidateModelListStateLocked(provider);
+            // IMG-11: fence AND clear — the key is written before this runs, so a publication admitted in that gap is removed here.
+            if (provider == AIProvider.OpenRouter)
+                ClearImageCapabilitySnapshotLocked();
+        }
+    }
+
+    /// <summary>Caller must hold <see cref="_imageCapabilityLock"/>.</summary>
+    private void InvalidateModelListStateLocked(AIProvider provider)
+    {
         lock (_modelListLock)
         {
             foreach (var key in _modelListCache.Keys.Where(k => k.Item1 == provider).ToList())
@@ -523,9 +536,33 @@ public sealed class AIEnhancementService
                 snapshot, StringComparer.OrdinalIgnoreCase);
             _imageCapabilitiesRaw = raw;
             _imageCapabilitiesPresent = true;
+            // IMG-31: a fresh capture is the array shape, so a legacy flag from the loaded snapshot must not outlive it.
+            _imageCapabilitiesLegacyShape = false;
         }
 
         Logger.Information("Image capabilities cached: {Count} models", snapshot.Count);
+    }
+
+    /// <summary>IMG-11: forget the snapshot an old key's fetch may have published, so the next generation fetches it again. Caller must hold <see cref="_imageCapabilityLock"/>.</summary>
+    private void ClearImageCapabilitySnapshotLocked()
+    {
+        try
+        {
+            _settings.Remove(ImageCapabilitiesKey);
+        }
+        catch (Exception ex)
+        {
+            // Fail soft like the capture: the key change already committed and its epoch is bumped.
+            Logger.Warning("Failed to clear image capabilities: {ErrorType}: {ErrorMessage}",
+                ex.GetType().Name, ex.Message);
+        }
+
+        // Null forces LoadImageCapabilities to re-read settings rather than answer from memory.
+        _imageCapabilities = null;
+        _imageCapabilitiesRaw = null;
+        _imageCapabilitiesPresent = false;
+        _imageCapabilitiesLegacyShape = false;
+        _imageCapabilityHydration = null;
     }
 
     /// <summary>

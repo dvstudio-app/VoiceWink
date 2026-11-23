@@ -101,7 +101,7 @@ public sealed class ImageGenerationClient
         // method's state machine, which stays rooted across the fallback awaits; and on
         // .NET 8, Dispose() does not drop HttpContent's buffered MemoryStream backing
         // array — only unreachability frees the ~50 MB. Only the decoded bytes / parsed
-        // URL / bounded excerpt escape the helper.
+        // URL escape the helper.
         var gate = _config.BatchContext?.ResponseMaterializationGate;
         var extraction = await SendAndExtractGenerationAsync(endpoint, json, model, size, quality, gate, ct).ConfigureAwait(false);
 
@@ -125,7 +125,8 @@ public sealed class ImageGenerationClient
         var downloadCt = downloadCts.Token;
         try
         {
-            return RejectUnstorableFormat(await ProviderResponseGuard.RunAsync(Logger, "Image", extraction.Excerpt, async () =>
+            // IMG-30: never the reply excerpt here; its signed URL would survive the support-bundle scrub.
+            return RejectUnstorableFormat(await ProviderResponseGuard.RunAsync(Logger, "Image", "[image URL omitted]", async () =>
             {
                 Logger.Information("Image received as URL, downloading...");
                 using var imgResponse = await _http.GetWithImageTimeoutTranslationAsync(
@@ -157,6 +158,9 @@ public sealed class ImageGenerationClient
                             throw new InvalidOperationException($"Image download exceeded {maxImageBytes / (1024 * 1024)} MB");
                         ms.Write(buffer, 0, read);
                     }
+                    // IMG-30: an empty body is a failed download, never a finished image.
+                    if (totalRead == 0)
+                        throw new InvalidOperationException("Image download returned no data");
                     return ms.ToArray();
                 }, downloadCt).ConfigureAwait(false);
             }).ConfigureAwait(false));
@@ -187,7 +191,7 @@ public sealed class ImageGenerationClient
     /// JsonDocument disposes inside the gated body, before the gate releases. Null
     /// gate = today's single-image path.
     /// </summary>
-    private async Task<(byte[]? Bytes, Uri? Url, string Excerpt)> SendAndExtractGenerationAsync(
+    private async Task<(byte[]? Bytes, Uri? Url)> SendAndExtractGenerationAsync(
         string endpoint, string json, string model, string? size, string? quality,
         SemaphoreSlim? gate, CancellationToken ct)
     {
@@ -202,8 +206,8 @@ public sealed class ImageGenerationClient
         return await ImageBatchCallContext.RunGatedAsync(gate, async () =>
         {
             // The parsed reply stays LOCAL to this gated closure (diff r2): only the
-            // decoded result plus a bounded log excerpt survive it, so the full body can
-            // never be retained across a fallback download.
+            // decoded result survives it, so the full body can never be retained across
+            // a fallback download.
             using var reply = await response.Content.ReadImageJsonAsync(ct).ConfigureAwait(false);
             var doc = reply.Doc;
 
@@ -212,7 +216,7 @@ public sealed class ImageGenerationClient
             // JsonElement access (e.g. {"data":{}}) — because the outer enhancement catch
             // downgrades that exception type to Warning (provider-outcome semantics) and
             // 200-with-unexpected-shape is API drift that must reach Sentry.
-            var parsed = ProviderResponseGuard.Run(Logger, "Image", reply.Excerpt, () =>
+            return ProviderResponseGuard.Run(Logger, "Image", reply.Excerpt, () =>
             {
                 if (!doc.RootElement.TryGetProperty("data", out var dataArray) ||
                     dataArray.GetArrayLength() == 0)
@@ -240,7 +244,6 @@ public sealed class ImageGenerationClient
 
                 throw new InvalidOperationException("Image API response contained neither b64_json nor url");
             });
-            return (parsed.Bytes, parsed.Url, Excerpt: reply.Excerpt.TruncateForLog());
         }, ct).ConfigureAwait(false);
     }
 

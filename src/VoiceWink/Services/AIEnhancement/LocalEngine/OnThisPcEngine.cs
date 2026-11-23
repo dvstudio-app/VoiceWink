@@ -317,9 +317,9 @@ public sealed class OnThisPcEngine : IDisposable
         using var timing = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lock (_state)
         {
-            // A dictation already waiting cancelled nothing (there was no timing yet): it goes
-            // first, and the model is timed at a later prepare (self-review B2).
-            if (_inFlight > 0)
+            // A dictation or a delete already waiting cancelled nothing (there was no timing yet):
+            // it goes first, and the model is timed at a later prepare (self-review B2, LAI-36).
+            if (_inFlight > 0 || _deleting.Count > 0)
                 return;
             _cpuTimingCts = timing;
         }
@@ -330,7 +330,7 @@ public sealed class OnThisPcEngine : IDisposable
         }
         catch (OperationCanceledException) when (timing.IsCancellationRequested && !ct.IsCancellationRequested)
         {
-            Logger.Information("On this PC: the processor timing for {LocalModelId} stood down for a dictation", modelId);
+            Logger.Information("On this PC: the processor timing for {LocalModelId} stood down for a dictation or a delete", modelId);
             return;
         }
         finally
@@ -1516,6 +1516,8 @@ public sealed class OnThisPcEngine : IDisposable
                     // Any model's re-try: it can hold the slot past DeleteGateWait, and a cancelled
                     // re-try stores nothing (self-review).
                     retry = _gpuRetryCts;
+                    // LAI-36: a running processor timing holds the slot too; it runs again at the next prepare.
+                    try { _cpuTimingCts?.Cancel(); } catch (ObjectDisposedException) { }
                 }
                 CancelRetryAsync(retry);
             }

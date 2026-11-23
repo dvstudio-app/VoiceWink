@@ -932,6 +932,10 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(CanSkipCurrentEnhancement));
     }
 
+    /// <summary>True while a dictation's image-options dialog waits or is open; the pill names the wait (UI-5f).</summary>
+    [ObservableProperty]
+    private bool _isWaitingForImageOptions;
+
     // Public only for test-signature accessibility (xUnit theory rows); the
     // classifier itself stays internal.
     public enum StopTapAction { None, SkipEnhancement, CancelPipeline }
@@ -2632,7 +2636,7 @@ public partial class MainViewModel : ObservableObject
         }
 
         TranscriptionRetrySelection? selection;
-        var waitToken = _pickerWait.Begin();
+        var waitToken = _pickerWait.Begin(onLastRecording: !fromFailure);
         try
         {
             // Recency (REL-12): opening the retry picker IS the user's most recent intent, so the
@@ -2862,7 +2866,7 @@ public partial class MainViewModel : ObservableObject
 
         Helpers.RedoChoice? choice;
         // UI-5d: a History delete that retires the paired redo leaves this chooser with a dead "Run AI again".
-        var waitToken = pairedRedo != null ? _pickerWait.BeginRedoChoice(pairedRedo.WasImageGeneration) : _pickerWait.Begin();
+        var waitToken = pairedRedo != null ? _pickerWait.BeginRedoChoice(pairedRedo.WasImageGeneration) : _pickerWait.Begin(onLastRecording: true);
         try
         {
             CapturePickerPasteTarget(held.TargetWindow);
@@ -2906,6 +2910,9 @@ public partial class MainViewModel : ObservableObject
         // Only the chooser's AI picker belongs to the dismissed recording; a History picker stays valid.
         if (_pickerFromChooser) _redoCoordinator.InvalidatePending();
         _lastRecording.Discard("dismissed");
+        // UI-5e: a chooser, Retry or AI picker on the dismissed recording would still open once the dialog slot frees.
+        if (_pickerWait.TripLastRecording())
+            Logger.Information("Cancelled a picker on the dismissed recording");
     }
 
     /// <summary>
@@ -3171,7 +3178,7 @@ public partial class MainViewModel : ObservableObject
             ReleaseCapturedFocusedElement(CapturedFocusOwner.Redo);
             return;
         }
-        var waitToken = _pickerWait.BeginRedoPicker(ctx.WasImageGeneration, onHistory);
+        var waitToken = _pickerWait.BeginRedoPicker(ctx.WasImageGeneration, onHistory, fromChooser);
         try
         {
             var task = handler.Invoke(ctx.WasImageGeneration, ctx, waitToken);
@@ -4271,7 +4278,7 @@ public partial class MainViewModel : ObservableObject
     /// budget math at MiniRecorderWindow.PillWidthDips.
     /// </summary>
     internal static string ComposeFallbackFailureStatus(
-        bool wasImageAttempt, bool pasteLanded, string? reason, int maxLength = 55)
+        bool wasImageAttempt, bool pasteLanded, string? reason, int maxLength = 55, bool deliveryUncertain = false)
     {
         var what = wasImageAttempt ? "Image generation failed" : "Enhancement failed";
         // Name WHAT survived, not just that something did (owner, 2026-07-25): a bare "pasted"
@@ -4279,7 +4286,10 @@ public partial class MainViewModel : ObservableObject
         // paths — enhancement failed, or an image attempt failed — what reaches the user is the
         // plain transcription. Costs the reason budget ~14 chars; the reason is already
         // truncated for length, the outcome never is, so the outcome wins.
-        var outcome = pasteLanded ? "pasted transcription" : "transcription on clipboard";
+        // PST-23: an unconfirmed paste keeps PST-16's warning, or a landed text gets pasted twice.
+        var outcome = pasteLanded ? "pasted transcription"
+            : deliveryUncertain ? "check before Ctrl+V"
+            : "transcription on clipboard";
         if (string.IsNullOrWhiteSpace(reason))
             return TruncateForMiniRecorder($"{what} — {outcome}", what, maxLength);
 
@@ -5149,10 +5159,12 @@ public partial class MainViewModel : ObservableObject
         // trigger words are matched in the TRANSCRIPT, so they cannot participate. Reusing
         // PromptRunSnapshot.Resolve keeps that priority table in one already-pinned place.
         var startPrompts = Helpers.PromptRunSnapshot.Capture(_enhancement.GetPrompts(), resolvePendingPromptOverride());
-        var (startPrompt, startPromptSource) = startPrompts.Resolve(
+        var (resolvedStartPrompt, resolvedStartPromptSource) = startPrompts.Resolve(
             triggerFired: false,
             triggerPrompt: null,
             appModePrompt: startPrompts.FindById(appMode?.LinkedEnhancementId));
+        var (startPrompt, startPromptSource) = Helpers.TranscriptionLanguageResolver.ForRecognition(
+            resolvedStartPrompt, resolvedStartPromptSource, _enhancement.IsEnabled);
         // The GLOBAL language is read HERE too, so the resolved value is concrete. Leaving
         // "global" as null let a mid-recording Settings edit change this recording's language,
         // and made a retry re-read Settings later — recognising the same WAV differently than
@@ -6586,8 +6598,7 @@ public partial class MainViewModel : ObservableObject
                 // Unwrap the ONE captured value — text and budget together, so a structured provider
                 // reason composes at 110 (two lines) while app copy and internal text stay at 55.
                 var (fallbackStatus, fallbackTone) = EnhancementFallbackPresentation(
-                    pasteResult.Outcome == Helpers.PasteAttemptOutcome.ClipboardSetFailed,
-                    pasteLanded, enhancementFailure, enhancementFailureTone);
+                    pasteResult.Outcome, enhancementFailure, enhancementFailureTone);
                 if (trackFirstUse)
                     (fallbackStatus, fallbackTone) = (Services.AIEnhancement.LocalEngine.FirstUseFollowUpPolicy.WaitingMessage, MiniRecorderTone.Warning);
                 StatusText = fallbackStatus;
@@ -7365,8 +7376,6 @@ public partial class MainViewModel : ObservableObject
         // mutating the shared cached instance.
         if (prompt.AskImageSize && ShowImageOptionsPickerRequested != null)
         {
-            RecordingState = RecordingState.Enhancing;
-            StatusText = "Waiting for image options...";
             var provider = ResolvePromptProvider(prompt);
             var model = _enhancement.ResolveModelForPrompt(prompt);
 
@@ -7391,16 +7400,23 @@ public partial class MainViewModel : ObservableObject
             // already open, showing this dialog would throw (one ContentDialog per
             // XamlRoot) — fall into the existing cancel path instead.
             EnhancementDialogSelection? picked;
-            if (Interlocked.CompareExchange(ref _enhancementPickerActive, 1, 0) != 0)
+            IsWaitingForImageOptions = true; // UI-5f: before the flip, so the first Enhancing pill already names the wait
+            try
             {
-                Logger.Information("Image options picker unavailable — another enhancement dialog is open; cancelling image generation");
-                picked = null;
+                RecordingState = RecordingState.Enhancing;
+                StatusText = "Waiting for image options...";
+                if (Interlocked.CompareExchange(ref _enhancementPickerActive, 1, 0) != 0)
+                {
+                    Logger.Information("Image options picker unavailable — another enhancement dialog is open; cancelling image generation");
+                    picked = null;
+                }
+                else
+                {
+                    try { picked = await ShowImageOptionsPickerRequested.Invoke(pickerContext, ct); }
+                    finally { Interlocked.Exchange(ref _enhancementPickerActive, 0); }
+                }
             }
-            else
-            {
-                try { picked = await ShowImageOptionsPickerRequested.Invoke(pickerContext, ct); }
-                finally { Interlocked.Exchange(ref _enhancementPickerActive, 0); }
-            }
+            finally { IsWaitingForImageOptions = false; }
             // A dialog resolving with a selection just as Stop fires must still route through
             // the cancel path — the user asked to stop, not to generate (F20).
             if (ct.IsCancellationRequested)
@@ -7921,14 +7937,15 @@ public partial class MainViewModel : ObservableObject
     /// The dictation path's enhancement-fallback pill: its text and tone. A clipboard write that
     /// FAILED wins over the enhancement reason (Codex diff r1, LAI-17): the transcription is neither
     /// pasted nor on the clipboard, so the pill states that, red and persistent — the amber a
-    /// refused reply earns must never hide it.
+    /// refused reply earns must never hide it. An unconfirmed paste ends "check before Ctrl+V" (PST-23).
     /// </summary>
     internal static (string Status, MiniRecorderTone Tone) EnhancementFallbackPresentation(
-        bool clipboardSetFailed, bool pasteLanded, ProviderPillText? failure, MiniRecorderTone failureTone)
-        => clipboardSetFailed
+        Helpers.PasteAttemptOutcome pasteOutcome, ProviderPillText? failure, MiniRecorderTone failureTone)
+        => pasteOutcome == Helpers.PasteAttemptOutcome.ClipboardSetFailed
             ? (Helpers.PasteResultPresentation.ClipboardFailedMessage, MiniRecorderTone.Error)
-            : (ComposeFallbackFailureStatus(wasImageAttempt: false, pasteLanded,
-                failure?.Text, failure?.MaxCodeUnits ?? DefaultPillMaxCodeUnits), failureTone);
+            : (ComposeFallbackFailureStatus(wasImageAttempt: false, pasteLanded: pasteOutcome == Helpers.PasteAttemptOutcome.Pasted,
+                failure?.Text, failure?.MaxCodeUnits ?? DefaultPillMaxCodeUnits,
+                deliveryUncertain: pasteOutcome == Helpers.PasteAttemptOutcome.PasteDeliveryUncertain), failureTone);
 
     /// <summary>NET-5c: the pill for a model download that hit a full disk, on the cold
     /// recording-start path (the catch in <c>StartRecordingAsync</c>, reached when the standing

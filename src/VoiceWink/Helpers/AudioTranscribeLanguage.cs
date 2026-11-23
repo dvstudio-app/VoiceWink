@@ -14,7 +14,8 @@ internal static class AudioTranscribeLanguage
     {
         var (requested, _) = TranscriptionLanguageResolver.Resolve(
             retryLanguage: null,
-            effectivePrePrompt: enhancementEnabled ? activePrompt : null,
+            effectivePrePrompt: TranscriptionLanguageResolver.ForRecognition(
+                activePrompt, activePrompt == null ? PromptSource.None : PromptSource.Active, enhancementEnabled).Prompt,
             appModeLanguage: null,
             globalLanguage: globalSetting);
         return new(requested, EffectiveTranscriptionLanguage.ForModelName(modelName, requested).Language);

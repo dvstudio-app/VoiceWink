@@ -66,12 +66,18 @@ public abstract record PillContent
     /// <paramref name="Notice"/> is a transient pipeline-scoped message (AUD-1 mic-fallback)
     /// rendered as the status line INSIDE the pipeline pill — the stop button stays reachable,
     /// unlike a Message pill which would cover it (the same reasoning as ImageJob.Notice);
-    /// the controller owns its expiry.</summary>
+    /// the controller owns its expiry.
+    /// <paramref name="WaitingForImageOptions"/> marks an Enhancing that is waiting on the image-options dialog (UI-5f).</summary>
     public sealed record Pipeline(
         RecordingState State,
         DateTime? StartedAtUtc,
         bool CanSkipEnhancement,
-        string? Notice = null) : PillContent;
+        string? Notice = null,
+        bool WaitingForImageOptions = false) : PillContent
+    {
+        /// <summary>The Enhancing status line: the image-options wait names itself (UI-5f).</summary>
+        public string EnhancingText => WaitingForImageOptions ? "Waiting for image options..." : "Enhancing...";
+    }
 
     /// <summary>Model-download progress (owned by the live download).</summary>
     public sealed record Download(double Fraction, string ModelName) : PillContent;

@@ -178,11 +178,13 @@ internal sealed class MiniRecorderPresentationController : IDisposable
     // (masks image-job + affordance) until the real Idle transition. See SuppressPipeline / Reconcile.
     private bool _pipelineSuppressed;
 
-    public void PublishPipeline(RecordingState state, DateTime? startedAtUtc, bool canSkipEnhancement)
+    public void PublishPipeline(RecordingState state, DateTime? startedAtUtc, bool canSkipEnhancement, bool waitingForImageOptions = false)
     {
         // A fresh publish reveals the pipeline pill again (a new recording after a suppressed tail).
         _pipelineSuppressed = false;
-        var content = new PillContent.Pipeline(state, startedAtUtc, canSkipEnhancement);
+        // UI-5f: the image-options wait is an Enhancing-only label; any other state drops it.
+        var content = new PillContent.Pipeline(state, startedAtUtc, canSkipEnhancement,
+            WaitingForImageOptions: waitingForImageOptions && state == RecordingState.Enhancing);
         // Preserve the handle across state changes that keep the SAME stop-button MEANING, but allocate
         // a NEW handle when the effective stop action changes (Codex diff review finding 5): a stop
         // press captured during Recording (Toggle) must NOT act if the pill has since become Transcribing

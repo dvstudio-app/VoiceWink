@@ -1183,16 +1183,9 @@ public sealed class SettingsPage : Page
                 if (parts == BackupParts.None) return; // cancelled
             }
 
-            ImportExportService.ImportResult result;
-            try
-            {
-                result = await service.ImportAsync(backup, parts);
-            }
-            finally
-            {
-                // ENH-39: the hook holds a copy of the prompt hotkeys; an import (or its revert) replaced the list.
-                if (parts.HasFlag(BackupParts.Settings)) ((App)App.Current).RegisterPromptHotkeys();
-            }
+            var result = await service.ImportAsync(backup, parts);
+            // ENH-39: the hook holds a copy of the prompt hotkeys and the import replaced the list; SET-1: a failed import replaced nothing.
+            if (parts.HasFlag(BackupParts.Settings)) ((App)App.Current).RegisterPromptHotkeys();
             var importedNothing = BackupImportSummary.ImportedNothing(result);
             await ShowInfoAsync(importedNothing ? "Nothing imported" : "Backup imported", BackupImportSummary.Describe(result, parts));
             if (parts.HasFlag(BackupParts.Settings) && result.AppliedCount > 0)

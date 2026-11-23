@@ -43,8 +43,11 @@ public sealed class ImportExportService
     /// <summary>The Dictionary's section: <c>{ "words": [..], "replacements": [{ "original",
     /// "replacement", "enabled" }] }</c>.</summary>
     internal const string DictionaryKey = "_dictionary";
+    /// <summary>SET-1: true only in a settings export that carries every valid per-provider model choice, so an import may clear the ones it does not carry.</summary>
+    internal const string ModelPrefsCompleteKey = "_modelPrefsComplete";
 
     private readonly SettingsService _settings;
+    private readonly object _importGate = new(); // SET-1: two imports never build candidates from the same live state.
     private readonly DictionaryTransfer? _dictionary;
     private readonly AIEnhancementService? _enhancement;
     private readonly AppModeManager? _appModes;
@@ -183,6 +186,25 @@ public sealed class ImportExportService
         return true;
     }
 
+    /// <summary>The value test import applies to every setting, reused by export so an exported value always imports (SET-1).</summary>
+    private static bool IsValidSettingValue(string key, JsonElement value) =>
+        TryGetExpectedKind(key, out var expectedKind)
+        && IsKindCompatible(expectedKind, value.ValueKind)
+        && IsSemanticallyValidForImport(key, value);
+
+    private static bool IsModelPrefKey(string key) =>
+        key.StartsWith(AppDefaults.AiModelPrefix, StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith(AppDefaults.AiImageModelPrefix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The spelling the app reads a per-provider model choice under (<see cref="AppDefaults.AiModelKey"/>): the prefix, then the provider in lower case (SET-1).</summary>
+    private static string CanonicalModelPrefKey(string key)
+    {
+        var prefix = key.StartsWith(AppDefaults.AiModelPrefix, StringComparison.OrdinalIgnoreCase)
+            ? AppDefaults.AiModelPrefix
+            : AppDefaults.AiImageModelPrefix;
+        return prefix + key[prefix.Length..].ToLowerInvariant();
+    }
+
     /// <summary>
     /// The shared portable-preference predicate. A key is importable iff it is NOT sensitive, NOT
     /// import-protected (onboarding / consent / legal / app-managed / manifest), and is a KNOWN
@@ -206,7 +228,11 @@ public sealed class ImportExportService
         var filtered = new Dictionary<string, JsonElement>();
         var strippedCount = 0;
         if (parts.HasFlag(BackupParts.Settings))
-            strippedCount = await CollectSettingsAsync(filtered).ConfigureAwait(false);
+        {
+            (strippedCount, var modelPrefsComplete) = await CollectSettingsAsync(filtered).ConfigureAwait(false);
+            if (modelPrefsComplete)
+                filtered[ModelPrefsCompleteKey] = JsonSerializer.SerializeToElement(true);
+        }
         filtered[FormatKey] = JsonSerializer.SerializeToElement(FormatValue);
         if (dictionary != null)
             filtered[DictionaryKey] = SerializeDictionary(await dictionary.ReadAsync().ConfigureAwait(false));
@@ -249,8 +275,8 @@ public sealed class ImportExportService
         });
 
     /// <summary>Fills <paramref name="filtered"/> with every importable preference's effective
-    /// value; returns how many persisted keys were stripped.</summary>
-    private async Task<int> CollectSettingsAsync(Dictionary<string, JsonElement> filtered)
+    /// value; returns how many persisted keys were stripped, and whether every stored model choice made it in.</summary>
+    private async Task<(int Stripped, bool ModelPrefsComplete)> CollectSettingsAsync(Dictionary<string, JsonElement> filtered)
     {
         // Legacy-key migration must run BEFORE Flush so its removal is materialized into the
         // snapshot being exported (a user can export before anything else touched App Mode).
@@ -268,6 +294,8 @@ public sealed class ImportExportService
 
         var settingsPath = _settings.FilePath;
         var strippedCount = 0;
+        var leftOut = 0;
+        var invalidKeys = new HashSet<string>(StringComparer.Ordinal);
 
         // Read the persisted snapshot. A GENUINE absence (fresh profile, nothing persisted yet) is
         // fine — the synthesized defaults below still export. Any OTHER read failure (access
@@ -277,6 +305,9 @@ public sealed class ImportExportService
         try { json = await File.ReadAllTextAsync(settingsPath).ConfigureAwait(false); }
         catch (FileNotFoundException) { /* genuine fresh profile */ }
         catch (DirectoryNotFoundException) { /* genuine fresh profile */ }
+        EnsurePersistenceAvailable("exported"); // SET-1: an erasure that began during the read must not export a bogus snapshot
+        // SET-1: only a snapshot actually read may claim the complete model-pref set; a missing file says nothing about the source's choices.
+        var modelPrefsComplete = json != null;
 
         if (json != null)
         {
@@ -288,12 +319,30 @@ public sealed class ImportExportService
             // exclude the SAME set, so the file is symmetric with what an import will accept.
             foreach (var prop in doc.RootElement.EnumerateObject())
             {
-                if (IsImportableKey(prop.Name))
-                    filtered[prop.Name] = prop.Value.Clone();
-                else
+                if (!IsImportableKey(prop.Name))
+                {
                     strippedCount++;
+                    continue;
+                }
+                // SET-1: a mis-cased model key is one the app never reads, so it must not travel and override the one it does.
+                if (IsModelPrefKey(prop.Name) && prop.Name != CanonicalModelPrefKey(prop.Name))
+                {
+                    leftOut++;
+                    continue;
+                }
+                // SET-1: a value import would refuse is left out, never replaced by a default, so the target keeps its own.
+                if (!IsValidSettingValue(prop.Name, prop.Value))
+                {
+                    leftOut++;
+                    invalidKeys.Add(prop.Name);
+                    if (IsModelPrefKey(prop.Name)) modelPrefsComplete = false;
+                    continue;
+                }
+                filtered[prop.Name] = prop.Value.Clone();
             }
         }
+        if (leftOut > 0)
+            Logger.Warning("Export: {LeftOut} stored settings were left out (a value an import would refuse, or a key spelling the app does not read)", leftOut);
 
         // Synthesize the EFFECTIVE value of every importable default-backed preference the user
         // never explicitly changed (unpersisted → absent above). Without this a profile left at
@@ -302,11 +351,11 @@ public sealed class ImportExportService
         // unpersisted key's effective value IS its registered default.
         foreach (var (key, defaultValue) in AppDefaults.Defaults)
         {
-            if (IsImportableKey(key) && !filtered.ContainsKey(key))
+            if (IsImportableKey(key) && !filtered.ContainsKey(key) && !invalidKeys.Contains(key))
                 filtered[key] = JsonSerializer.SerializeToElement(defaultValue);
         }
 
-        return strippedCount;
+        return (strippedCount, modelPrefsComplete);
     }
 
     /// <summary>
@@ -316,16 +365,23 @@ public sealed class ImportExportService
     /// </summary>
     public sealed class BackupFile
     {
-        internal BackupFile(IReadOnlyDictionary<string, JsonElement> settingsToApply, DictionarySnapshot? dictionary, int dictionarySkipped, string sourceName, int settingsRefused = 0)
+        internal BackupFile(IReadOnlyDictionary<string, JsonElement> settingsToApply, DictionarySnapshot? dictionary, int dictionarySkipped, string sourceName, int settingsRefused = 0,
+            bool modelPrefsComplete = false, HashSet<string>? suppliedModelPrefKeys = null)
         {
             SettingsToApply = settingsToApply;
             Dictionary = dictionary;
             DictionarySkipped = dictionarySkipped;
             SourceName = sourceName;
             SettingsRefused = settingsRefused;
+            ModelPrefsComplete = modelPrefsComplete;
+            SuppliedModelPrefKeys = suppliedModelPrefKeys ?? new HashSet<string>(StringComparer.Ordinal);
         }
 
         internal IReadOnlyDictionary<string, JsonElement> SettingsToApply { get; }
+        /// <summary>SET-1: the file says it carries every per-provider model choice its source had.</summary>
+        internal bool ModelPrefsComplete { get; }
+        /// <summary>SET-1: the per-provider model keys the file names, in the app's spelling, valid or not.</summary>
+        internal HashSet<string> SuppliedModelPrefKeys { get; }
         /// <summary>SET-3: settings in the file the gate skipped (protected, unknown, wrong type, out of range).</summary>
         internal int SettingsRefused { get; }
         internal DictionarySnapshot? Dictionary { get; }
@@ -334,7 +390,7 @@ public sealed class ImportExportService
         /// <summary>The file NAME only (SEC-4) for log lines.</summary>
         internal string SourceName { get; }
 
-        public bool HasSettings => SettingsToApply.Count > 0 || SettingsRefused > 0; // SET-3: a file of refused settings still reports its count.
+        public bool HasSettings => ModelPrefsComplete || SettingsToApply.Count > 0 || SettingsRefused > 0; // SET-3: a file of refused settings still reports its count; SET-1: a complete model-pref set can clear choices on its own.
         public bool HasDictionary => Dictionary != null;
     }
 
@@ -363,8 +419,8 @@ public sealed class ImportExportService
         => await ImportAsync(await ReadBackupAsync(filePath), parts); // ENH-39: caller's thread, as above
 
     /// <summary>
-    /// Applies the requested parts of a validated backup: settings first (durable or reverted,
-    /// as before), then the Dictionary in one database write. A part the file does not carry is
+    /// Applies the requested parts of a validated backup: settings first (durable, or nothing
+    /// changed), then the Dictionary in one database write. A part the file does not carry is
     /// refused before anything changes. When both were asked for and the Dictionary write fails
     /// after the settings landed, the result says so instead of throwing — the settings ARE
     /// applied, and the user must be told which half happened.
@@ -386,6 +442,15 @@ public sealed class ImportExportService
         if (dictionary == null)
             return new ImportResult(applied, SettingsRefused: refused);
 
+        // SET-1: one suppression decision before the database is opened, so an erasure that began during the settings write never reaches it.
+        if (!wantSettings)
+            EnsurePersistenceAvailable("imported");
+        else if (_settings.IsPersistenceSuppressed)
+        {
+            // An expected outcome, so a Warning, not a Sentry event.
+            Logger.Warning("Dictionary import skipped: persistence was disabled after the settings were applied");
+            return new ImportResult(applied, null, backup.DictionarySkipped, DictionaryFailed: true, SettingsRefused: refused);
+        }
         try
         {
             var merged = await dictionary.MergeAsync(backup.Dictionary!).ConfigureAwait(false);
@@ -437,8 +502,8 @@ public sealed class ImportExportService
 
         // A backup this version cannot read is refused before anything is asked or applied —
         // a later format may move what the reserved keys mean.
-        if (doc.RootElement.TryGetProperty(FormatKey, out var format)
-            && !(format.ValueKind == JsonValueKind.String && format.GetString() == FormatValue))
+        var hasFormat = doc.RootElement.TryGetProperty(FormatKey, out var format);
+        if (hasFormat && !(format.ValueKind == JsonValueKind.String && format.GetString() == FormatValue))
             throw new InvalidOperationException("This backup was made by a newer version of VoiceWink. Update VoiceWink and try again.");
 
         DictionarySnapshot? dictionary = null;
@@ -458,11 +523,20 @@ public sealed class ImportExportService
         // the legacy alias; skip protected/unknown/type-mismatch; duplicate valid properties are
         // last-valid-wins.
         var toApply = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var suppliedModelPrefKeys = new HashSet<string>(StringComparer.Ordinal);
+        // SET-1: an older export can carry a stale mis-cased alias beside the spelling the app read; with the exact spelling present, valid or not, the alias never applies.
+        var exactModelPrefKeys = doc.RootElement.EnumerateObject()
+            .Select(prop => prop.Name)
+            .Where(key => IsModelPrefKey(key) && key == CanonicalModelPrefKey(key))
+            .ToHashSet(StringComparer.Ordinal);
+        // SET-1: only a formatted backup may claim a complete model-pref set, so a hand-made file never resets anything.
+        var modelPrefsComplete = hasFormat && doc.RootElement.TryGetProperty(ModelPrefsCompleteKey, out var complete)
+            && complete.ValueKind == JsonValueKind.True;
         var refused = 0;
         foreach (var prop in doc.RootElement.EnumerateObject())
         {
             var name = prop.Name;
-            if (name is FormatKey or DictionaryKey)
+            if (name is FormatKey or DictionaryKey or ModelPrefsCompleteKey)
                 continue; // the backup's own sections, not settings — never logged as unknown
             if (name.Equals(AppDefaults.CustomPrompts, StringComparison.OrdinalIgnoreCase))
                 name = AppDefaults.CustomPrompts; // canonicalize case (Codex r3)
@@ -477,6 +551,11 @@ public sealed class ImportExportService
                     continue;
                 }
                 name = AppDefaults.AppModeConfigs;
+            }
+            else if (IsModelPrefKey(name))
+            {
+                name = CanonicalModelPrefKey(name); // SET-1: a mis-cased key lands where the app reads it
+                suppliedModelPrefKeys.Add(name); // before validation, so a refused value keeps the target's choice
             }
 
             if (IsImportProtectedKey(name))
@@ -508,55 +587,51 @@ public sealed class ImportExportService
                 continue;
             }
 
+            if (prop.Name != name && IsModelPrefKey(name) && exactModelPrefKeys.Contains(name))
+                continue;
+
             toApply[name] = prop.Value.Clone(); // last-valid-wins on duplicate canonical keys
         }
 
-        return new BackupFile(toApply, dictionary, dictionarySkipped, Helpers.LogPathProjection.FileNameOnly(filePath), refused);
+        return new BackupFile(toApply, dictionary, dictionarySkipped, Helpers.LogPathProjection.FileNameOnly(filePath), refused,
+            modelPrefsComplete, suppliedModelPrefKeys);
     }
 
-    /// <summary>Applies a validated file's settings — durable, or reverted and thrown. Returns how
+    /// <summary>Applies a validated file's settings — durable, or nothing changed and thrown. Returns how
     /// many were applied (0 is a success: nothing in the file was applicable) and how many refused.</summary>
     private (int Applied, int Refused) ApplySettings(BackupFile backup)
     {
-        try
+        (int Applied, int Refused) result;
+        lock (_importGate)
         {
-            return ApplySettingsCore(backup);
+            result = ApplySettingsCore(backup);
         }
-        finally
-        {
-            // ENH-39: every outcome (applied, migrated or reverted by Reload) changed the store under the caches.
-            _appModes?.DiscardCachedConfigs(); // first: the prompt discard raises an event, which must not skip this
-            _enhancement?.DiscardCachedPrompts();
-            _enhancement?.SyncOnThisPcResidency(); // SET-3: the imported provider, model or prompts decide which built-in model stays loaded.
-        }
+        // ENH-39: the import changed the store under the caches. SET-1: only after a commit, because a failed import changed nothing.
+        _appModes?.DiscardCachedConfigs(); // first: the prompt discard raises an event, which must not skip this
+        _enhancement?.DiscardCachedPrompts();
+        _enhancement?.SyncOnThisPcResidency(); // SET-3: the imported provider, model or prompts decide which built-in model stays loaded.
+        return result;
     }
 
     private (int Applied, int Refused) ApplySettingsCore(BackupFile backup)
     {
         var toApply = backup.SettingsToApply;
+        // SET-1: built off-store and committed disk-first, so a failed or suppressed import changes nothing.
+        var candidate = new SettingsCandidate(_settings);
 
         // UPD-4: invalidate the defaults-manifest domain(s) that WILL apply — derived from the
-        // SAME canonical set, so it can't diverge from what the apply below does — and do it
-        // BEFORE applying (atomicity, Codex diff r2): no intermediate persisted state carries
-        // [imported blob + old manifest]. The final FlushOrThrow writes the whole result in one
-        // atomic snapshot.
+        // SAME canonical set, so it can't diverge from what the apply below does. It lands in the
+        // same atomic write as the imported blobs.
         var willApplyPrompts = toApply.ContainsKey(AppDefaults.CustomPrompts);
         var willApplyAppModes = toApply.ContainsKey(AppDefaults.AppModeConfigs);
         if (willApplyPrompts || willApplyAppModes)
         {
             var newManifest = DefaultsManifest.WithDomainsInvalidated(
-                _settings.GetString(AppDefaults.DefaultsManifest, ""), willApplyPrompts, willApplyAppModes);
-            if (newManifest == null) _settings.Remove(AppDefaults.DefaultsManifest);
-            else _settings.SetString(AppDefaults.DefaultsManifest, newManifest);
+                candidate.GetString(AppDefaults.DefaultsManifest, ""), willApplyPrompts, willApplyAppModes);
+            if (newManifest == null) candidate.Remove(AppDefaults.DefaultsManifest);
+            else candidate.SetString(AppDefaults.DefaultsManifest, newManifest);
         }
 
-        // KNOWN LIMITATION (backlog SET-1, owner-accepted 2026-07-22): import is mutate-then-flush
-        // with Reload rollback on failure, NOT a true disk-first candidate commit. On a late flush
-        // failure a brief (not strictly bounded) window exists where a concurrent provider request could observe an
-        // imported value before Reload reverts it; a debounce tick firing mid-import could persist a
-        // partial import; and Reload discards any unrelated concurrent Set. Accepted for a
-        // deliberate, infrequent manual import; the rigorous fix (a typed disk-first
-        // SetManyAndFlushOrThrow) is backlogged.
         var importedCount = 0;
         var refused = backup.SettingsRefused;
         foreach (var (name, value) in toApply)
@@ -568,15 +643,27 @@ public sealed class ImportExportService
                 if (value.ValueKind == JsonValueKind.True) refused++; // SET-3: an imported "off" agrees with the opt-out, so only an "on" was refused.
                 continue;
             }
-            _settings.Set(name, value);
+            candidate.Set(name, value);
             importedCount++;
+        }
+
+        // SET-1: a complete export's model memory replaces this one, so a per-provider choice the source never made is cleared.
+        if (backup.ModelPrefsComplete)
+        {
+            foreach (var key in _settings.GetKeysSnapshot())
+            {
+                if (IsModelPrefKey(key) && !backup.SuppliedModelPrefKeys.Contains(CanonicalModelPrefKey(key))
+                    && candidate.Remove(key))
+                    importedCount++; // a cleared choice is a change the result must report
+
+            }
         }
 
         // The import itself never writes the legacy key, but the CURRENT settings may still
         // carry one (import can run before anything else touched App Mode) — uphold the
         // "legacy key removed either way" invariant standalone rather than relying on the
         // startup migration having run first.
-        AppModeSettingsMigration.Run(_settings);
+        AppModeSettingsMigration.Run(candidate);
 
         // TRN-6: same reasoning, one migration later. An imported backup predating the q8-only
         // catalogue carries model names that no longer resolve, and import applies BOTH surfaces
@@ -584,38 +671,48 @@ public sealed class ImportExportService
         // is not belt-and-braces: `MainViewModel` re-reads the selected model for EVERY recording,
         // so without this the very next dictation after an import fails with UnknownModel until
         // the app is restarted — and the dialog's restart hint is advice, not a guard (both diff
-        // reviewers). Ordering is load-bearing: BEFORE the flush below, so the migrated names are
-        // what actually lands on disk.
-        LocalModelMigration.RunOnSettings(_settings);
+        // reviewers). It runs on the candidate, so the migrated names are what lands on disk.
+        LocalModelMigration.RunOnSettings(candidate);
 
-        // Durable-or-nothing (Codex diff r3/r4). Now that import is user-facing, a failed OR
-        // suppressed flush must not leave the import live in memory: provider toggles are read
-        // per-request, so a non-durable "failed" import could still enable paid egress, and a
-        // re-armed debounce could persist a "failed" import later. Reload() discards the in-memory
-        // import AND cancels that debounce, reverting to the last durable state; the caller reports
-        // the failure.
-        try
-        {
-            _settings.FlushOrThrow();
-        }
-        catch
-        {
-            _settings.Reload();
-            throw;
-        }
-        // FlushOrThrow is a SILENT no-op when persistence is suppressed (mid data-erasure), so it
-        // won't have thrown above — check explicitly and treat suppression as failure too.
-        if (_settings.IsPersistenceSuppressed)
-        {
-            _settings.Reload();
+        // Durable-or-nothing: provider toggles are read per request, so nothing of the import may
+        // reach the store unless all of it reached the disk.
+        if (!_settings.TrySetManyAndFlushOrThrow(candidate.Changes))
             throw new InvalidOperationException(
                 "Settings can't be imported right now — persistence is disabled (e.g. a data wipe is in progress). Restart the app and try again.");
-        }
 
         // SEC-4: user-chosen source (already projected to its file name).
         Logger.Information("Settings imported ({Count} keys applied, {Refused} refused): filePath={UserFilePath}",
             importedCount, refused, backup.SourceName);
         return (importedCount, refused);
+    }
+
+    /// <summary>The import's settings as they will be once committed, built without touching the store (SET-1).</summary>
+    private sealed class SettingsCandidate : ISettingsAccess
+    {
+        private readonly SettingsService _live;
+        // An Undefined value is a removal, the typed batch's own convention.
+        private readonly Dictionary<string, JsonElement> _changes = new(StringComparer.Ordinal);
+
+        public SettingsCandidate(SettingsService live) => _live = live;
+
+        public IReadOnlyDictionary<string, JsonElement> Changes => _changes;
+
+        public bool Contains(string key) =>
+            _changes.TryGetValue(key, out var value) ? value.ValueKind != JsonValueKind.Undefined : _live.Contains(key);
+
+        public string GetString(string key, string defaultValue = "") =>
+            _changes.TryGetValue(key, out var value) ? SettingsService.Resolve(value, key, defaultValue) : _live.GetString(key, defaultValue);
+
+        public void SetString(string key, string value) => Set(key, JsonSerializer.SerializeToElement(value));
+
+        public void Set(string key, JsonElement value) => _changes[key] = value;
+
+        public bool Remove(string key)
+        {
+            if (!Contains(key)) return false;
+            _changes[key] = default;
+            return true;
+        }
     }
 
     /// <summary>

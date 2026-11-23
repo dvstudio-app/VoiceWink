@@ -24,7 +24,7 @@ internal static class LocalModelsSection
     /// <param name="isSelected">Whether a model id is the provider's selected model.</param>
     /// <param name="select">Makes an installed model the selected one.</param>
     /// <param name="changed">A download finished (its model id) or a model was deleted (null).</param>
-    /// <param name="measured">A first-use check settled: its time now decides the stars and the pick.</param>
+    /// <param name="measured">Rebuilds the rows: a first-use check settled, a switch started, or a model was downloaded or deleted.</param>
     /// <param name="notice">The page's "speed ratings were updated" tracker; null shows no line.</param>
     /// <param name="setupInUse">Setup's AI step: shows only the model for this PC plus the models this
     /// says are in use, not every model. Null shows every model.</param>
@@ -372,6 +372,8 @@ internal static class LocalModelsSection
                     if (measured is not null && engine?.WhenFirstUseCheckSettledAsync(entry.Id) is { } running)
                         RefreshWhenMeasured(running, measured);
                     changed?.Invoke(entry.Id);
+                    // LAI-38: as for a delete; a model with a stored verdict starts no check, so nothing else rebuilds them.
+                    measured?.Invoke();
                 }
             }
             catch (OperationCanceledException) when (attempt.IsCancellationRequested)
@@ -441,7 +443,12 @@ internal static class LocalModelsSection
                 : await Task.Run(() => engine.DeleteModelAsync(entry.Id, () => store.Delete(entry.Id)));
             ShowStatus(gone ? null : "Couldn't delete — the file is in use.");
             Render();
+            // LAI-39: only a delete changes anything; setup rebuilds its rows in changed, which would drop the failure line.
+            if (!gone)
+                return;
             changed?.Invoke(null);
+            // LAI-38: the other rows read this model's install state (a retired card's Switch); a delete changes no selection, so rebuild them.
+            measured?.Invoke();
         };
 
         Render();

@@ -17,6 +17,11 @@ https://github.com/dvstudio-app/VoiceWink/releases.
 
 ## [Unreleased]
 
+## [1.131.434] - 2026-11-23
+
+- Run again no longer opens for a dictation you closed with the pill's ×.
+- The pill now shows "Waiting for image options..." while an image prompt waits for its options.
+
 ## [1.130.433] - 2026-11-22
 
 - AI enhancement with Gemini 2.5 Flash keeps working after Google's model change on 1 December.

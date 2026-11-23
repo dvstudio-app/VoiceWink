@@ -2039,6 +2039,7 @@ public partial class App : Application, Services.IAppLifetime
         if (e.PropertyName is not (nameof(MainViewModel.RecordingState)
             or nameof(MainViewModel.IsMiniRecorderVisible)
             or nameof(MainViewModel.CanSkipCurrentEnhancement)
+            or nameof(MainViewModel.IsWaitingForImageOptions)
             or nameof(MainViewModel.IsRedoAvailable)
             or nameof(MainViewModel.IsRetryAvailable)))
         {
@@ -2067,7 +2068,14 @@ public partial class App : Application, Services.IAppLifetime
                             // Enhancing, so this reads true here); redo / image-options Enhancing is
                             // non-skippable, so its stop fully cancels. The pill does not SAY which
                             // it is (PILL-5) — this drives the controller's stop-class handle only.
-                            canSkipEnhancement: vm.CanSkipCurrentEnhancement);
+                            canSkipEnhancement: vm.CanSkipCurrentEnhancement,
+                            waitingForImageOptions: vm.IsWaitingForImageOptions);
+                    break;
+                case nameof(MainViewModel.IsWaitingForImageOptions):
+                    // UI-5f: the image-options wait began or ended mid-Enhancing; republish so the label follows.
+                    if (vm.RecordingState == RecordingState.Enhancing)
+                        c.PublishPipeline(vm.RecordingState, null, canSkipEnhancement: vm.CanSkipCurrentEnhancement,
+                            waitingForImageOptions: vm.IsWaitingForImageOptions);
                     break;
                 case nameof(MainViewModel.CanSkipCurrentEnhancement):
                     // Skip capability BEGAN or ENDED mid-Enhancing (the CTS was installed / cleared).
@@ -2076,7 +2084,8 @@ public partial class App : Application, Services.IAppLifetime
                     // "skip" once the CTS is gone (Codex r2 #2). Since PILL-5 the handle rotation is the
                     // ONLY consumer: nothing on the pill changes visibly at this transition.
                     if (vm.RecordingState == RecordingState.Enhancing)
-                        c.PublishPipeline(vm.RecordingState, null, canSkipEnhancement: vm.CanSkipCurrentEnhancement);
+                        c.PublishPipeline(vm.RecordingState, null, canSkipEnhancement: vm.CanSkipCurrentEnhancement,
+                            waitingForImageOptions: vm.IsWaitingForImageOptions);
                     break;
                 case nameof(MainViewModel.IsMiniRecorderVisible):
                     // The VM hides the pill before pasting (focus + occlusion) and on cancel/abort. Map

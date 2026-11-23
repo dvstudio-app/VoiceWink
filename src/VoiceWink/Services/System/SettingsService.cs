@@ -11,7 +11,7 @@ namespace VoiceWink.Services.System;
 /// coalesce into a single disk write. Call <see cref="Flush"/> or <see cref="Dispose"/>
 /// to force a pending save. The DI container's disposal on app shutdown flushes for us.
 /// </summary>
-public sealed class SettingsService : IDisposable
+public sealed class SettingsService : IDisposable, ISettingsAccess
 {
     private static ILogger Logger => Log.ForContext<SettingsService>();
 
@@ -54,6 +54,8 @@ public sealed class SettingsService : IDisposable
     // never-assigned nullable field warns CS0649 in the production assembly (the test project's
     // assignment is invisible to it).
     internal Action _afterSaveCommitted = static () => { };
+    /// <summary>Test seam (SET-1): a save is about to wait for the IO lock; a no-op in production.</summary>
+    internal Action _beforeSaveIoLock = static () => { };
 
     /// <summary>The file path backing this settings instance.</summary>
     public string FilePath => _settingsFilePath;
@@ -86,26 +88,41 @@ public sealed class SettingsService : IDisposable
     {
         lock (_lock)
         {
-            if (_cache.TryGetValue(key, out var element))
-            {
-                try
-                {
-                    var result = element.Deserialize<T>();
-                    return result ?? defaultValue;
-                }
-                catch
-                {
-                    return defaultValue;
-                }
-            }
+            return Resolve(_cache.TryGetValue(key, out var element) ? element : default, key, defaultValue);
+        }
+    }
 
-            // Check AppDefaults
-            if (AppDefaults.Defaults.TryGetValue(key, out var appDefault) && appDefault is T typed)
+    /// <summary>How <see cref="Get{T}"/> turns a stored value into a result, shared with the import's candidate (SET-1); an Undefined element means absent.</summary>
+    internal static T Resolve<T>(JsonElement element, string key, T defaultValue)
+    {
+        if (element.ValueKind != JsonValueKind.Undefined)
+        {
+            try
             {
-                return typed;
+                var result = element.Deserialize<T>();
+                return result ?? defaultValue;
             }
+            catch
+            {
+                return defaultValue;
+            }
+        }
 
-            return defaultValue;
+        // Check AppDefaults
+        if (AppDefaults.Defaults.TryGetValue(key, out var appDefault) && appDefault is T typed)
+        {
+            return typed;
+        }
+
+        return defaultValue;
+    }
+
+    /// <summary>The keys present right now, copied under the lock (SET-1).</summary>
+    internal IReadOnlyList<string> GetKeysSnapshot()
+    {
+        lock (_lock)
+        {
+            return _cache.Keys.ToList();
         }
     }
 
@@ -332,9 +349,9 @@ public sealed class SettingsService : IDisposable
     /// with the cache untouched). Used by <c>DefaultPromptsReseed</c> so a set of related keys
     /// (the two blobs + the manifest) can never be observed half-written: the debounce timer is
     /// cancelled and the cache is not mutated until the disk write has committed, so a concurrent
-    /// tick cannot snapshot an intermediate state. (Settings-import achieves its own consistency
-    /// by invalidating the manifest BEFORE applying + a single <see cref="FlushOrThrow"/> at the
-    /// end.) Honors persistence suppression / protect mode exactly like <see cref="FlushOrThrow"/>.
+    /// tick cannot snapshot an intermediate state. Settings import commits through the typed
+    /// overload the same way (SET-1). Honors persistence suppression / protect mode exactly like
+    /// <see cref="FlushOrThrow"/>.
     /// </summary>
     public void SetManyAndFlushOrThrow(IReadOnlyDictionary<string, string?> changes) => _ = TrySetManyAndFlushOrThrow(changes);
 
@@ -342,7 +359,23 @@ public sealed class SettingsService : IDisposable
     /// <returns>True when the batch reached disk (an empty batch writes nothing and counts); false when persistence was suppressed and nothing changed.</returns>
     public bool TrySetManyAndFlushOrThrow(IReadOnlyDictionary<string, string?> changes)
     {
+        var typed = new Dictionary<string, JsonElement>(changes.Count);
+        foreach (var (key, value) in changes)
+            typed[key] = value == null ? default : JsonSerializer.SerializeToElement(value);
+        return TrySetManyAndFlushOrThrow(typed);
+    }
+
+    /// <summary>The typed disk-first batch (SET-1); a value whose ValueKind is Undefined (<c>default</c>) removes the key, because a stored value can never be Undefined.</summary>
+    internal void SetManyAndFlushOrThrow(IReadOnlyDictionary<string, JsonElement> changes) => _ = TrySetManyAndFlushOrThrow(changes);
+
+    /// <summary>The typed batch that says whether it wrote; same contract as the string overload.</summary>
+    internal bool TrySetManyAndFlushOrThrow(IReadOnlyDictionary<string, JsonElement> changes)
+    {
         if (changes.Count == 0) return true;
+        // Cloned so the caller's JsonDocument lifetime cannot reach the cache.
+        var owned = new Dictionary<string, JsonElement>(changes.Count);
+        foreach (var (key, value) in changes)
+            owned[key] = value.ValueKind == JsonValueKind.Undefined ? default : value.Clone();
         try { _saveTimer.Change(Timeout.Infinite, Timeout.Infinite); }
         catch (ObjectDisposedException) { /* already disposed */ }
         lock (_saveIoLock)
@@ -358,11 +391,7 @@ public sealed class SettingsService : IDisposable
             {
                 candidate = new Dictionary<string, JsonElement>(_cache);
             }
-            foreach (var (key, value) in changes)
-            {
-                if (value == null) candidate.Remove(key);
-                else candidate[key] = JsonSerializer.SerializeToElement(value);
-            }
+            ApplyChanges(candidate, owned);
 
             // Disk FIRST — throws on failure, leaving the cache untouched. On failure re-arm the
             // debounce timer so EARLIER pending changes (e.g. the startup migrations that ran
@@ -382,13 +411,18 @@ public sealed class SettingsService : IDisposable
             // concurrent Set that landed between the clone and here is preserved.
             lock (_lock)
             {
-                foreach (var (key, value) in changes)
-                {
-                    if (value == null) _cache.Remove(key);
-                    else _cache[key] = JsonSerializer.SerializeToElement(value);
-                }
+                ApplyChanges(_cache, owned);
             }
             return true;
+        }
+    }
+
+    private static void ApplyChanges(Dictionary<string, JsonElement> target, Dictionary<string, JsonElement> changes)
+    {
+        foreach (var (key, value) in changes)
+        {
+            if (value.ValueKind == JsonValueKind.Undefined) target.Remove(key);
+            else target[key] = value;
         }
     }
 
@@ -588,6 +622,7 @@ public sealed class SettingsService : IDisposable
     // mid-flight can't be raced past. Ordering is always _saveIoLock -> _lock.
     private void PersistUnderLock()
     {
+        _beforeSaveIoLock();
         lock (_saveIoLock)
         {
             // Persistence quiesced for data erasure, or a protect-mode load failure — never write

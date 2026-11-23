@@ -198,7 +198,7 @@ internal static class LocalModelMigration
     /// corrupt blob is a pre-existing condition this migration must not escalate into a failed
     /// launch — <c>AppModeManager.GetConfigs</c> already tolerates it the same way.</para>
     /// </summary>
-    internal static void RunOnSettings(SettingsService settings)
+    internal static void RunOnSettings(ISettingsAccess settings)
     {
         MigrateGlobalSelection(settings);
         MigrateAppModeOverrides(settings);
@@ -210,7 +210,7 @@ internal static class LocalModelMigration
         => IsSuperseded(persistedName) ? Migrate(persistedName)
             : CloudModels.FindRetired(persistedName)?.Successor;
 
-    private static void MigrateGlobalSelection(SettingsService settings)
+    private static void MigrateGlobalSelection(ISettingsAccess settings)
     {
         var current = settings.GetString(AppDefaults.SelectedModelName, "");
         if (SelectionSuccessor(current) is not { } successor) return;
@@ -236,7 +236,7 @@ internal static class LocalModelMigration
     /// on property access and abandon the whole migration, so one malformed entry would strand
     /// every valid one. Each element is now skipped independently.</para>
     /// </summary>
-    private static void MigrateAppModeOverrides(SettingsService settings)
+    private static void MigrateAppModeOverrides(ISettingsAccess settings)
     {
         var json = settings.GetString(AppDefaults.AppModeConfigs, "");
         if (string.IsNullOrWhiteSpace(json)) return;

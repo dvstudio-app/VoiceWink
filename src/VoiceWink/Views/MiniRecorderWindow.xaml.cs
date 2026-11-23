@@ -1478,7 +1478,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
                     RenderMessage(m.Text, m.Tone, presentation.CanDismiss);
                     break;
                 case PillContent.Pipeline p:
-                    UpdateState(p.State, p.StartedAtUtc, p.Notice);
+                    UpdateState(p.State, p.StartedAtUtc, p.Notice, p.EnhancingText);
                     break;
                 case PillContent.Download d:
                     RenderDownload(d.Fraction, d.ModelName);
@@ -1496,7 +1496,7 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
     // ERR-PERSIST controller refactor: driven by Render(Pipeline). The controller only ever passes a
     // non-Idle state (Idle → ClearPipeline → a different surface / hidden), so there is no stale-Idle
     // clobber to guard and no per-window semantic timers here.
-    private void UpdateState(RecordingState state, DateTime? recordingStartTimeUtc, string? notice = null)
+    private void UpdateState(RecordingState state, DateTime? recordingStartTimeUtc, string? notice, string enhancingText)
     {
         RunOnUiThread(() =>
         {
@@ -1593,14 +1593,15 @@ public sealed partial class MiniRecorderWindow : Window, IMiniRecorderRenderer
                     _pulseTimer.Stop();
                     _elapsedTimer.Stop();
                     StatusText.Visibility = Visibility.Visible;
-                    // Enhancing shows ONE thing for its whole duration (owner, 2026-08-11). A 10 s
+                    // Enhancing shows ONE thing for its whole duration (owner, 2026-08-11) — the
+                    // image-options wait names itself instead (UI-5f). A 10 s
                     // "Stop button to skip" hint used to replace this text: it spent the state
                     // indicator to point at a button already on screen, and never said the part
                     // that isn't obvious — that stopping HERE skips the enhancement and still
                     // pastes the raw transcript, rather than cancelling the dictation. Two
                     // rewordings (2026-07-08) failed to make it self-explaining; removed instead.
                     // Stop-during-Enhancing keeps skipping — only the hint is gone.
-                    StatusText.Text = "Enhancing...";
+                    StatusText.Text = enhancingText; // UI-5f: "Waiting for image options..." while that dialog waits
                     StatusText.Foreground = AppTheme.Brush(AppTheme.AccentGreen);
                     SetStopAccent(AppTheme.AccentGreen);
                     _targetLabelAllowed = true;
